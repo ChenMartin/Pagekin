@@ -2,6 +2,7 @@
 // 用法：
 //   node scripts/eval/knowledge-rerank.mjs run --group fts --out <收据.json>
 //   node scripts/eval/knowledge-rerank.mjs run --group vector --out <收据.json>   （需要环境变量 SILICONFLOW_API_KEY）
+//   node scripts/eval/knowledge-rerank.mjs run --group fts --rerank identity --out <收据.json>   （同一组候选上比较重排与原序）
 //   node scripts/eval/knowledge-rerank.mjs compare <基准收据.json> <对照收据.json> --out <比较.json>
 
 import { createHash, randomUUID } from "node:crypto"
@@ -19,13 +20,12 @@ const EMBEDDING_TIMEOUT_MS = 60000
 
 const SILICONFLOW = { provider: "siliconflow", baseUrl: "https://api.siliconflow.cn/v1" }
 const EMBEDDING_MODEL = "BAAI/bge-m3"
-const RERANK_MODEL = "BAAI/bge-reranker-v2-m3"
+const GROUPS = { fts: { retrieval: "fts" }, vector: { retrieval: "vector" } }
 
-const GROUPS = {
-  fts: { retrieval: "fts", rerank: null },
-  vector: { retrieval: "vector", rerank: null },
-  "fts+rerank": { retrieval: "fts", rerank: undefined },
-  "vector+rerank": { retrieval: "vector", rerank: undefined },
+// 重排只在同一次运行的同一组 40 个候选上与原序比较：块 id 每次导入都随机，跨运行比较会混入召回差异。
+// identity 原样保留检索顺序，用来核对比较通路本身；R2 合入后在这里登记 BAAI/bge-reranker-v2-m3。
+const RERANKERS = {
+  identity: { model: null, rank: async (_query, candidates) => candidates.slice(0, FINAL) },
 }
 
 const DECISION_RULES = {
@@ -42,6 +42,7 @@ const METRIC_DEFINITIONS = {
   "Hit@5": "前 5 里至少有一个等级 2 段落记 1，否则 0",
   "MRR@5": "前 5 里第一个等级 2 段落名次的倒数，没有记 0",
   "Distractor@5": "前 5 里标为撞词干扰的段落数 / 5",
+  rerankOutcome: "同一次运行、同一组候选上，重排后 nDCG@5 比检索原序高记 win，低记 loss，相等记 tie",
   chunkMapping: "每个块恰好包含一个完整语料段落；块的等级取该段落的判定等级，未判定记 0",
 }
 
@@ -87,6 +88,9 @@ async function loadFixture() {
     if (!judgments.has(judgment.queryId)) judgments.set(judgment.queryId, new Map())
     judgments.get(judgment.queryId).set(judgment.paragraphSha256, judgment)
   }
+  for (const { id } of files["queries.json"].value.queries) {
+    if (![...(judgments.get(id)?.values() ?? [])].some(judgment => judgment.grade === 2)) fail(`查询 ${id} 没有等级 2 的判定`)
+  }
   return {
     corpus,
     queries: files["queries.json"].value.queries,
@@ -102,6 +106,7 @@ function buildQuery(chapterInfo) {
   return [hint, chapterInfo.title, chapterInfo.keyEvents, chapterInfo.characters.join(" ")].filter(Boolean).join(" ")
 }
 
+/** 照抄 generation-knowledge-source.ts 的全文取词与加权，只用来标注候选，生产改了这里要跟着改。 */
 function ftsTerms(query) {
   const raw = query.match(/[\p{L}\p{N}-]+/gu) ?? []
   const meaningful = raw.filter(term => Array.from(term).length >= 2)
@@ -195,10 +200,21 @@ function mean(rows, key) {
   return rows.length ? rows.reduce((sum, row) => sum + row.metrics[key], 0) / rows.length : 0
 }
 
-async function runGroup(groupName, outPath) {
+function outcomeOf(base, other) {
+  const delta = other["nDCG@5"] - base["nDCG@5"]
+  if (Math.abs(delta) < 1e-9) return "tie"
+  return delta > 0 ? "win" : "loss"
+}
+
+function countOutcomes(outcomes) {
+  return Object.fromEntries(["win", "tie", "loss"].map(outcome => [outcome, outcomes.filter(item => item === outcome).length]))
+}
+
+async function runGroup(groupName, rerankName, outPath) {
   const group = GROUPS[groupName]
   if (!group) fail(`未知分组：${groupName}，可选 ${Object.keys(GROUPS).join(", ")}`)
-  if (group.rerank === undefined) fail(`${groupName} 组要等 R2（electron/rerank.ts）合入后接上重排函数才能跑`)
+  const reranker = rerankName ? RERANKERS[rerankName] : null
+  if (rerankName && !reranker) fail(`未知重排器：${rerankName}，可选 ${Object.keys(RERANKERS).join(", ")}（BAAI/bge-reranker-v2-m3 等 R2 合入）`)
   const fixture = await loadFixture()
   const workDir = path.join(CACHE_ROOT, `${groupName.replace(/\W/g, "-")}-${randomUUID()}`)
   const projectPath = path.join(workDir, "project")
@@ -247,15 +263,18 @@ async function runGroup(groupName, outPath) {
           score: item.score, ftsRank: ftsRank(terms, item.text), matchedTerms: terms.filter(term => item.text.toLocaleLowerCase().includes(term.toLocaleLowerCase())),
         }
       })
-      if (configuration && candidates.some(item => item.score === 0.5)) fail(`${id} 的候选出现全文检索的固定分 0.5，向量检索可能已回退`)
-      const final = group.rerank ? await group.rerank(query, candidates) : candidates.slice(0, FINAL)
+      if (configuration && candidates.length && candidates.every(item => item.score === 0.5)) fail(`${id} 的候选全是全文检索的固定分 0.5，向量检索可能已回退`)
+      const final = candidates.slice(0, FINAL)
+      const metrics = scoreQuery(candidates, final, judged)
+      const reranked = reranker ? await reranker.rank(query, candidates) : null
+      const rerankMetrics = reranked ? scoreQuery(candidates, reranked, judged) : null
       const wrapper = await production.captureWritingKnowledgeSnapshot(query, projectPath, configuration)
       const wrapperTop = wrapper.items.map(item => chunkToParagraph.get(item.chunkId))
       rows.push({
         id, query, ftsTerms: terms,
         productionTop5MatchesCandidateHead: wrapperTop.join() === candidates.slice(0, FINAL).map(item => item.paragraphSha256).join(),
-        metrics: scoreQuery(candidates, final, judged),
-        candidates, final: final.map(item => item.paragraphSha256),
+        metrics, candidates, final: final.map(item => item.paragraphSha256),
+        ...(reranked ? { rerank: { final: reranked.map(item => item.paragraphSha256), metrics: rerankMetrics, outcome: outcomeOf(metrics, rerankMetrics) } } : {}),
       })
     }
     const receipt = {
@@ -265,20 +284,24 @@ async function runGroup(groupName, outPath) {
       createdAt: new Date().toISOString(),
       sourceCommit: process.env.EVAL_SOURCE_COMMIT ?? null,
       fixture: { id: fixture.corpus.id, sha256: fixture.hashes, chapters: fixture.corpus.chapters.length, paragraphs: fixture.paragraphs.size, chunks: chunks.length, queries: rows.length },
-      models: { embedding: group.retrieval === "vector" ? `${SILICONFLOW.baseUrl} ${EMBEDDING_MODEL}` : null, rerank: group.rerank ? `${SILICONFLOW.baseUrl} ${RERANK_MODEL}` : null },
+      models: { embedding: group.retrieval === "vector" ? `${SILICONFLOW.baseUrl} ${EMBEDDING_MODEL}` : null, rerank: reranker ? { name: rerankName, model: reranker.model } : null },
       pipeline: { candidates: CANDIDATES, final: FINAL, retrieval: "captureGenerationKnowledge（真实 LanceDB），前 5 与 captureWritingKnowledgeSnapshot 对照" },
       vectorCoverage,
       metricDefinitions: METRIC_DEFINITIONS,
       decisionRules: DECISION_RULES,
       summary: Object.fromEntries(Object.keys(rows[0]?.metrics ?? {}).map(key => [key, mean(rows, key)])),
+      ...(reranker ? { rerankSummary: Object.fromEntries(Object.keys(rows[0]?.metrics ?? {}).map(key => [key, mean(rows.map(row => row.rerank), key)])), rerankOutcomes: countOutcomes(rows.map(row => row.rerank.outcome)) } : {}),
       productionTop5Mismatches: rows.filter(row => !row.productionTop5MatchesCandidateHead).map(row => row.id),
       queries: rows,
     }
     await writeReceipt(outPath, receipt)
-    console.log(JSON.stringify({ group: groupName, summary: receipt.summary, productionTop5Mismatches: receipt.productionTop5Mismatches }, null, 2))
+    console.log(JSON.stringify({ group: groupName, summary: receipt.summary, rerankOutcomes: receipt.rerankOutcomes, productionTop5Mismatches: receipt.productionTop5Mismatches }, null, 2))
   } finally {
-    production?.closeConnection(projectPath)
-    await rm(workDir, { recursive: true, force: true, maxRetries: 5 })
+    try {
+      production?.closeConnection(projectPath)
+    } finally {
+      await rm(workDir, { recursive: true, force: true, maxRetries: 5 })
+    }
   }
 }
 
@@ -290,22 +313,21 @@ async function writeReceipt(outPath, value) {
   await writeFile(outPath, text, "utf8")
 }
 
-/** 全文组平分段的顺序会因块 id 随机而变，需单独标出。 */
+/** 跨运行比较。全文组平分段的顺序会因块 id 随机而变，需单独标出；比较重排请用 run --rerank。 */
 async function compare(basePath, otherPath, outPath) {
   const [base, other] = await Promise.all([basePath, otherPath].map(async file => JSON.parse(await readFile(file, "utf8"))))
   if (JSON.stringify(base.fixture.sha256) !== JSON.stringify(other.fixture.sha256)) fail("两份收据的夹具哈希不同")
   const otherById = new Map(other.queries.map(row => [row.id, row]))
   const perQuery = base.queries.map(row => {
     const peer = otherById.get(row.id) ?? fail(`对照收据缺查询 ${row.id}`)
-    const delta = peer.metrics["nDCG@5"] - row.metrics["nDCG@5"]
     const sameCandidateSet = JSON.stringify([...row.candidates.map(item => item.paragraphSha256)].sort()) === JSON.stringify([...peer.candidates.map(item => item.paragraphSha256)].sort())
     const orderDiffs = row.candidates.map((item, index) => ({ index, base: item, other: peer.candidates[index] }))
       .filter(({ base: left, other: right }) => left.paragraphSha256 !== right?.paragraphSha256)
       .map(({ index, base: left, other: right }) => ({ position: index + 1, withinEqualRank: Boolean(right) && left.ftsRank === right.ftsRank && left.score === right.score }))
     return {
       id: row.id,
-      outcome: Math.abs(delta) < 1e-9 ? "tie" : delta > 0 ? "win" : "loss",
-      nDCG5Delta: delta,
+      outcome: outcomeOf(row.metrics, peer.metrics),
+      nDCG5Delta: peer.metrics["nDCG@5"] - row.metrics["nDCG@5"],
       recall40Delta: peer.metrics["Recall@40"] - row.metrics["Recall@40"],
       metricsIdentical: JSON.stringify(row.metrics) === JSON.stringify(peer.metrics),
       sameCandidateSet,
@@ -318,7 +340,7 @@ async function compare(basePath, otherPath, outPath) {
     kind: "knowledge-rerank-compare",
     base: { file: path.basename(basePath), group: base.group, summary: base.summary },
     other: { file: path.basename(otherPath), group: other.group, summary: other.summary },
-    outcomes: { win: perQuery.filter(row => row.outcome === "win").length, tie: perQuery.filter(row => row.outcome === "tie").length, loss: perQuery.filter(row => row.outcome === "loss").length },
+    outcomes: countOutcomes(perQuery.map(row => row.outcome)),
     identical: perQuery.every(row => row.metricsIdentical && row.sameCandidateSet && row.sameFinalOrder && row.orderDiffs.length === 0),
     onlyEqualRankReorders: perQuery.every(row => row.metricsIdentical && row.sameCandidateSet && row.orderDiffs.every(diff => diff.withinEqualRank)),
     perQuery,
@@ -329,11 +351,11 @@ async function compare(basePath, otherPath, outPath) {
 
 const { command, options } = parseArgs(process.argv.slice(2))
 if (command === "run") {
-  if (!options.group || !options.out) fail("用法：run --group <fts|vector> --out <收据.json>")
-  await runGroup(options.group, path.resolve(options.out))
+  if (!options.group || !options.out) fail("用法：run --group <fts|vector> [--rerank <名字>] --out <收据.json>")
+  await runGroup(options.group, options.rerank, path.resolve(options.out))
 } else if (command === "compare") {
   if (options.positional.length !== 2 || !options.out) fail("用法：compare <基准.json> <对照.json> --out <比较.json>")
   await compare(path.resolve(options.positional[0]), path.resolve(options.positional[1]), path.resolve(options.out))
 } else {
-  fail("用法：run --group <fts|vector> --out <收据.json> | compare <基准.json> <对照.json> --out <比较.json>")
+  fail("用法：run --group <fts|vector> [--rerank <名字>] --out <收据.json> | compare <基准.json> <对照.json> --out <比较.json>")
 }
