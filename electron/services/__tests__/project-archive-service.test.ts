@@ -17,17 +17,26 @@ import { buildReviewGenerationReport } from '../../../src/shared/review-generati
 import type { ReviewCycleRecheckContext } from '../../../src/shared/review-cycle'
 import type { GenerationTransportDiagnostics } from '../../../src/shared/generation-contract'
 import { extractPortableProjectArchive } from '../portable-project-archive'
+import { getPortableFieldPolicy, listPortableFieldPolicyKeys } from '../portable-project-format'
+import { logicalTableName } from '../../migrations/m07-chapter-recycle'
 import { restorePortableProject } from '../project-restore-service'
 import { readPortableRuntimeFreeze } from '../portable-runtime-freeze'
 import { ReviewRevisionGeneration } from '../review-revision-generation'
 import { GenerationRunRepository } from '../../repositories/generation-run-repository'
 import {
   exportPortableProject,
+  PORTABLE_CLEARED_TABLES,
+  portableRedactionFor,
   type ExportPortableProjectInput,
   type PortableAssetSnapshot,
   type PortableProvidedFile,
 } from '../project-archive-service'
-import { createProjectArchiveRoundtripFixture } from '../../../test/desktop/project-archive.fixture'
+import {
+  AUTHOR_IMPORT_EFFECTS,
+  AUTHOR_IMPORT_RUN_ID,
+  createProjectArchiveRoundtripFixture,
+  insertAuthorImportReceipts,
+} from '../../../test/desktop/project-archive.fixture'
 import { WINDOWS_RUNNER_IO_STALL_TIMEOUT_MS } from '../../../test/helpers/windows-runner-io-stall'
 
 const require = createRequire(import.meta.url)
@@ -571,6 +580,77 @@ describe('portable project export service', { timeout: 20_000 }, () => {
     } finally { f.dispose() }
   })
 
+  it('exports and restores an author import that left several effect receipts (#607)', { timeout: WINDOWS_RUNNER_IO_STALL_TIMEOUT_MS }, async () => {
+    const f = await createProjectArchiveRoundtripFixture()
+    try {
+      const namespace = `import:author-manuscript:${AUTHOR_IMPORT_RUN_ID}`
+      const expected = AUTHOR_IMPORT_EFFECTS.map(effect => ({ stage: effect.stage, batch: effect.batchId, namespace, key: effect.effectKey }))
+        .sort((left, right) => `${left.stage}:${left.batch}`.localeCompare(`${right.stage}:${right.batch}`))
+      const sourceBefore = fs.readFileSync(f.sourceDatabasePath)
+      await f.exportAndRestore()
+      expect(fs.readFileSync(f.sourceDatabasePath)).toEqual(sourceBefore)
+
+      const restored = new Database(f.targetDatabasePath, { readonly: true })
+      try {
+        const ledger = (table: string) => restored.prepare(`SELECT stage,batch_id AS batch,effect_namespace AS namespace,
+          effect_key AS key FROM ${table} WHERE run_id=? ORDER BY stage,batch_id`).all(AUTHOR_IMPORT_RUN_ID)
+        expect(ledger('import_run_receipts')).toEqual(expected)
+        expect(ledger('import_effect_ledger')).toEqual(expected)
+        expect(restored.prepare('SELECT effect_namespace,status FROM import_runs WHERE id=?').get(AUTHOR_IMPORT_RUN_ID))
+          .toEqual({ effect_namespace: namespace, status: 'completed' })
+      } finally { restored.close() }
+      const frozen = readPortableRuntimeFreeze(f.targetRoot)
+      expect(() => frozen.assertMutable('import_runs', AUTHOR_IMPORT_RUN_ID)).toThrow('PORTABLE_RUNTIME_FROZEN')
+    } finally { f.dispose() }
+  })
+
+  it('leaves the source database untouched whether or not the import receipts project', async () => {
+    const f = await createProjectArchiveRoundtripFixture()
+    try {
+      const sourceBefore = fs.readFileSync(f.sourceDatabasePath)
+      await Promise.allSettled([f.exportArchive()])
+      expect(fs.readFileSync(f.sourceDatabasePath)).toEqual(sourceBefore)
+    } finally { f.dispose() }
+  })
+
+  it('re-exports a copy restored from an older archive whose import identifiers were already blanked', async () => {
+    const f = fixture()
+    seedProject(f)
+    const db = new Database(f.databasePath)
+    db.pragma('foreign_keys = ON')
+    try {
+      insertAuthorImportReceipts(db)
+      db.prepare("UPDATE import_runs SET effect_namespace=''").run()
+      db.prepare("UPDATE import_run_receipts SET effect_namespace='',effect_key='' WHERE stage='global'").run()
+    } finally { db.close() }
+    await exportPortableProject(input(f))
+    const unpacked = await extract(f)
+    const portable = new Database(path.join(unpacked.stagingPath, 'project.db'), { readonly: true })
+    try {
+      expect(portable.prepare('SELECT effect_namespace AS namespace,effect_key AS key FROM import_run_receipts ORDER BY stage').all())
+        .toEqual([
+          { namespace: `import:author-manuscript:${AUTHOR_IMPORT_RUN_ID}`, key: AUTHOR_IMPORT_EFFECTS[1].effectKey },
+          { namespace: '', key: '' },
+        ])
+      expect(portable.prepare('SELECT DISTINCT effect_namespace FROM import_runs').pluck().all()).toEqual([''])
+    } finally { portable.close() }
+  })
+
+  it('refuses an import effect key that is not a domain-safe identifier, with a readable code and no archive', async () => {
+    const f = fixture()
+    seedProject(f)
+    const db = new Database(f.databasePath)
+    db.pragma('foreign_keys = ON')
+    try {
+      insertAuthorImportReceipts(db)
+      db.prepare("UPDATE import_run_receipts SET effect_key='C:\\Users\\writer\\原稿.txt' WHERE stage='global'").run()
+    } finally { db.close() }
+    const before = fs.readFileSync(f.databasePath)
+    await expect(exportPortableProject(input(f))).rejects.toMatchObject({ code: 'PORTABLE_UNSAFE_PROJECTION' })
+    expect(fs.existsSync(f.target)).toBe(false)
+    expect(fs.readFileSync(f.databasePath)).toEqual(before)
+  })
+
   it('keeps SQLite sidecar paths below the Windows limit under a long cloud staging parent', async () => {
     const f = fixture()
     const legacySuffix = path.join('.portable-export-attempt-123456', 'source-final-verification.db-wal')
@@ -887,5 +967,38 @@ describe('portable project export service', { timeout: 20_000 }, () => {
     await expect(exportPortableProject(input(f, provider(), {
       targetArchivePath: path.join(f.root, 'forbidden.ainovel'),
     }))).rejects.toThrow('PORTABLE_TARGET_INSIDE_SOURCE')
+  })
+})
+
+describe('portable redaction registry', () => {
+  it('classifies every redacted-projection field and never collapses a field that a unique key distinguishes', () => {
+    const split = (key: string) => key.split('.') as [string, string]
+    const redacted = listPortableFieldPolicyKeys().filter(key => getPortableFieldPolicy(...split(key)).disposition === 'redacted-projection')
+    expect(redacted.filter(key => !portableRedactionFor(...split(key)))).toEqual([])
+
+    const f = fixture()
+    const db = new Database(f.databasePath, { readonly: true })
+    const collapsed: string[] = []
+    try {
+      const tables = db.prepare("SELECT name FROM pragma_table_list WHERE schema='main' AND type='table' AND name NOT LIKE 'sqlite_%'")
+        .pluck().all() as string[]
+      for (const physical of tables) {
+        const table = logicalTableName(physical)
+        if (PORTABLE_CLEARED_TABLES.includes(table)) continue
+        const keyed = new Set((db.prepare(`PRAGMA table_info("${physical}")`).all() as Array<{ name: string; pk: number }>)
+          .filter(column => column.pk > 0).map(column => column.name))
+        for (const index of db.prepare(`PRAGMA index_list("${physical}")`).all() as Array<{ name: string; unique: number }>) {
+          if (!index.unique) continue
+          for (const column of db.prepare(`PRAGMA index_info("${index.name}")`).all() as Array<{ name: string }>) keyed.add(column.name)
+        }
+        for (const field of keyed) {
+          const { disposition } = getPortableFieldPolicy(table, field)
+          const redaction = disposition === 'exclude-machine-authority' ? 'blank'
+            : disposition === 'redacted-projection' ? portableRedactionFor(table, field) : 'kept'
+          if (redaction === 'blank' || redaction === 'json-neutral') collapsed.push(`${table}.${field}`)
+        }
+      }
+    } finally { db.close() }
+    expect(collapsed.sort()).toEqual([])
   })
 })
