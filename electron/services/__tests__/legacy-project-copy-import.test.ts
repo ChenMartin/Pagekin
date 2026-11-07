@@ -773,6 +773,31 @@ it.each(['sqlite-converted', 'renamed'] as const)('%s 子进程终止后源保�
   expect(sourceState(f)).toEqual(before)
 })
 
+it('旧项目做过原稿导入、留下多条效果收据时，副本导入成功并保留每条收据的命名空间与效果键（#607）', async () => {
+  const f = fixture('v110', ''), db = new Database(path.join(f.legacy, 'vela.db'))
+  const effects = [['global', 'done', 'global-facts', 'project-global-facts'],
+    ['style', 'done', 'writing-style', 'project-writing-style']] as const
+  try {
+    db.prepare(`INSERT INTO import_runs(id,purpose,root_run_id,effect_namespace,source_fingerprint,manifest_fingerprint,
+      locale,stage,status,total_chapters,manifest_chapter_count,resumable)
+      VALUES('old-author','author-manuscript','old-author','import:author-manuscript:old-author',?,?,'zh-CN','completed','completed',1,1,0)`)
+      .run(createHash('sha256').update('source').digest('hex'), createHash('sha256').update('manifest').digest('hex'))
+    for (const [stage, batch, key, kind] of effects) {
+      db.prepare(`INSERT INTO import_run_receipts(run_id,effect_namespace,effect_key,stage,batch_id,kind,payload_json,payload_hash,state,effect_receipt_json)
+        VALUES('old-author','import:author-manuscript:old-author',?,?,?,?,'{}',?,'committed','{}')`)
+        .run(key, stage, batch, kind, createHash('sha256').update('{}').digest('hex'))
+    }
+  } finally { db.close() }
+  const result = await importLegacyProjectCopy({ sourceRoot: f.source, targetRoot: f.target, preflightOptions })
+  expect(result).toMatchObject({ state: 'ready' })
+  const copy = new Database(path.join(f.target, '.ai-novel', 'project.db'), { readonly: true })
+  try {
+    expect(copy.prepare('SELECT effect_namespace,effect_key FROM import_run_receipts ORDER BY stage').all()).toEqual(effects.map(([, , key]) => ({
+      effect_namespace: 'import:author-manuscript:old-author', effect_key: key })))
+  } finally { copy.close() }
+  expect(readPortableRuntimeFreeze(f.target).isFrozen('import_runs', 'old-author')).toBe(true)
+})
+
 it('旧候选正文保留为可读冻结历史，新项目不重放', async () => {
   const f = fixture('v110', ''), db = new Database(path.join(f.legacy, 'vela.db'))
   const candidateSource = JSON.stringify({ chapterNumber: 7, title: '第七章', role: '推进', purpose: '追踪', keyEvents: '线索', characters: [] })
