@@ -48,7 +48,7 @@ import {
 } from '../../generation/generation-harness'
 import type { WritingLanguage } from '../../../shared/writing-language'
 import type { FinalizedContinuityProjection } from '../../../shared/finalized-continuity'
-import type { NarrativeThreadView } from '../../../shared/narrative-thread'
+import { narrativeThreadSchedule, type NarrativeThreadView } from '../../../shared/narrative-thread'
 import { promptLanguageText } from '../../prompt-language'
 import { countDraftUnits, draftTargetUnitRange } from '../../../shared/draft-units'
 import type { RecoveryChapterSource } from '../../../shared/recovery-candidate'
@@ -728,7 +728,6 @@ export class GenerateDraftCommand extends BaseWorkflowCommand {
       ))
 
     let finalizedSources: FinalizedMaterialSource[] = []
-    let activeThreadContext = ''
     if (!isFirstChapter) {
       const finalized = await this.readFinalizedMaterials(
         expectedProjectPath,
@@ -741,16 +740,6 @@ export class GenerateDraftCommand extends BaseWorkflowCommand {
         `  已定位定稿连续性原文（${finalized.locatedFactCandidates} 条候选）`,
         `  Located finalized continuity excerpts (${finalized.locatedFactCandidates} ${pluralEn(finalized.locatedFactCandidates, 'candidate')})`,
       ))
-      const activeThreads = await this.readActiveNarrativeThreads(
-        expectedProjectPath,
-        projectSession,
-        writingLanguage,
-      )
-      callbacks.log(uiText(
-        `  已加载相关活跃叙事线索（${activeThreads.count} 条）`,
-        `  Loaded relevant active narrative threads (${activeThreads.count})`,
-      ))
-      activeThreadContext = activeThreads.text
       promptBuilder
         // Old summaries, currentState and previous-ending slots stay empty. One
         // source-labelled material package is appended below.
@@ -758,6 +747,11 @@ export class GenerateDraftCommand extends BaseWorkflowCommand {
         .withPreviousEnding('')
         .withShortSummary('')
     }
+    const activeThreads = await this.readActiveNarrativeThreads(
+      expectedProjectPath,
+      projectSession,
+      writingLanguage,
+    )
 
     if (defaultMain && earlyRecovery?.selectedDraftIds.length && !earlyRecovery.selectedDrafts)
       throw new Error('GENERATION_DRAFT_SOURCE_CHANGED')
@@ -794,7 +788,7 @@ export class GenerateDraftCommand extends BaseWorkflowCommand {
         characterProfiles,
         futurePlans: futureBlueprintsStr,
         references: [
-          ...(activeThreadContext ? [{ text: activeThreadContext, rendered: activeThreadContext }] : []),
+          ...(activeThreads.text ? [{ text: activeThreads.text, rendered: activeThreads.text }] : []),
           ...knowledgeReferences,
         ],
         finalized: finalizedSources,
@@ -828,6 +822,20 @@ export class GenerateDraftCommand extends BaseWorkflowCommand {
     if (selectedCandidateDrafts.length === 0 && requiredFinalizedSource
       && !chapterMaterials.selection.included.some(material => material.ref.sourceId === `finalized:${requiredFinalizedSource.draftId}`)) {
       throw new Error('GENERATION_DRAFT_REQUIRED_PREDECESSOR_NOT_ADMITTED')
+    }
+    if (activeThreads.count > 0) {
+      const leftOut = activeThreads.leftOut > 0
+        ? uiText(`；另有 ${activeThreads.leftOut} 条超出上限，本次未纳入`, `; ${activeThreads.leftOut} more did not fit the limit`)
+        : ''
+      callbacks.log(chapterMaterials.selection.included.some(material => material.text === activeThreads.text)
+        ? uiText(
+            `  已加载相关活跃叙事线索（${activeThreads.count} 条${leftOut}）`,
+            `  Loaded relevant active narrative threads (${activeThreads.count}${leftOut})`,
+          )
+        : uiText(
+            `  相关活跃叙事线索（${activeThreads.count} 条）被可选材料预算省掉，本次未进入提示`,
+            `  Relevant active narrative threads (${activeThreads.count}) were left out by the optional material budget`,
+          ))
     }
     if (chapterMaterials.omissions.length > 0) {
       callbacks.log(uiText(
@@ -2008,7 +2016,7 @@ ${params.candidate.text}`,
     projectPath: string,
     projectSession: ProjectSessionContext,
     writingLanguage: WritingLanguage,
-  ): Promise<{ text: string; count: number }> {
+  ): Promise<{ text: string; count: number; leftOut: number }> {
     let threads: NarrativeThreadView[] = []
     try {
       threads = await ipc.invokeWithProjectSession(
@@ -2023,7 +2031,7 @@ ${params.candidate.text}`,
         projectPath,
       )
     } catch {
-      return { text: '', count: 0 }
+      return { text: '', count: 0, leftOut: 0 }
     }
 
     const header = promptLanguageText(
@@ -2035,20 +2043,26 @@ ${params.candidate.text}`,
     let usedChars = header.length + 1
     for (const thread of threads.slice(0, ACTIVE_THREAD_CONTEXT_MAX_ITEMS)) {
       const source = thread.events.at(-1)
+      const schedule = narrativeThreadSchedule(thread, this.chapterInfo.chapterNumber)
+      const mark = schedule?.kind === 'overdue'
+        ? promptLanguageText(writingLanguage, `已逾期 ${schedule.chaptersOverdue} 章；`, `overdue by ${schedule.chaptersOverdue} ${pluralEn(schedule.chaptersOverdue, 'chapter')}; `)
+        : schedule?.kind === 'due' ? promptLanguageText(writingLanguage, '本章到期；', 'due this chapter; ') : ''
       const line = promptLanguageText(
         writingLanguage,
-        `- ${thread.title} [${thread.status}]（目标第${thread.targetStartChapter}–${thread.targetEndChapter}章；作者意图：${thread.authorIntent}${source ? `；来源第${source.chapterNumber}章：${source.evidence}` : ''}）`,
-        `- ${thread.title} [${thread.status}] (target Chapters ${thread.targetStartChapter}–${thread.targetEndChapter}; author intent: ${thread.authorIntent}${source ? `; source Chapter ${source.chapterNumber}: ${source.evidence}` : ''})`,
+        `- ${thread.title} [${thread.status}]（${mark}目标第${thread.targetStartChapter}–${thread.targetEndChapter}章；作者意图：${thread.authorIntent}${source ? `；来源第${source.chapterNumber}章：${source.evidence}` : ''}）`,
+        `- ${thread.title} [${thread.status}] (${mark}target Chapters ${thread.targetStartChapter}–${thread.targetEndChapter}; author intent: ${thread.authorIntent}${source ? `; source Chapter ${source.chapterNumber}: ${source.evidence}` : ''})`,
       )
       const nextLength = line.length + (lines.length > 0 ? 1 : 0)
       if (usedChars + nextLength > ACTIVE_THREAD_CONTEXT_MAX_CHARS) break
       lines.push(line)
       usedChars += nextLength
     }
-    if (lines.length === 0) return { text: '', count: 0 }
+    const leftOut = threads.length - lines.length
+    if (lines.length === 0) return { text: '', count: 0, leftOut }
     return {
       text: `${header}\n${lines.join('\n')}`,
       count: lines.length,
+      leftOut,
     }
   }
 }
