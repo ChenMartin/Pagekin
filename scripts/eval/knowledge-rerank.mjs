@@ -325,13 +325,21 @@ async function writeReceipt(outPath, value) {
 /** 全文组平分段的顺序会因块 id 随机而变，需单独标出。 */
 async function compare(basePath, otherPath, outPath) {
   const [base, other] = await Promise.all([basePath, otherPath].map(async file => JSON.parse(await readFile(file, "utf8"))))
-  for (const [file, receipt] of [[basePath, base], [otherPath, other]]) {
-    if (receipt.kind !== "knowledge-rerank-eval" || receipt.schemaVersion !== 1) fail(`${path.basename(file)} 不是评估收据`)
-  }
+  const [baseIds, otherIds] = [[basePath, base], [otherPath, other]].map(([file, receipt]) => {
+    const name = path.basename(file)
+    if (receipt.kind !== "knowledge-rerank-eval" || receipt.schemaVersion !== 1) fail(`${name} 不是评估收据`)
+    const { queries } = receipt
+    if (!Array.isArray(queries) || queries.length === 0 || queries.length !== receipt.fixture.queries) fail(`${name} 的 queries 为空或条数与 fixture.queries 不符`)
+    const ids = new Set(queries.map(row => row?.id ?? fail(`${name} 有缺 id 的查询行`)))
+    if (ids.size !== queries.length) fail(`${name} 有重复的查询 id`)
+    return ids
+  })
   if (JSON.stringify(base.fixture.sha256) !== JSON.stringify(other.fixture.sha256)) fail("两份收据的夹具哈希不同")
+  const unmatched = [...baseIds].filter(id => !otherIds.has(id)).concat([...otherIds].filter(id => !baseIds.has(id)))
+  if (unmatched.length > 0) fail(`${path.basename(basePath)} 与 ${path.basename(otherPath)} 的查询 id 不同：${unmatched.join(", ")}`)
   const otherById = new Map(other.queries.map(row => [row.id, row]))
   const perQuery = base.queries.map(row => {
-    const peer = otherById.get(row.id) ?? fail(`对照收据缺查询 ${row.id}`)
+    const peer = otherById.get(row.id)
     const sameCandidateSet = JSON.stringify([...row.candidates.map(item => item.paragraphSha256)].sort()) === JSON.stringify([...peer.candidates.map(item => item.paragraphSha256)].sort())
     const orderDiffs = row.candidates.map((item, index) => ({ index, base: item, other: peer.candidates[index] }))
       .filter(({ base: left, other: right }) => left.paragraphSha256 !== right?.paragraphSha256)
