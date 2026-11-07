@@ -785,11 +785,8 @@ export class GenerateDraftCommand extends BaseWorkflowCommand {
         .withPreviousEnding('')
         .withShortSummary('')
     }
-    // 恢复时冻结任务只按合同里的冻结值发，不再带上它们开写后改过的计划。
-    const frozenPlanIds = new Set(threadTaskSelection.tasks.map(task => task.planId))
-    const blockThreads = threadsAtStart !== undefined ? threadsAtStart ?? []
-      : (await this.listRelevantNarrativeThreads(expectedProjectPath, projectSession) ?? []).filter(thread => !frozenPlanIds.has(thread.id))
-    const activeThreads = this.activeNarrativeThreadBlock(blockThreads, writingLanguage)
+    const activeThreads = this.activeNarrativeThreadBlock(threadsAtStart !== undefined ? threadsAtStart ?? []
+      : await this.listRelevantNarrativeThreads(expectedProjectPath, projectSession) ?? [], writingLanguage)
 
     if (defaultMain && earlyRecovery?.selectedDraftIds.length && !earlyRecovery.selectedDrafts)
       throw new Error('GENERATION_DRAFT_SOURCE_CHANGED')
