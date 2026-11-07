@@ -330,7 +330,7 @@ async function compare(basePath, otherPath, outPath) {
     if (receipt.kind !== "knowledge-rerank-eval" || receipt.schemaVersion !== 1) fail(`${name} 不是评估收据`)
     const { queries } = receipt
     if (!Array.isArray(queries) || queries.length === 0 || queries.length !== receipt.fixture.queries) fail(`${name} 的 queries 为空或条数与 fixture.queries 不符`)
-    const ids = new Set(queries.map(row => row?.id ?? fail(`${name} 有缺 id 的查询行`)))
+    const ids = new Set(queries.map(row => (typeof row?.id === "string" && row.id.trim() ? row.id : fail(`${name} 有缺失或无效的查询 id`))))
     if (ids.size !== queries.length) fail(`${name} 有重复的查询 id`)
     return ids
   })
