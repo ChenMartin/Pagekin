@@ -1,7 +1,8 @@
 import type Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
-import type { BeginGenerationRequest, ExecuteGenerationRequest, BeginGenerationBatchRequest, GenerationDraftCommitRequest, GenerationRecoveryContext, MaterialDecisionReceipt, VisibleCompositionAlgorithm, GenerationOwnerChannels, GenerationRecoveryList, ShortOutlineRetry, PlanningContinuation } from '../../src/shared/generation-owner-contract'
+import type { BeginGenerationRequest, ExecuteGenerationRequest, BeginGenerationBatchRequest, GenerationDraftCommitRequest, GenerationRecoveryContext, MaterialDecisionReceipt, VisibleCompositionAlgorithm, GenerationOwnerChannels, GenerationRecoveryList, ShortOutlineRetry, PlanningContinuation, PlanningDraftStanding } from '../../src/shared/generation-owner-contract'
+import { planningRecoverable } from '../../src/shared/planning-recovery'
 import { isDraftVisibleTextVersion } from '../../src/shared/draft-visible-text'
 import { generationOutputContract, type GenerationAuthorInput } from '../../src/shared/generation-owner-contract'
 import type { MainGenerationExecuteReceipt, MainGenerationRunHandle, MainGenerationRunSummary, MainGenerationRunView, MainGenerationSnapshot } from '../../src/services/generation/generation-runtime'
@@ -24,7 +25,7 @@ import { decodeBlueprintAuthorPayload } from '../../src/shared/blueprint-semanti
 import { GenerationDraftEffects, assertGenerationBatchIntent } from './generation-draft-effects'
 import { CharacterProposalService } from './character-proposal-service'
 import { proveCharacterProposal } from './generation-character-proposal-proof'
-import { compareGenerationSourceBindings, recordedModelName } from './generation-source-binding'
+import { compareGenerationSourceBindings, planningBlueprintSourceHash, recordedModelName } from './generation-source-binding'
 import type { GenerationKnowledgeSnapshot } from '../../src/shared/generation-knowledge'
 import type { PrepareDraftContextRequest, PreparedDraftContext } from '../../src/shared/generation-owner-contract'
 import { FinalizedCharacterGeneration } from './finalized-character-generation'
@@ -54,7 +55,7 @@ import { readPortableRuntimeFreeze } from './portable-runtime-freeze'
 import { readLegacyRosterSource, adoptLegacyCards } from './legacy-roster-source'
 import { buildLegacyRosterJsonRepairTask, buildLegacyRosterReplacementTask, parseLegacyRosterJson } from '../../src/shared/legacy-roster-generation-pure'
 import { validateGraphGenerationInput, readGraphGenerationContext } from './graph-generation-source'
-import { planningTargetInstruction, parsePlanningTargetUnits, renderPlotOutlineRange, plotOutlineRecoveryDraft, plotOutlineSourceInvalid, validPlotOutlineAuthorPrefix, type PlotOutlineSource, type PlotOutlineProgress, type PlotOutlineRecovery, type PlotOutlineAuthorEditReceipt } from '../../src/shared/plot-outline-contract'
+import { planningTargetInstruction, parsePlanningTargetUnits, plotOutlineChapterEntry, renderPlotOutlineRange, plotOutlineRecoveryDraft, plotOutlineSourceInvalid, validPlotOutlineAuthorPrefix, type PlotOutlineSource, type PlotOutlineProgress, type PlotOutlineRecovery, type PlotOutlineAuthorEditReceipt } from '../../src/shared/plot-outline-contract'
 import { ProjectCoreRepository, type ProjectCoreSynopsisExpected, type ProjectCoreSynopsisCommitRequest } from '../repositories/project-core-repository'
 // 尝试 id 都由 randomUUID 生成；recoverFrom 还拼进 nonce，只收 UUID，免得拼出别的尝试的 nonce。
 const ATTEMPT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu
@@ -809,6 +810,47 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
     if (outline && !saved && (outline.composition?.chapters?.length || outline.cursor.kind === 'accept')) return { ...base, state: 'save-prefix' }
     return { ...base, state: 'ready' }
   }
+  const planningRunInFlight = (runId: string) => [...pending.keys()].some(key => (JSON.parse(key) as [string])[0] === runId) || !!deps.database.prepare(
+    "SELECT 1 FROM generation_attempts WHERE run_id=? AND json_extract(attempt_json,'$.status') IN ('reserved','dispatch-marked') LIMIT 1").get(runId)
+  /**
+   * 还缺的每一章后来都有了正式内容（与开跑时冻结的那一章不同）才算过时；本批已写完的（还缺为空）也算。
+   * 只补了一部分、或重新生成已有章节没成功，正式内容与冻结时一样，照旧给作者。
+   */
+  const planningSuperseded = (run: DurableGenerationRun, outline: PlotOutlineProgress | null, remaining: PlanningContinuation['remainingRange']): boolean => {
+    if (!remaining) return true
+    const chapters = Array.from({ length: remaining.to - remaining.from + 1 }, (_, index) => remaining.from + index)
+    if (outline) {
+      const synopsis = ProjectCoreRepository.get(deps.database)?.synopsis ?? ''
+      return chapters.every(chapter => {
+        const now = plotOutlineChapterEntry(synopsis, chapter)
+        return now !== null && now !== plotOutlineChapterEntry(outline.sourceExpected.synopsis, chapter)
+      })
+    }
+    return chapters.every(chapter => {
+      const now = planningBlueprintSourceHash(deps.database, chapter)
+      return now.present && now.contentHash !== run.binding.sourceRefs.find(ref => ref.sourceId === `blueprint:${chapter}`)?.contentHash
+    })
+  }
+  const planningDraft = (run: DurableGenerationRun, outline: PlotOutlineProgress | null, continuation: PlanningContinuation | undefined): PlanningDraftStanding | undefined => {
+    const inputs = run.binding.sourceManifest.authorInputs as GenerationAuthorInput[] | undefined
+    const directory = run.binding.sourceManifest.operation === 'chapter-blueprint-directory'
+      ? inputs?.find(input => input.id === 'directory:requested-range') : undefined
+    const scope = directory ? JSON.parse(directory.text) as { startChapter: number; endChapter: number } : undefined
+    const requestedRange = outline ? { from: outline.range.from, to: outline.range.to } : scope ? { from: scope.startChapter, to: scope.endChapter } : null
+    if (!requestedRange) return undefined
+    const base = { requestedRange, createdAtMs: repository.createdAtMs(run.runId) }
+    if (planningRunInFlight(run.runId)) return { ...base, standing: 'open' }
+    if (repository.planningDismissed(run.runId)) return { ...base, standing: 'dismissed' }
+    if (continuation && planningSuperseded(run, outline, continuation.remainingRange)) return { ...base, standing: 'superseded' }
+    return { ...base, standing: 'open' }
+  }
+  /** 作者放弃一份规划恢复稿：只记在这条运行上，候选原文、尝试与正式内容都不动。正在生成的那份不能放弃。 */
+  const dismissPlanningRecovery = (handle: MainGenerationRunHandle) => {
+    const context = readContext(handle)
+    if (!context.planningDraft) throw new Error('GENERATION_PLANNING_RECOVERY_INVALID')
+    if (planningRunInFlight(handle.runId)) throw new Error('GENERATION_PLANNING_RECOVERY_IN_FLIGHT')
+    if (context.planningDraft.standing !== 'dismissed') repository.recordPlanningDismissal(handle.runId)
+  }
   const plotOutlineRecovery = (run: DurableGenerationRun, outline: PlotOutlineProgress): PlotOutlineRecovery => {
     const saved = repository.readPlotOutlineAuthorEdit(run.runId)
     const cursor = outline.cursor
@@ -911,6 +953,7 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
     const run = requireRun(handle), manifest = run.binding.sourceManifest, composition = repository.isPrivatePlanningHistory(run.runId) ? null : repository.readVisibleComposition(run.runId)
     const plotOutline = repository.readPlotOutline(run.runId)
     const continuation = planningContinuation(run)
+    const draft = planningDraft(run, plotOutline, continuation)
     const blueprint = manifest.operation === 'chapter-blueprint-directory' ? repository.readBlueprintRecovery(run.runId) : null
     const blueprintSaved = blueprint?.kind === 'available' ? blueprint.authorEdit : null
     const draftSave = draftEffects.readRecovery(run.runId)
@@ -930,6 +973,7 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
     return { modelId: modelReceipt(run.binding).modelId, handle: handleOf(run), operation: manifest.operation as string, chapterNumber: manifest.chapterNumber as number | undefined,
       ...(plotOutline ? { plotOutline, plotOutlineRecovery: plotOutlineRecovery(run, plotOutline) } : {}),
       ...(continuation ? { planningContinuation: continuation } : {}),
+      ...(draft ? { planningDraft: draft } : {}),
       ...(blueprint && blueprint.kind !== 'available' ? { blueprintRecovery: {
         sourceHandle: handleOf(run), leaseEpoch: deps.epoch, draft: viewOf(run).candidates?.at(-1)?.text ?? '',
         editRange: null, saved: null, writeState: 'unavailable' as const, diagnostic: blueprint.diagnostic,
@@ -1006,7 +1050,7 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
   /**
    * 运行侧页「可恢复」区的数据。只读操作类型可能恢复的运行；一个运行读不出不挡其余运行，只标 partial。
    * 单章写稿保存过就不再需要恢复，正文后来改没改过都一样；只有这次打开里还留着没落盘的正文时仍列出，那段文字只能从这里复制。
-   * 规划恢复稿只列没写进正式内容的：续写已完成的，或来源变了但本批已原样在正式大纲里的，都不算可恢复。
+   * 规划恢复稿是否列出按 planningRecoverable 判定，与蓝图页横幅、架构页大纲提示同一条。
    */
   const listRecovery = (): GenerationRecoveryList => {
     assertCurrent()
@@ -1018,8 +1062,7 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
     const collect = {
       planning: (handle: MainGenerationRunHandle) => {
         const recovery = readContext(handle)
-        if ((recovery.plotOutlineRecovery || recovery.blueprintRecovery) && recovery.planningContinuation?.state !== 'complete'
-          && !recovery.plotOutlineRecovery?.inFormalOutline) list.planning.push(recovery)
+        if (planningRecoverable(recovery)) list.planning.push(recovery)
       },
       review: (handle: MainGenerationRunHandle) => { list.reviews.push({ view: viewOf(requireRun(handle)), recovery: readReviewRevisionRecovery(handle) }) },
       editor: (handle: MainGenerationRunHandle) => { list.editors.push(readEditorInlineRecovery(handle)) },
@@ -1059,14 +1102,14 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
   }
   /**
    * 蓝图页挂载时要的那份：最新一个还没写完的章节蓝图恢复稿；只读章节蓝图运行，读不出的跳过，不挡更早的恢复稿。
-   * 作者整段保存完的（续写已完成）与运行侧页一样不算。
+   * 判定与运行侧页同一条（planningRecoverable）；作者放弃的或缺的章后来都写好了的，跳过它找更早的。
    */
   const findBlueprintRecovery = (): GenerationRecoveryContext | null => {
     assertCurrent()
     for (const run of runSummaries().filter(item => item.operation === 'chapter-blueprint-directory')) {
       let recovery: GenerationRecoveryContext
       try { recovery = readContext(run.handle) } catch { continue }
-      if (recovery.blueprintRecovery && recovery.blueprintRecovery.writeState !== 'complete' && recovery.planningContinuation?.state !== 'complete') return recovery
+      if (recovery.blueprintRecovery && recovery.blueprintRecovery.writeState !== 'complete' && planningRecoverable(recovery)) return recovery
     }
     return null
   }
@@ -1530,7 +1573,7 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
     prepareReviewRevision: (request: PrepareReviewRevisionRequest) => reviewRevisions.prepare(request),
     commitReview: (request: ReviewGenerationCommitRequest) => reviewRevisions.commitReview(request, assertSourcesCurrent),
     commitRevision: (request: RevisionGenerationCommitRequest) => reviewRevisions.commitRevision(request, assertSourcesCurrent),
-    readReviewRevisionRecovery, listRecovery, findBlueprintRecovery,
+    readReviewRevisionRecovery, listRecovery, findBlueprintRecovery, dismissPlanningRecovery,
     readContext, readBatch, prepareDraftContext, preparedKnowledge, draftPreparationBinding, retryDraftShortOutline,
     beginBatch: (request: BeginGenerationBatchRequest) => {
       assertGenerationBatchIntent(request)

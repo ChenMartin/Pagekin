@@ -300,6 +300,14 @@ function lastEntryChapter(entries: ReturnType<typeof headings>): number {
   return entries.reduce((last, entry) => Math.max(last, entry.to), 0)
 }
 
+/** 大纲里写着第 chapter 章的那一条（去掉末尾应用写的覆盖说明，后续批次追加时它会变）；没有这一章时为 null。 */
+export function plotOutlineChapterEntry(synopsis: string, chapter: number): string | null {
+  const entries = headings(synopsis)
+  const at = entries.findIndex(entry => entry.from <= chapter && chapter <= entry.to)
+  if (at < 0) return null
+  return stripStaleCoverageNotes(synopsis.slice(entries[at].index, entries[at + 1]?.index ?? synopsis.length).trimEnd())
+}
+
 /** 下一批的默认起始章：已有大纲能紧接着往后写时取最后一章的下一章，否则从第 1 章起。 */
 export function plotOutlineNextChapter(source: PlotOutlineRangeSource): number {
   const next = lastEntryChapter(headings(source.synopsis)) + 1

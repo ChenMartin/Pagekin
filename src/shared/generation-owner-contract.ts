@@ -136,8 +136,18 @@ export interface GenerationDraftCommitRequest {
   batchId?: string
 }
 export type ShortOutlineRetry = { kind: 'available'; failedAttemptId: string } | { kind: 'unavailable' }
+/**
+ * 一份情节大纲或章节蓝图恢复稿还算不算可恢复：superseded 是它还缺的章后来都有了正式内容（开跑之后写的），
+ * dismissed 是作者放弃了它。生成还在进行的那份总是 open。
+ */
+export interface PlanningDraftStanding {
+  requestedRange: { from: number; to: number }
+  createdAtMs: number
+  standing: 'open' | 'superseded' | 'dismissed'
+}
 export interface GenerationRecoveryContext {
   planningContinuation?: PlanningContinuation
+  planningDraft?: PlanningDraftStanding
   blueprintRecovery?: BlueprintRecovery
   plotOutlineRecovery?: import('./plot-outline-contract').PlotOutlineRecovery
   plotOutline?: import('./plot-outline-contract').PlotOutlineProgress
@@ -309,6 +319,7 @@ export interface GenerationOwnerChannels {
   'generation:list-batches': { args: []; return: GenerationBatchHistory[] }
   'generation:list-recovery': { args: []; return: GenerationRecoveryList }
   'generation:find-blueprint-recovery': { args: []; return: GenerationRecoveryContext | null }
+  'generation:dismiss-planning-recovery': { args: [{ handle: MainGenerationRunHandle }]; return: void }
   'generation:confirm-batch-finalization': { args: [{ batchId: string; chapterNumber: number; finalizationId: string }]; return: GenerationBatchProgress }
   'generation:list-directory-progress': { args: []; return: DirectoryGenerationCatalog }
   'generation:compose-visible': { args: [MainGenerationRunHandle, string[], string | undefined, VisibleCompositionAlgorithm?]; return: VisibleCompositionReceipt }

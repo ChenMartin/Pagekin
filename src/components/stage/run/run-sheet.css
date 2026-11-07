@@ -96,6 +96,52 @@
   flex: 1 1 100%;
 }
 
+/* 同一范围更早的恢复稿：折叠在卡片底部，展开后是一列带左细线的紧凑条目 */
+.run-earlier > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-12);
+  color: var(--ink-2);
+  cursor: pointer;
+  list-style: none;
+}
+
+.run-earlier > summary::-webkit-details-marker {
+  display: none;
+}
+
+.run-earlier > summary:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.run-earlier > summary svg {
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.run-earlier[open] > summary svg {
+  transform: rotate(90deg);
+}
+
+.run-earlier-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 8px 0 0;
+  padding: 0 0 0 10px;
+  border-left: 2px solid var(--rule);
+  list-style: none;
+}
+
+.run-earlier-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 /* 状态是一行语气色的字，不是胶囊徽标 */
 .run-badge {
   flex: none;

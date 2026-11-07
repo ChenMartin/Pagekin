@@ -153,6 +153,15 @@ function readFile(root: string, relative: string, optional = false): Buffer | nu
     return fs.readFileSync(absolute);
 }
 function without(row: Record<string, unknown>, excluded: readonly string[]): Record<string, unknown> { return Object.fromEntries(Object.entries(row).filter(([key]) => !excluded.includes(key))); }
+function planningBlueprintText(db: Database.Database, chapter: number): { present: boolean; text: string } {
+    const row = db.prepare('SELECT * FROM blueprints WHERE chapter_number=?').get(chapter) as Record<string, unknown> | undefined;
+    return { present: !!row, text: stable(row ? without(row, ['created_at', 'updated_at', 'notes', 'notes_updated_at']) : null) };
+}
+/** 规划范围里一章蓝图此刻的来源哈希，与开跑时冻结的 `blueprint:<章>` 引用同一算法；没有这一章时 present 为 false。 */
+export function planningBlueprintSourceHash(db: Database.Database, chapter: number): { present: boolean; contentHash: string } {
+    const { present, text } = planningBlueprintText(db, chapter);
+    return { present, contentHash: hash(text) };
+}
 function freezeAuthorInputs(value: unknown): GenerationAuthorInput[] {
     if (value === undefined) return [];
     if (!Array.isArray(value) || value.length > 64) fail('GENERATION_AUTHOR_INPUT_INVALID');
@@ -409,9 +418,8 @@ export function buildGenerationSourceBinding(deps: GenerationSourceBindingDepend
         }
         for (const chapter of blueprintChapters) {
             if (chapter === input.chapterNumber) continue;
-            const row = deps.db.prepare('SELECT * FROM blueprints WHERE chapter_number=?').get(chapter) as Record<string, unknown> | undefined;
             // A requested empty slot is evidence too: later creation must invalidate this snapshot.
-            add(`blueprint:${chapter}`, 0, stable(row ? without(row, ['created_at', 'updated_at', 'notes', 'notes_updated_at']) : null),
+            add(`blueprint:${chapter}`, 0, planningBlueprintText(deps.db, chapter).text,
                 'author-constraint', 'explicit planning range; current row or absent slot');
         }
         for (const [ids, finalized] of [[input.selectedDraftIds, false], [input.selectedFinalizedDraftIds, true]] as const)

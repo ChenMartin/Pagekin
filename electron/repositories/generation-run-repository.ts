@@ -124,8 +124,8 @@ export class GenerationRunRepository {
         } | undefined;
         if (!row)
             fail('GENERATION_RUN_MISSING');
-        const { $runEffects, $blueprintRetirement, ...frozen } = JSON.parse(row.binding_json) as RunBinding & { $runEffects?: unknown; $blueprintRetirement?: unknown };
-        void $runEffects; void $blueprintRetirement;
+        const { $runEffects, $blueprintRetirement, $planningDismissal, ...frozen } = JSON.parse(row.binding_json) as RunBinding & { $runEffects?: unknown; $blueprintRetirement?: unknown; $planningDismissal?: unknown };
+        void $runEffects; void $blueprintRetirement; void $planningDismissal;
         return { runId: row.run_id, rootActionId: row.root_action_id, binding: frozen, status: row.status };
     }
     private authorEditedRoot(rootId: string): boolean {
@@ -605,6 +605,17 @@ export class GenerationRunRepository {
             else catalog.diagnostics.push(recovery.diagnostic);
         }
         return catalog;
+    }
+    createdAtMs(runId: string): number {
+        return this.db().prepare('SELECT created_at_ms FROM generation_runs WHERE run_id=?').pluck().get(runId) as number;
+    }
+    planningDismissed(runId: string): boolean {
+        return this.db().prepare(`SELECT json_type(binding_json,'$."$planningDismissal"') FROM generation_runs WHERE run_id=?`).pluck().get(runId) != null;
+    }
+    /** 作者放弃这份规划恢复稿：只在运行上记一笔，冻结的绑定、尝试、候选原文都不动；从别处导入的冻结历史不写。 */
+    recordPlanningDismissal(runId: string): void {
+        if (this.portableFrozenRoot(this.get(runId).rootActionId)) fail('GENERATION_PLANNING_HISTORY_READ_ONLY');
+        this.db().prepare(`UPDATE generation_runs SET binding_json=json_set(binding_json,'$."$planningDismissal"','dismissed') WHERE run_id=?`).run(runId);
     }
     retireBlueprintRecoveryWithinTransaction(): void {
         if (!this.db().inTransaction) fail('GENERATION_DIRECTORY_TRANSACTION_REQUIRED');

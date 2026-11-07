@@ -48,6 +48,8 @@ export interface RunRecovery {
   continueCandidate: (entry: CandidateEntry) => void
   discardCandidate: (entry: CandidateEntry) => void
   openPlanning: (entry: PlanningEntry) => void
+  /** 作者放弃这份规划恢复稿：主进程记下后不再列出，候选原文与正式内容都不动。 */
+  dismissPlanning: (entry: PlanningEntry) => void
   continueEditor: (entry: EditorEntry) => void
   resumeReview: (entry: ReviewEntry) => void
   resumeBatch: (entry: BatchEntry) => void
@@ -230,6 +232,10 @@ export function useRunRecovery(): RunRecovery {
       const fresh = await ipc.invokeWithProjectSession(current, 'generation:read-context', { handle: entry.recovery.handle })
       if (!stillCurrent()) return
       openPlanningRecoveryDraft(fresh, current.projectPath, planningTitle(fresh, useLocaleStore.getState().locale))
+    }),
+    dismissPlanning: entry => void act(async current => {
+      await ipc.invokeWithProjectSession(current, 'generation:dismiss-planning-recovery', { handle: entry.recovery.handle })
+      if (stillCurrent()) setRefreshTick(value => value + 1)
     }),
     continueEditor: entry => void act(async current => {
       const receipt = await ipc.invokeWithProjectSession(current, 'editor-inline:execute', { handle: entry.recovery.view.handle })

@@ -32,6 +32,7 @@ import type { GenerationRecoveryContext } from '../../shared/generation-owner-co
 import type { ArchitectureConfirmFormOptions } from '../dialogs/use-architecture-confirm-form'
 import { openPlanningRecoveryDraft } from '../../stores/editor-store'
 import { outlineSourceChangedBlocked, planningTitle } from '../run/run-recovery'
+import { planningRecoverable } from '../../shared/planning-recovery'
 import { outlineProgress, type OutlineProgress } from '../../shared/plot-outline-checkpoint'
 import type { PlotOutlineRangeSource } from '../../shared/plot-outline-contract'
 import { displayedErrorMessage } from '../../i18n/app-errors'
@@ -156,9 +157,11 @@ export function useArchitectureOverview(projectKey: string) {
           if (kind === 'synopsis') {
             const context = await ipc.invokeWithProjectSession(projectSession, 'generation:read-context', { handle }).catch(() => null)
             if (context?.plotOutlineRecovery) {
-              recoveredPlanning = context
-              recoveredSynopsisCandidate = context.plotOutlineRecovery.draft
-              confirmedSynopsisHandle = handle
+              // 与运行侧页同一条判定：作者放弃的、或缺的章后来都写进正式大纲的，这里也不再给，检查点里的同一份镜像一并不给。
+              const recoverable = planningRecoverable(context)
+              recoveredPlanning = recoverable ? context : null
+              recoveredSynopsisCandidate = recoverable ? context.plotOutlineRecovery.draft : ''
+              confirmedSynopsisHandle = recoverable ? handle : null
               continue
             }
           }
