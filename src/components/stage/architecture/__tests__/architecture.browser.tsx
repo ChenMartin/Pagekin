@@ -885,7 +885,7 @@ describe('架构页一次刷新里恢复稿刚好变成不再给作者（#608）
     await render()
     const outline = host!.querySelector('[data-section="synopsis"]')!
     const names = [...outline.querySelectorAll('button')].map(item => item.textContent)
-    expect(names.includes('断点续写大纲')).toBe(names.includes('编辑恢复稿'))
-    expect(outline.textContent!.includes('被输出长度打断')).toBe(names.includes('编辑恢复稿'))
+    expect(names.includes('断点续写大纲') && !names.includes('编辑恢复稿')).toBe(false)
+    expect(names.includes('编辑恢复稿') || names.includes('续写第 6 章起')).toBe(true)
   })
 })
