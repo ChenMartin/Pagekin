@@ -294,13 +294,21 @@ async function markLegacyCardsReady(f: ReturnType<typeof fixture>, officialV100 
   return meta
 }
 
-it('旧项目复制导入后在当前版本上，角色导入时的状态补了基线节点', async () => {
+it('旧项目复制导入后在当前版本上，角色导入时的状态补了基线节点，豁免一条不丢', async () => {
   const f = fixture('v110', '')
   addLegacyCards(f)
+  const source = new Database(path.join(f.legacy, 'vela.db'))
+  try {
+    source.prepare("INSERT INTO consistency_exemptions(stable_fact_key,reason,revoked) VALUES('death:乙','假死',1),('scar:甲','旧伤',0)").run()
+  } finally { source.close() }
   expect(await importLegacyProjectCopy({ sourceRoot: f.source, targetRoot: f.target, preflightOptions })).toMatchObject({ state: 'ready' })
   const db = new Database(path.join(f.target, '.ai-novel', 'project.db'), { readonly: true })
   try {
     expect(db.pragma('user_version', { simple: true })).toBe(9)
+    expect(db.prepare('SELECT stable_fact_key,chapter_number,reason,revoked FROM consistency_exemptions ORDER BY stable_fact_key').all()).toEqual([
+      { stable_fact_key: 'death:乙', chapter_number: null, reason: '假死', revoked: 1 },
+      { stable_fact_key: 'scar:甲', chapter_number: null, reason: '旧伤', revoked: 0 },
+    ])
     const owner = db.prepare("SELECT character_id FROM characters WHERE name='乙'").pluck().get() as string
     const target = db.prepare("SELECT character_id FROM characters WHERE name='甲'").pluck().get() as string
     const relationship = db.prepare('SELECT relationship_id FROM character_relationships WHERE source_character_id=? AND target_character_id=?')

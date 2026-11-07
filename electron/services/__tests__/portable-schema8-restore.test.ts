@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { closeProjectDatabase, getProjectDb, initProjectDatabase } from '../../database'
 import { CURRENT_DESKTOP_SCHEMA_VERSION } from '../../migrations/desktop-registry'
 import { removeDirectoryWithWindowsRetry } from '../../utils/remove-directory'
+import { ConsistencyExemptionRepository } from '../../repositories/consistency-exemption-repository'
 import { exportPortableProject } from '../project-archive-service'
 import { restorePortableProject } from '../project-restore-service'
 import { continuityBaseline, SCHEMA8_CONTINUITY_ARCHIVE, SCHEMA8_EXPECTED_BASELINE } from '../../../test/helpers/schema8-continuity-archive'
@@ -34,6 +35,21 @@ describe('恢复 M08 之前导出的便携包（schema 8）', { timeout: 60_000 
     expect(db.prepare("SELECT cs_location FROM characters WHERE name='林澈'").pluck().get()).toBe('雨城北门')
     expect(db.prepare('SELECT stable_fact_key,chapter_number FROM consistency_exemptions').all())
       .toEqual([{ stable_fact_key: 'death:老周', chapter_number: null }])
+  })
+
+  it('包里的全局豁免升级后照常保存、撤销，不会多出第二行全局豁免', async () => {
+    const target = path.join(workspace(), '恢复')
+    await restorePortableProject({ archivePath: SCHEMA8_CONTINUITY_ARCHIVE, targetProjectRoot: target })
+    initProjectDatabase(target)
+    const [before] = ConsistencyExemptionRepository.list()
+    ConsistencyExemptionRepository.save('death:老周', '第 9 章确认是假死')
+    ConsistencyExemptionRepository.save('scar:林澈', '旧伤已愈')
+    ConsistencyExemptionRepository.revoke('scar:林澈')
+    expect(ConsistencyExemptionRepository.list()).toEqual([
+      { ...before, reason: '第 9 章确认是假死', revoked: false },
+      { stableFactKey: 'scar:林澈', reason: '旧伤已愈', revoked: true },
+    ])
+    expect(getProjectDb()!.prepare('SELECT COUNT(*) FROM consistency_exemptions').pluck().get()).toBe(2)
   })
 
   it('同一个包对同一目标再恢复一次，认出已装好的项目', async () => {

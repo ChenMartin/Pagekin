@@ -371,6 +371,8 @@ describe('registerCloudBackupController', () => {
     try {
       expect(getProjectDb()!.pragma('user_version', { simple: true })).toBe(CURRENT_DESKTOP_SCHEMA_VERSION)
       expect(continuityBaseline(getProjectDb()!)).toEqual(SCHEMA8_EXPECTED_BASELINE)
+      expect(getProjectDb()!.prepare('SELECT stable_fact_key,chapter_number,reason,revoked FROM consistency_exemptions').all())
+        .toEqual([{ stable_fact_key: 'death:老周', chapter_number: null, reason: '作者安排：老周假死', revoked: 0 }])
     } finally { closeProjectDatabase() }
   })
 

@@ -71,18 +71,18 @@ afterEach(() => {
 })
 
 describe('portable v9 field policy', () => {
-  it('与实际当前registry双向精确匹配54表513字段，放行M07的四个live视图，并包含两个lazy表', () => {
+  it('与实际当前registry双向精确匹配54表514字段，放行M07的四个live视图，并包含两个lazy表', () => {
     const { database } = openCurrent()
     expect(database.pragma('user_version', { simple: true })).toBe(9)
     const tables = database.prepare("SELECT name FROM pragma_table_list WHERE schema='main' AND type='table' AND name NOT LIKE 'sqlite_%'")
       .all() as Array<{ name: string }>
     const fieldCount = tables.reduce((count, table) => count
       + (database.prepare(`PRAGMA table_info("${table.name}")`).all() as unknown[]).length, 0)
-    expect({ tables: tables.length, fields: fieldCount }).toEqual({ tables: 54, fields: 513 })
+    expect({ tables: tables.length, fields: fieldCount }).toEqual({ tables: 54, fields: 514 })
     expect(database.prepare("SELECT name FROM sqlite_master WHERE type='view' ORDER BY name").pluck().all()).toEqual([
       'drafts', 'finalization_outbox', 'narrative_thread_confirmations', 'summary_snapshots',
     ])
-    expect(assertPortableSourceSchema(database)).toEqual({ tables: 54, fields: 513 })
+    expect(assertPortableSourceSchema(database)).toEqual({ tables: 54, fields: 514 })
     for (const field of ['deletion_id', 'deleted_from_status', 'deleted_at']) {
       expect(getPortableFieldPolicy('drafts', field)).toMatchObject({ disposition: 'preserve-domain', origin: 'm07-delta', signedDisposition: null })
     }
@@ -97,9 +97,9 @@ describe('portable v9 field policy', () => {
     const m08Columns = [
       ...['character_continuity_events', 'blueprint_continuity_suggestions', 'narrative_thread_assignments'].flatMap(table =>
         (database.prepare(`SELECT name FROM pragma_table_info('${table}')`).pluck().all() as string[]).map(field => `${table}.${field}`)),
-      'consistency_exemptions.chapter_number', 'consistency_exemptions.created_at',
+      'consistency_exemptions.exemption_id', 'consistency_exemptions.chapter_number', 'consistency_exemptions.created_at',
     ].sort()
-    expect(m08Columns).toHaveLength(29)
+    expect(m08Columns).toHaveLength(30)
     expect(listPortableFieldPolicyKeys().filter(key => getPortableFieldPolicy(
       ...key.split('.') as [string, string]).origin === 'm08-delta')).toEqual(m08Columns)
     for (const key of m08Columns) {
@@ -108,7 +108,7 @@ describe('portable v9 field policy', () => {
     }
   })
 
-  it('把签署S01基线35表356字段逐项投影，并精确增加M01-M05的15表/123字段、M06的1表/2字段、M07的3字段及M08的29字段', () => {
+  it('把签署S01基线35表356字段逐项投影，并精确增加M01-M05的15表/123字段、M06的1表/2字段、M07的3字段及M08的30字段', () => {
     const signed = JSON.parse(fs.readFileSync(path.resolve(
       'docs/research/novel-quality-modernization/s01-storage-contract.json'), 'utf8')) as {
       fieldDispositions: Array<{ table: string; field: string; portableDisposition: string }>
@@ -130,7 +130,7 @@ describe('portable v9 field policy', () => {
     const baseline = new Set(signed.fieldDispositions.map(field => `${field.table}.${field.field}`))
     const baselineTables = new Set(signed.fieldDispositions.map(field => field.table))
     const added = listPortableFieldPolicyKeys().filter(key => !baseline.has(key))
-    expect(added).toHaveLength(158)
+    expect(added).toHaveLength(159)
     expect(getPortableFieldPolicy('characters', 'avatar')).toMatchObject({
       origin: 'registered-donor', disposition: 'exclude-machine-authority', signedDisposition: null,
     })
@@ -206,7 +206,7 @@ describe('portable v9 field policy', () => {
       expect(() => assertPortableSourceSchema(database)).toThrow('PORTABLE_SCHEMA_UNSUPPORTED')
       migrateSchema(new SqliteSchemaAdapter(database), getDesktopMigrationRegistry(), 9)
       expect(() => assertPortableSourceSchema(database, 8)).toThrow('PORTABLE_SCHEMA_UNSUPPORTED')
-      expect(assertPortableSourceSchema(database)).toEqual({ tables: 54, fields: 513 })
+      expect(assertPortableSourceSchema(database)).toEqual({ tables: 54, fields: 514 })
     } finally { database.close() }
   })
 
@@ -222,7 +222,7 @@ describe('portable v9 field policy', () => {
         .all() as Array<{ name: string }>
       const fields = tables.reduce((count, table) => count
         + (database.prepare(`PRAGMA table_info("${table.name}")`).all() as unknown[]).length, 0)
-      expect({ tables: tables.length, fields }).toEqual({ tables: 54, fields: 513 })
+      expect({ tables: tables.length, fields }).toEqual({ tables: 54, fields: 514 })
       expect(() => assertPortableSourceSchema(database)).toThrow('PORTABLE_SCHEMA_UNSUPPORTED')
     } finally { database.close() }
     expect(fs.readFileSync(project.databasePath)).toEqual(before)

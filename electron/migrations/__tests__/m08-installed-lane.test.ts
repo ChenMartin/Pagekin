@@ -92,7 +92,7 @@ describe('installed M08 lane', () => {
       expect(db.prepare('SELECT * FROM characters ORDER BY character_id').all()).toEqual(before.characters)
       expect(db.prepare('SELECT * FROM character_relationships ORDER BY relationship_id').all()).toEqual(before.relationships)
       expect(db.prepare('SELECT * FROM consistency_exemptions').all())
-        .toEqual([{ stable_fact_key: 'death:老周', reason: '假死', revoked: 0, chapter_number: null, created_at: '' }])
+        .toEqual([{ exemption_id: 1, stable_fact_key: 'death:老周', chapter_number: null, reason: '假死', revoked: 0, created_at: '' }])
       expect(db.prepare('SELECT COUNT(*) FROM blueprint_continuity_suggestions').pluck().get()).toBe(0)
       expect(db.prepare('SELECT COUNT(*) FROM narrative_thread_assignments').pluck().get()).toBe(0)
     } finally { db.close() }
@@ -177,6 +177,8 @@ describe('installed M08 lane', () => {
       expect(() => migrateSchema(new SqliteSchemaAdapter(db), broken, 9)).toThrow(error)
       expect(db.pragma('user_version', { simple: true })).toBe(8)
       expect(sqliteSchemaFingerprint(db)).toBe(before)
+      expect(db.prepare('SELECT * FROM consistency_exemptions').all())
+        .toEqual([{ stable_fact_key: 'death:老周', reason: '假死', revoked: 0 }])
       for (const table of ['character_continuity_events', 'blueprint_continuity_suggestions', 'narrative_thread_assignments']) {
         expect(tableExists(db, table), table).toBe(false)
       }
@@ -260,12 +262,22 @@ describe('M08 tables', () => {
     } finally { db.close() }
   })
 
-  it('accepts per-chapter exemptions and rejects chapter 0', () => {
+  it('keeps one exemption per fact and scope, where a fact can be exempted globally and per chapter at once', () => {
     const db = v9()
     try {
-      db.prepare("INSERT INTO consistency_exemptions(stable_fact_key,reason,chapter_number,created_at) VALUES('k','r',7,'2026-11-08')").run()
-      expect(() => db.prepare("INSERT INTO consistency_exemptions(stable_fact_key,reason,chapter_number) VALUES('k0','r',0)").run())
-        .toThrow(/CHECK constraint failed/)
+      const exempt = db.prepare('INSERT INTO consistency_exemptions(stable_fact_key,chapter_number,reason) VALUES(?,?,?)')
+      exempt.run('death:老周', 3, '第 3 章是回忆')
+      exempt.run('death:老周', 5, '第 5 章是梦')
+      expect(() => exempt.run('death:老周', null, '再存一行全局')).toThrow(/UNIQUE constraint failed/)
+      expect(() => exempt.run('death:老周', 3, '同章第二行')).toThrow(/UNIQUE constraint failed/)
+      expect(() => exempt.run('k0', 0, 'r')).toThrow(/CHECK constraint failed/)
+      const stamped = expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
+      expect(db.prepare('SELECT stable_fact_key,chapter_number,reason,created_at FROM consistency_exemptions ORDER BY exemption_id').all())
+        .toEqual([
+          { stable_fact_key: 'death:老周', chapter_number: null, reason: '假死', created_at: '' },
+          { stable_fact_key: 'death:老周', chapter_number: 3, reason: '第 3 章是回忆', created_at: stamped },
+          { stable_fact_key: 'death:老周', chapter_number: 5, reason: '第 5 章是梦', created_at: stamped },
+        ])
     } finally { db.close() }
   })
 })
