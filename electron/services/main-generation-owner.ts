@@ -814,8 +814,8 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
     "SELECT 1 FROM generation_attempts WHERE run_id=? AND json_extract(attempt_json,'$.status') IN ('reserved','dispatch-marked') LIMIT 1").get(runId)
   /**
    * 拿不准就列出：多列的一份作者能自己放弃，误藏的一份作者根本不知道还在。
-   * 蓝图：还缺的每一章都有开跑之后的正式提交、且内容确实变了才算过时；作者手改不写提交记录。提交时间只到秒，同一秒按没有提交算。
-   * 大纲没有提交记录，只能比内容：这一章有了正文且与开跑时不同才算。
+   * 蓝图以提交记录为准，作者手改不留记录，所以不算替代；提交时间只到秒，同一秒按没有提交算。
+   * 大纲没有提交记录，只能比内容。
    */
   const planningSuperseded = (run: DurableGenerationRun, outline: PlotOutlineProgress | null, remaining: PlanningContinuation['remainingRange']): boolean => {
     if (!remaining) return true

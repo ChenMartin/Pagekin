@@ -157,7 +157,6 @@ function planningBlueprintText(db: Database.Database, chapter: number): string {
     const row = db.prepare('SELECT * FROM blueprints WHERE chapter_number=?').get(chapter) as Record<string, unknown> | undefined;
     return stable(row ? without(row, ['created_at', 'updated_at', 'notes', 'notes_updated_at']) : null);
 }
-/** 规划范围里一章蓝图此刻的来源哈希，与开跑时冻结的 `blueprint:<章>` 引用同一算法。 */
 export function planningBlueprintSourceHash(db: Database.Database, chapter: number): string {
     return hash(planningBlueprintText(db, chapter));
 }

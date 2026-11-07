@@ -18,8 +18,8 @@ import { planningRecoverable } from '../shared/planning-recovery'
 
 /**
  * 读架构生成的分批检查点 partial_arch.json；没有、读不到或读失败都按没有检查点（undefined）。
- * 大纲那一批的恢复稿已不再给作者（与运行侧页同一判定）时，去掉检查点里的大纲部分：架构页、流程脊、生成对话框都不再把它算成被打断的一批。
- * 判定用的那次读取一并交回（没读或读失败为 null），架构页据此给入口，不再另读一次，免得两次读到不同的判定。
+ * 大纲恢复稿已不再给作者时，去掉检查点里 synopsis_ 开头的部分，免得各处仍把它当成被打断的一批。
+ * 把判定用的那次读取一并交回（未读或读失败为 null），调用方不要再读一次，否则两次读到的判定可能不同。
  */
 export async function readArchCheckpointWithOutline(projectSession: ProjectSessionContext): Promise<{
   checkpoint: Record<string, unknown> | undefined

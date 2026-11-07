@@ -874,7 +874,7 @@ describe('架构页一次刷新里恢复稿刚好变成不再给作者（#608）
     let previous = ''
     invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
       if (channel === 'generation:read-context') {
-        // 同一次刷新里紧接着的第二次读取，恰好赶上这份恢复稿被别处补齐。
+        // 紧接着的第二次读取返回 superseded，模拟刷新中途恢复稿被补齐。
         const repeated = previous === channel
         previous = channel
         return context(repeated ? 'superseded' : 'open')
