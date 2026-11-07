@@ -826,7 +826,7 @@ export class GenerateDraftCommand extends BaseWorkflowCommand {
     if (activeThreads.count === 0 && activeThreads.leftOut > 0) {
       callbacks.log(uiText(
         `  相关活跃叙事线索 ${activeThreads.leftOut} 条都超出长度上限，本次未纳入`,
-        `  ${activeThreads.leftOut} relevant active narrative ${pluralEn(activeThreads.leftOut, 'thread')} exceeded the length limit and were left out`,
+        `  ${activeThreads.leftOut} relevant active narrative ${pluralEn(activeThreads.leftOut, 'thread')} did not fit the length limit`,
       ))
     }
     if (activeThreads.count > 0) {
@@ -2047,7 +2047,8 @@ ${params.candidate.text}`,
     )
     const lines: string[] = []
     let usedChars = header.length + 1
-    for (const thread of threads.slice(0, ACTIVE_THREAD_CONTEXT_MAX_ITEMS)) {
+    for (const thread of threads) {
+      if (lines.length === ACTIVE_THREAD_CONTEXT_MAX_ITEMS) break
       const source = thread.events.at(-1)
       const schedule = narrativeThreadSchedule(thread, this.chapterInfo.chapterNumber)
       const mark = schedule?.kind === 'overdue'
@@ -2059,7 +2060,7 @@ ${params.candidate.text}`,
         `- ${thread.title} [${thread.status}] (${mark}target Chapters ${thread.targetStartChapter}–${thread.targetEndChapter}; author intent: ${thread.authorIntent}${source ? `; source Chapter ${source.chapterNumber}: ${source.evidence}` : ''})`,
       )
       const nextLength = line.length + (lines.length > 0 ? 1 : 0)
-      if (usedChars + nextLength > ACTIVE_THREAD_CONTEXT_MAX_CHARS) break
+      if (usedChars + nextLength > ACTIVE_THREAD_CONTEXT_MAX_CHARS) continue
       lines.push(line)
       usedChars += nextLength
     }
