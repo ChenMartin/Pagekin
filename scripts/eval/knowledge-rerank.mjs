@@ -22,8 +22,7 @@ const SILICONFLOW = { provider: "siliconflow", baseUrl: "https://api.siliconflow
 const EMBEDDING_MODEL = "BAAI/bge-m3"
 const GROUPS = { fts: { retrieval: "fts" }, vector: { retrieval: "vector" } }
 
-// 重排只在同一次运行的同一组 40 个候选上与原序比较：块 id 每次导入都随机，跨运行比较会混入召回差异。
-// identity 原样保留检索顺序，用来核对比较通路本身；R2 合入后在这里登记 BAAI/bge-reranker-v2-m3。
+// 块 id 每次导入都随机，跨运行比较会混入召回差异，所以重排只和同一次运行、同一组候选的原序比。
 const RERANKERS = {
   identity: { model: null, rank: async (_query, candidates) => candidates.slice(0, FINAL) },
 }
@@ -107,7 +106,7 @@ function buildQuery(chapterInfo) {
   return [hint, chapterInfo.title, chapterInfo.keyEvents, chapterInfo.characters.join(" ")].filter(Boolean).join(" ")
 }
 
-/** 照抄 generation-knowledge-source.ts 的全文取词与加权，只用来标注候选，生产改了这里要跟着改。 */
+/** 照抄 generation-knowledge-source.ts 的全文取词与加权，只用来标注候选。 */
 function ftsTerms(query) {
   const raw = query.match(/[\p{L}\p{N}-]+/gu) ?? []
   const meaningful = raw.filter(term => Array.from(term).length >= 2)
@@ -201,7 +200,6 @@ function mean(rows, key) {
   return rows.length ? rows.reduce((sum, row) => sum + row.metrics[key], 0) / rows.length : 0
 }
 
-/** 重排结果必须是候选里不重复的前 min(5, 候选数) 项，否则 Distractor@5 和 nDCG@5 的分母对不上。 */
 function checkReranked(id, candidates, reranked) {
   const known = new Set(candidates.map(item => item.paragraphSha256))
   const hashes = reranked.map(item => item.paragraphSha256)
@@ -324,7 +322,7 @@ async function writeReceipt(outPath, value) {
   await writeFile(outPath, text, "utf8")
 }
 
-/** 跨运行比较。全文组平分段的顺序会因块 id 随机而变，需单独标出；比较重排请用 run --rerank。 */
+/** 全文组平分段的顺序会因块 id 随机而变，需单独标出。 */
 async function compare(basePath, otherPath, outPath) {
   const [base, other] = await Promise.all([basePath, otherPath].map(async file => JSON.parse(await readFile(file, "utf8"))))
   for (const [file, receipt] of [[basePath, base], [otherPath, other]]) {
