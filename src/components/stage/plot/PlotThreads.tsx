@@ -92,7 +92,7 @@ export default function PlotThreads({ plot, onDelete }: PlotThreadsProps) {
         <header className="stage-threads-head">
           <div>
             <h2 className="stage-plot-h2">{text('线索计划', 'Thread plans')} <span className="stage-plot-count">{text(`${plot.threads.length} 条`, `${plot.threads.length}`)}</span></h2>
-            <p className="stage-plot-help">{text('每条线索计划在哪章埋下、哪章推进、哪章解决。写作和审稿会参考这里。', 'Each thread plans where it is planted, advanced and resolved. Writing and reviews follow it.')}</p>
+            <p className="stage-plot-help">{text('每条线索计划在哪章埋下、哪章推进、哪章解决。写正文时会参考这里，到期和逾期的排在最前。', 'Each thread plans where it is planted, advanced and resolved. Drafting follows it, due and overdue threads first.')}</p>
           </div>
           <Button variant="secondary" onClick={() => openForm()}><Plus size={14} aria-hidden="true" />{text('新建线索', 'New thread')}</Button>
         </header>

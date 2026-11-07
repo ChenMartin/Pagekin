@@ -3387,13 +3387,129 @@ ${headingPrefix}第3章：潮门
     const threadContextEnd = prompt.indexOf('\n\n', threadContextStart)
     expect(threadContextEnd).toBeGreaterThan(threadContextStart)
     expect(threadContextEnd - threadContextStart).toBeLessThanOrEqual(1200)
-    expect(callbacks.log).toHaveBeenCalledWith(expect.stringContaining('活跃叙事线索（6 条）'))
+    expect(callbacks.log).toHaveBeenCalledWith(expect.stringContaining('已加载相关活跃叙事线索（6 条；另有 2 条'))
     expect(invoke).toHaveBeenCalledWith(
       'db:narrative-thread-list-relevant',
       expect.objectContaining({ chapterNumber: 5, characters: ['林岚'] }),
       projectPath,
       expect.anything(),
     )
+  })
+
+  const threadView = (id: number, title: string, targetStartChapter: number, targetEndChapter: number): NarrativeThreadView => ({
+    id, title, type: '伏笔', targetStartChapter, targetEndChapter, authorIntent: `${title}要有交代。`,
+    status: 'planned', dormantChapters: 0, overdue: false, events: [], createdAt: '', updatedAt: '',
+  })
+  const promptLine = (prompt: string, title: string) => prompt.split('\n').find(line => line.startsWith(`- ${title} `)) ?? ''
+
+  it('#301: marks overdue and due threads for the chapter being written and logs how many did not fit', async () => {
+    let observedTask: GenerationTask | undefined
+    const runtime = fakeRuntime((_attempt, task) => {
+      observedTask = task
+      return outcome('新章正文。'.repeat(125), 'stop')
+    })
+    const { context, callbacks, command } = setup({
+      runtime,
+      chapterNumber: 6,
+      wordsTarget: 500,
+      previousFinalizedContent: '第五章定稿原文。',
+      narrativeThreads: [
+        threadView(1, '青铜钥匙', 1, 2),
+        threadView(2, '雨夜来信', 4, 6),
+        ...Array.from({ length: 6 }, (_, index) => threadView(3 + index, `区间线索${index + 1}`, 5, 9)),
+      ],
+    })
+
+    await command.execute({ step: {}, context, callbacks })
+
+    const prompt = observedTask?.messages.find(message => message.role === 'user')?.content ?? ''
+    expect(promptLine(prompt, '青铜钥匙')).toContain('已逾期 4 章')
+    expect(promptLine(prompt, '雨夜来信')).toContain('本章到期')
+    expect(promptLine(prompt, '区间线索1')).not.toMatch(/已逾期|本章到期/)
+    expect(prompt).toContain('区间线索4')
+    expect(prompt).not.toContain('区间线索5')
+    expect(callbacks.log).toHaveBeenCalledWith(expect.stringContaining('另有 2 条'))
+  })
+
+  it('injects relevant threads into the first chapter too', async () => {
+    let observedTask: GenerationTask | undefined
+    const runtime = fakeRuntime((_attempt, task) => {
+      observedTask = task
+      return outcome('首章正文。'.repeat(125), 'stop')
+    })
+    const { context, callbacks, command } = setup({
+      runtime,
+      wordsTarget: 500,
+      narrativeThreads: [threadView(1, '青铜钥匙', 1, 1)],
+    })
+
+    await command.execute({ step: {}, context, callbacks })
+
+    const prompt = observedTask?.messages.find(message => message.role === 'user')?.content ?? ''
+    expect(promptLine(prompt, '青铜钥匙')).toContain('本章到期')
+  })
+
+  it('says relevant threads were left out when none of them fits the thread block length', async () => {
+    const runtime = fakeRuntime(() => outcome('新章正文。'.repeat(125), 'stop'))
+    const { context, callbacks, command } = setup({
+      runtime,
+      chapterNumber: 5,
+      wordsTarget: 500,
+      previousFinalizedContent: '第四章定稿原文。',
+      narrativeThreads: [{ ...threadView(1, '青铜钥匙', 1, 2), authorIntent: '钥匙'.repeat(600) }],
+    })
+
+    await command.execute({ step: {}, context, callbacks })
+
+    expect(callbacks.log).toHaveBeenCalledWith(expect.stringContaining('相关活跃叙事线索 1 条都超出长度上限'))
+  })
+
+  it('skips an overlong thread line and still injects the shorter due thread after it', async () => {
+    let observedTask: GenerationTask | undefined
+    const runtime = fakeRuntime((_attempt, task) => {
+      observedTask = task
+      return outcome('新章正文。'.repeat(125), 'stop')
+    })
+    const { context, callbacks, command } = setup({
+      runtime,
+      chapterNumber: 5,
+      wordsTarget: 500,
+      previousFinalizedContent: '第四章定稿原文。',
+      narrativeThreads: [
+        { ...threadView(1, '青铜钥匙', 1, 2), authorIntent: '钥匙'.repeat(600) },
+        threadView(2, '父亲的旧信', 3, 5),
+      ],
+    })
+
+    await command.execute({ step: {}, context, callbacks })
+
+    const prompt = observedTask?.messages.find(message => message.role === 'user')?.content ?? ''
+    expect(promptLine(prompt, '父亲的旧信')).toContain('本章到期')
+    expect(callbacks.log).toHaveBeenCalledWith(expect.stringContaining('已加载相关活跃叙事线索（1 条；另有 1 条'))
+  })
+
+  it('says the thread block was left out when the optional material budget has no room for it', async () => {
+    let observedTask: GenerationTask | undefined
+    const runtime = fakeRuntime((_attempt, task) => {
+      observedTask = task
+      return outcome('新章正文。'.repeat(125), 'stop')
+    })
+    const { context, callbacks, command } = setup({
+      runtime,
+      chapterNumber: 5,
+      wordsTarget: 500,
+      characters: ['林岚'],
+      characterCards: [{ name: '林岚', role: 'protagonist', personality: '谨慎'.repeat(4_500), currentState: {} }],
+      previousFinalizedContent: '第四章定稿原文。',
+      narrativeThreads: [threadView(1, '青铜钥匙', 1, 2)],
+    })
+
+    await command.execute({ step: {}, context, callbacks })
+
+    const prompt = observedTask?.messages.find(message => message.role === 'user')?.content ?? ''
+    expect(prompt).not.toContain('青铜钥匙')
+    expect(callbacks.log).not.toHaveBeenCalledWith(expect.stringContaining('已加载相关活跃叙事线索'))
+    expect(callbacks.log).toHaveBeenCalledWith(expect.stringContaining('相关活跃叙事线索（1 条）被可选材料预算省掉'))
   })
 
   it('previews only authored text before completion and reconciles to the persisted terminal draft', async () => {
