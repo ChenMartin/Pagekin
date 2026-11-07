@@ -20,6 +20,7 @@ import { exportPortableProject } from '../../electron/services/project-archive-s
 import { restorePortableProject } from '../../electron/services/project-restore-service'
 import { restorePortableKnowledgeSnapshot } from '../../electron/vector-store'
 import { createCanonicalProjectManifest } from '../../src/shared/project-format'
+import { IMPORT_RUN_EFFECT_RECEIPT_SCHEMA_VERSION } from '../../src/shared/import-run'
 import type { GenerationSourceBindingInput } from '../../electron/services/generation-source-binding'
 
 const require = createRequire(import.meta.url)
@@ -273,7 +274,36 @@ function insertRoundtripDomain(database: Database.Database, sourceProjectId: str
       JSON.stringify([{ displayName: '旧资料.txt', mediaType: 'text/plain', size: 12 }]),
       SECRET, 7, 999_999,
     )
+    insertAuthorImportReceipts(database)
   })()
+}
+
+export const AUTHOR_IMPORT_RUN_ID = 'import-author-old'
+export const AUTHOR_IMPORT_EFFECTS = [
+  { stage: 'global', batchId: 'done', effectKey: 'global-facts', kind: 'project-global-facts' },
+  { stage: 'blueprints', batchId: '1-2-aaaaaaaa.bbbbbbbb', effectKey: 'blueprints:1-2-aaaaaaaa.bbbbbbbb',
+    kind: 'chapter-blueprint-range' },
+] as const
+
+export function insertAuthorImportReceipts(database: Database.Database): void {
+  const namespace = `import:author-manuscript:${AUTHOR_IMPORT_RUN_ID}`
+  database.prepare(`INSERT INTO import_runs(
+    id,purpose,root_run_id,effect_namespace,source_fingerprint,manifest_fingerprint,source_display_json,
+    locale,stage,status,total_chapters,manifest_chapter_count,completed_chapters,resumable
+  ) VALUES(?,'author-manuscript',?,?,?,?,?,'zh-CN','completed','completed',2,2,2,0)`).run(
+    AUTHOR_IMPORT_RUN_ID, AUTHOR_IMPORT_RUN_ID, namespace, sha256('author-source'), sha256('author-manifest'),
+    JSON.stringify([{ displayName: '我的原稿.txt', mediaType: 'text/plain', size: 24 }]),
+  )
+  for (const effect of AUTHOR_IMPORT_EFFECTS) {
+    const payload = JSON.stringify({ batchId: effect.batchId, runId: AUTHOR_IMPORT_RUN_ID })
+    database.prepare(`INSERT INTO import_run_receipts(
+      run_id,schema_version,effect_namespace,effect_key,stage,batch_id,kind,payload_json,payload_hash,state,effect_receipt_json
+    ) VALUES(?,?,?,?,?,?,?,?,?,'committed','{}')`).run(AUTHOR_IMPORT_RUN_ID, IMPORT_RUN_EFFECT_RECEIPT_SCHEMA_VERSION, namespace, effect.effectKey,
+      effect.stage, effect.batchId, effect.kind, payload, sha256(payload))
+    database.prepare(`INSERT INTO import_effect_ledger(
+      run_id,stage,batch_id,effect_namespace,effect_key,state,evidence_kind
+    ) VALUES(?,?,?,?,?,'complete','receipt')`).run(AUTHOR_IMPORT_RUN_ID, effect.stage, effect.batchId, namespace, effect.effectKey)
+  }
 }
 
 export async function createProjectArchiveRoundtripFixture(): Promise<ProjectArchiveRoundtripFixture> {
