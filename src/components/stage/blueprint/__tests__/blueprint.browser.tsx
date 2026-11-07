@@ -14,6 +14,7 @@ import { editorSaveHandler, useEditorStore } from '../../../../stores/editor-sto
 import { useLocaleStore } from '../../../../stores/locale-store'
 import { useStageStore } from '../../../../stores/navigation/stage-store'
 import { useProjectStore } from '../../../../stores/project-store'
+import RunSheet from '../../run/RunSheet'
 import StageBlueprint from '../StageBlueprint'
 
 const writableOverride = vi.hoisted(() => ({ value: null as number[] | null }))
@@ -772,5 +773,96 @@ describe('蓝图阶段', () => {
     await expect.element(page.getByRole('button', { name: '写第 3 章' })).toBeVisible()
     await act(async () => page.getByRole('button', { name: '本次写作选项' }).click())
     await expect.element(page.getByRole('dialog', { name: '本次写作选项' }).getByLabelText(/作者微操指导/)).toHaveValue('')
+  })
+})
+
+describe('蓝图页开着时在运行侧页放弃蓝图恢复稿（#608）', () => {
+  const recovery = (runId: string, createdAtMs: number) => ({
+    handle: { projectId: SESSION.projectId, epoch: SESSION.leaseId, rootActionId: `根${runId}`, runId }, operation: 'chapter-blueprint-directory',
+    blueprintRecovery: { writeState: 'ready', draft: `第 15–16 章蓝图（${runId}）`, editRange: { from: 15, to: 16 } },
+    planningDraft: { requestedRange: { from: 15, to: 16 }, createdAtMs, standing: 'open' },
+    planningContinuation: { state: 'ready', remainingRange: { from: 16, to: 16 } },
+  })
+  let open: ReturnType<typeof recovery>[]
+  let reply: { resolve: () => void; reject: (reason: Error) => void } | undefined
+  let dismissalFails: boolean
+
+  beforeEach(() => {
+    open = [recovery('最新', 2000)]
+    reply = undefined
+    dismissalFails = false
+    const fallback = invoke.getMockImplementation() as (channel: string, ...args: unknown[]) => Promise<unknown>
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'generation:list-recovery') return { planning: open, editors: [], reviews: [], drafts: [], batches: [], partial: false }
+      if (channel === 'generation:find-blueprint-recovery') return [...open].sort((a, b) => b.planningDraft.createdAtMs - a.planningDraft.createdAtMs)[0] ?? null
+      if (channel === 'generation:dismiss-planning-recovery') {
+        // 主进程收到请求就同步记下放弃，回复晚一点才到渲染端。
+        const runId = (args[0] as { handle: { runId: string } }).handle.runId
+        if (!dismissalFails) open = open.filter(item => item.handle.runId !== runId)
+        return new Promise<void>((resolve, reject) => { reply = { resolve, reject } })
+      }
+      if (channel === 'db:recovery-candidate-list' || channel === 'skills:list-user') return []
+      if (channel === 'fs:check-exists') return false
+      return fallback(channel, ...args)
+    })
+  })
+
+  async function renderWithRunSheet() {
+    await act(async () => root?.render(
+      <div className="paper-ink">
+        <StageBlueprint projectKey={PROJECT_PATH} />
+        <RunSheet sheet={{ kind: 'run', tab: 'active' }} />
+      </div>,
+    ))
+    await expect.element(page.getByRole('complementary', { name: '章节规划' })).toBeVisible()
+    await vi.waitFor(() => expect(banner()).toBeTruthy())
+    await vi.waitFor(() => expect(document.querySelector('.run-recovery > .run-card')).toBeTruthy())
+  }
+  const banner = () => [...document.querySelectorAll('.pi-notice')].find(notice => notice.querySelector('.pi-notice-title')?.textContent === '有一份蓝图恢复稿')
+  const bannerEdit = () => [...banner()!.querySelectorAll('button')].find(item => item.textContent === '编辑恢复稿')!
+  const sheetButton = (name: string) => [...document.querySelector('.run-recovery > .run-card')!.querySelectorAll('button')].find(item => item.textContent === name)!
+  async function dismissNewestInRunSheet() {
+    await act(async () => sheetButton('放弃…').click())
+    await act(async () => sheetButton('放弃').click())
+  }
+  /** 打开的恢复稿标签对应的运行。 */
+  const openedRecoveryTabs = () => useEditorStore.getState().tabs.flatMap(tab => tab.planningRecovery ? [tab.planningRecovery.handle.runId] : [])
+
+  it('放弃唯一一份：横幅与「编辑恢复稿」立即消失，不用重新进入蓝图页', async () => {
+    await renderWithRunSheet()
+    await dismissNewestInRunSheet()
+    await act(async () => reply!.resolve())
+    await vi.waitFor(() => expect(banner()).toBeUndefined())
+    expect(document.querySelector('.run-recovery')).toBeNull()
+  })
+
+  it('同范围还有更早一份：横幅留着，「编辑恢复稿」打开更早的那份', async () => {
+    open = [recovery('更早', 1000), recovery('最新', 2000)]
+    await renderWithRunSheet()
+    await dismissNewestInRunSheet()
+    await act(async () => reply!.resolve())
+    await act(async () => bannerEdit().click())
+    await vi.waitFor(() => expect(openedRecoveryTabs()).toEqual(['更早']))
+  })
+
+  it('放弃失败：横幅仍指向原来那份，运行侧页说明失败', async () => {
+    dismissalFails = true
+    await renderWithRunSheet()
+    await dismissNewestInRunSheet()
+    await act(async () => reply!.reject(new Error('GENERATION_PLANNING_RECOVERY_IN_FLIGHT')))
+    await vi.waitFor(() => expect(document.querySelector('.run-recovery [role="alert"]')?.textContent).toBeTruthy())
+    expect(sheetButton('放弃…')).toBeTruthy()
+    await act(async () => bannerEdit().click())
+    await vi.waitFor(() => expect(openedRecoveryTabs()).toEqual(['最新']))
+  })
+
+  it('放弃的回复还没到时点横幅的「编辑恢复稿」：不会打开已放弃的那份', async () => {
+    await renderWithRunSheet()
+    await dismissNewestInRunSheet()
+    await act(async () => bannerEdit().click())
+    await act(async () => reply!.resolve())
+    expect(openedRecoveryTabs()).toEqual([])
+    await vi.waitFor(() => expect(banner()).toBeUndefined())
+    expect(openedRecoveryTabs()).toEqual([])
   })
 })

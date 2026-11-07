@@ -16,6 +16,7 @@ import { useLocaleStore } from '../../../../stores/locale-store'
 import { useStageStore } from '../../../../stores/navigation/stage-store'
 import { useProjectStore } from '../../../../stores/project-store'
 import { useWorkflowStore } from '../../../../stores/workflow-store'
+import RunSheet from '../../run/RunSheet'
 import StageArchitecture from '../StageArchitecture'
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -708,5 +709,89 @@ describe('大纲恢复稿与运行侧页同一判定（#608）', () => {
     expect(names).not.toContain('查看恢复稿')
     expect(names).not.toContain('编辑恢复稿')
     expect(outline.textContent).not.toContain('只能查看或复制')
+  })
+})
+
+describe('架构页开着时在运行侧页放弃大纲恢复稿（#608）', () => {
+  const handle = { projectId: session.projectId, epoch: session.leaseId, rootActionId: '大纲动作', runId: '第二批' }
+  let reply: { resolve: () => void; reject: (reason: Error) => void } | undefined
+  let dismissalFails: boolean
+
+  beforeEach(() => {
+    const body = outlineBody(1, 5)
+    core = { ...core, synopsis: renderPlotOutlineSynopsis(body, 5, OUTLINE_SOURCE) }
+    const draft = outlineBody(6, 7)
+    partial = { synopsis_result: draft, synopsis_incomplete: true, synopsis_generation_handle: handle }
+    recoveryContext = { handle, plotOutline: { range: { from: 6, to: 10 }, cursor: { kind: 'request', chapterNumber: 8, attempt: 'normal' } },
+      plotOutlineRecovery: { draft, completeChapters: [6, 7], writeState: { kind: 'ready' }, saved: null },
+      planningDraft: { requestedRange: { from: 6, to: 10 }, createdAtMs: 1, standing: 'open' },
+      planningContinuation: { state: 'ready', remainingRange: { from: 8, to: 10 } } }
+    filledSpine(['premise', 'synopsis'])
+    reply = undefined
+    dismissalFails = false
+    const fallback = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      const open = (recoveryContext?.planningDraft as { standing: string } | undefined)?.standing === 'open'
+      if (channel === 'generation:list-recovery') return { planning: open ? [recoveryContext] : [], editors: [], reviews: [], drafts: [], batches: [], partial: false }
+      if (channel === 'generation:dismiss-planning-recovery') {
+        // 主进程收到请求就同步记下放弃，回复晚一点才到渲染端。
+        if (!dismissalFails) recoveryContext = { ...recoveryContext, planningDraft: { requestedRange: { from: 6, to: 10 }, createdAtMs: 1, standing: 'dismissed' } }
+        return new Promise<void>((resolve, reject) => { reply = { resolve, reject } })
+      }
+      if (channel === 'db:recovery-candidate-list' || channel === 'skills:list-user') return []
+      if (channel === 'fs:check-exists') return false
+      return fallback(channel, ...args)
+    })
+  })
+
+  async function renderWithRunSheet() {
+    await act(async () => root!.render(
+      <>
+        <StageArchitecture projectKey={session.projectPath} />
+        <RunSheet sheet={{ kind: 'run', tab: 'active' }} />
+      </>,
+    ))
+    await vi.waitFor(() => expect(host!.querySelector('.arch-page[data-loading], .arch-page[data-cast-loading]')).toBeNull())
+    await vi.waitFor(() => expect(outlineEdit()).toBeTruthy())
+    await vi.waitFor(() => expect(document.querySelector('.run-recovery > .run-card')).toBeTruthy())
+  }
+  const outline = () => host!.querySelector('[data-section="synopsis"]')!
+  const outlineEdit = () => [...outline().querySelectorAll('button')].find(item => item.textContent === '编辑恢复稿')
+  const sheetButton = (name: string) => [...document.querySelector('.run-recovery > .run-card')!.querySelectorAll('button')].find(item => item.textContent === name)!
+  async function dismissInRunSheet() {
+    await act(async () => sheetButton('放弃…').click())
+    await act(async () => sheetButton('放弃').click())
+  }
+  const openedRecoveryTabs = () => useEditorStore.getState().tabs.flatMap(tab => tab.planningRecovery ? [tab.planningRecovery.handle.runId] : [])
+
+  it('放弃后大纲一节的恢复提示与「编辑恢复稿」立即消失，不用重新进入架构页', async () => {
+    await renderWithRunSheet()
+    expect(outline().textContent).toContain('上次生成在半途停下')
+    await dismissInRunSheet()
+    await act(async () => reply!.resolve())
+    await vi.waitFor(() => expect(outlineEdit()).toBeUndefined())
+    expect(outline().textContent).not.toContain('上次生成在半途停下')
+    expect(document.querySelector('.run-recovery')).toBeNull()
+  })
+
+  it('放弃失败：大纲一节的入口不变，运行侧页说明失败', async () => {
+    dismissalFails = true
+    await renderWithRunSheet()
+    await dismissInRunSheet()
+    await act(async () => reply!.reject(new Error('GENERATION_PLANNING_RECOVERY_IN_FLIGHT')))
+    await vi.waitFor(() => expect(document.querySelector('.run-recovery [role="alert"]')?.textContent).toBeTruthy())
+    expect(sheetButton('放弃…')).toBeTruthy()
+    await act(async () => outlineEdit()!.click())
+    await vi.waitFor(() => expect(openedRecoveryTabs()).toEqual(['第二批']))
+  })
+
+  it('放弃的回复还没到时点大纲一节的「编辑恢复稿」：不会打开已放弃的那份', async () => {
+    await renderWithRunSheet()
+    await dismissInRunSheet()
+    await act(async () => outlineEdit()!.click())
+    await act(async () => reply!.resolve())
+    expect(openedRecoveryTabs()).toEqual([])
+    await vi.waitFor(() => expect(outlineEdit()).toBeUndefined())
+    expect(openedRecoveryTabs()).toEqual([])
   })
 })
