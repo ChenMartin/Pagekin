@@ -825,7 +825,6 @@ describe('蓝图页开着时在运行侧页放弃蓝图恢复稿（#608）', () 
     await act(async () => sheetButton('放弃…').click())
     await act(async () => sheetButton('放弃').click())
   }
-  /** 打开的恢复稿标签对应的运行。 */
   const openedRecoveryTabs = () => useEditorStore.getState().tabs.flatMap(tab => tab.planningRecovery ? [tab.planningRecovery.handle.runId] : [])
 
   it('放弃唯一一份：横幅与「编辑恢复稿」立即消失，不用重新进入蓝图页', async () => {

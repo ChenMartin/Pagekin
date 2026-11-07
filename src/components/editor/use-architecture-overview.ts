@@ -439,7 +439,7 @@ export function useArchitectureOverview(projectKey: string) {
     if (outlineRestartRange) setGenerateIntent({ steps: ['synopsis'], synopsisRange: { from: outlineRestartRange.from, to: outlineRestartRange.to } })
   }
 
-  /** 情节大纲有可编辑的恢复稿时打开它；按点击这一刻主进程的判定，放弃请求已经发出时不再打开。 */
+  /** 情节大纲有可编辑的恢复稿时打开它。 */
   const openRecoveryDraft = () => {
     const session = captureProjectSession(currentProject)
     if (!planningRecovery || !session) return

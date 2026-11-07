@@ -104,7 +104,7 @@ export function useChapterBlueprints({
     }).catch(() => {})
     return () => { current = false }
   }, [projectKey, currentProject?.sessionLease, latestDirectoryRun, recoveryRevision])
-  /** 按点击这一刻主进程的判定打开：放弃请求已经发出时，读到的是放弃之后剩下的那份，或者没有。 */
+  /** 打开蓝图恢复稿，以点击时主进程的最新判定为准。 */
   const openPlanningRecovery = useCallback(() => {
     const session = currentProjectSessionForPath(projectKey)
     if (!session) return
