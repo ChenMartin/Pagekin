@@ -360,3 +360,43 @@ describe('选区建议', () => {
     expect(editor({ action: 'refine' })).toMatchObject({ kind: 'editor', instructionNote: undefined })
   })
 })
+
+describe('同一范围的几份规划恢复稿（#608）', () => {
+  const at = (day: number, hour: number) => new Date(2026, 10, day, hour, 32).getTime()
+  const blueprint = (runId: string, from: number, to: number, createdAtMs: number, extra: Record<string, unknown> = {}) => ({
+    handle: { ...handle, runId }, blueprintRecovery: {}, planningDraft: { requestedRange: { from, to }, createdAtMs, standing: 'open' },
+    planningContinuation: { state: 'ready', remainingRange: { from: to, to } }, ...extra }) as never
+
+  it('卡片写明生成时的章节范围、还缺的章和按作者时区的生成时间', () => {
+    const [zh] = buildRecoveryEntries({ ...EMPTY_RECOVERY_SOURCES, planning: [blueprint('甲', 15, 16, at(7, 14))] }, 'zh-CN')
+    expect(zh).toMatchObject({ kind: 'planning', title: '蓝图恢复稿 · 第 15–16 章', meta: '缺第 16 章 · 11月7日 14:32 生成' })
+    const [en] = buildRecoveryEntries({ ...EMPTY_RECOVERY_SOURCES, planning: [blueprint('甲', 15, 16, at(7, 14))] }, 'en-US')
+    expect(en).toMatchObject({ kind: 'planning', title: 'Blueprint recovery draft · ch. 15–16', meta: 'Missing ch. 16 · Generated Nov 7, 14:32' })
+  })
+
+  it('同一范围只突出最新一份，更早的按新到旧折叠为「更早的 N 份」；不同范围各占一张卡', () => {
+    const entries = buildRecoveryEntries({ ...EMPTY_RECOVERY_SOURCES, planning: [
+      blueprint('最早', 15, 16, at(7, 9)), blueprint('另一段', 13, 14, at(7, 8)), blueprint('最新', 15, 16, at(7, 11)), blueprint('中间', 15, 16, at(7, 10)),
+    ] }, 'zh-CN')
+    expect(entries.map(entry => entry.key)).toEqual(['最新', '另一段'])
+    const [newest, other] = entries
+    expect(newest.kind === 'planning' && newest.earlier.map(entry => entry.key)).toEqual(['中间', '最早'])
+    expect(newest.kind === 'planning' && newest.labels.earlier).toBe('更早的 2 份')
+    expect(other.kind === 'planning' && other.earlier).toEqual([])
+    const [en] = buildRecoveryEntries({ ...EMPTY_RECOVERY_SOURCES, planning: [blueprint('甲', 1, 2, at(7, 9)), blueprint('乙', 1, 2, at(7, 10))] }, 'en-US')
+    expect(en.kind === 'planning' && en.labels.earlier).toBe('1 earlier draft')
+  })
+
+  it('大纲与蓝图即使范围相同也不合在一起', () => {
+    const outline = { ...blueprint('大纲', 1, 2, at(7, 9)) as object, blueprintRecovery: undefined, plotOutlineRecovery: {}, plotOutline: { range: { from: 1, to: 2 } } } as never
+    const entries = buildRecoveryEntries({ ...EMPTY_RECOVERY_SOURCES, planning: [outline, blueprint('蓝图', 1, 2, at(7, 10))] }, 'zh-CN')
+    expect(entries.map(entry => entry.title)).toEqual(['蓝图恢复稿 · 第 1–2 章', '大纲恢复稿 · 第 1–2 章'])
+  })
+
+  it('有生成正在进行时不给放弃；放弃的确认只说正式内容不受影响、这份不再列出', () => {
+    const [idle] = buildRecoveryEntries({ ...EMPTY_RECOVERY_SOURCES, planning: [blueprint('甲', 1, 2, at(7, 9))] }, 'zh-CN')
+    expect(idle).toMatchObject({ canDismiss: true, labels: { dismiss: '放弃…', dismissConfirm: '正式内容不受影响；放弃后这份恢复稿不再列出。', confirm: '放弃', keep: '保留' } })
+    const [busy] = buildRecoveryEntries({ ...EMPTY_RECOVERY_SOURCES, planning: [blueprint('甲', 1, 2, at(7, 9), { planningContinuation: { state: 'in-flight', remainingRange: { from: 2, to: 2 } } })] }, 'zh-CN')
+    expect(busy).toMatchObject({ canDismiss: false })
+  })
+})

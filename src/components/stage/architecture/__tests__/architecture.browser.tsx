@@ -688,3 +688,25 @@ ${outlineBody(1, 5)}` }
     })
   })
 })
+
+describe('大纲恢复稿与运行侧页同一判定（#608）', () => {
+  it.each([
+    ['缺的第 6–10 章后来都写进了正式大纲', 'superseded', 10],
+    ['作者在运行侧页放弃了它', 'dismissed', 5],
+  ] as const)('%s：大纲一节不再给查看或编辑恢复稿的入口', async (_case, standing, written) => {
+    core = { ...core, synopsis: renderPlotOutlineSynopsis(outlineBody(1, written), written, OUTLINE_SOURCE) }
+    const handle = { projectId: session.projectId, epoch: '本次', rootActionId: '大纲动作', runId: '第二批' }
+    const draft = outlineBody(6, 7)
+    partial = { synopsis_result: draft, synopsis_incomplete: true, synopsis_generation_handle: handle }
+    recoveryContext = { handle, plotOutline: { range: { from: 6, to: 10 }, cursor: { kind: 'request', chapterNumber: 8, attempt: 'normal' } },
+      plotOutlineRecovery: { draft, completeChapters: [6, 7], writeState: { kind: 'blocked', reason: 'source-changed' }, saved: null },
+      planningDraft: { requestedRange: { from: 6, to: 10 }, createdAtMs: 1, standing } }
+    filledSpine(['premise', 'synopsis'])
+    await render()
+    const outline = host!.querySelector('[data-section="synopsis"]')!
+    const names = [...outline.querySelectorAll('button')].map(item => item.textContent)
+    expect(names).not.toContain('查看恢复稿')
+    expect(names).not.toContain('编辑恢复稿')
+    expect(outline.textContent).not.toContain('只能查看或复制')
+  })
+})
