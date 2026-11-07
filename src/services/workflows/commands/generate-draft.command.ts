@@ -412,7 +412,7 @@ function chapterLengthContractText(writingLanguage: WritingLanguage, targetUnits
 }
 
 /**
- * 固定解释规则与作者原文分开角色；规则只按写作语言、是否有前驱和有无线索任务分支。
+ * 固定解释规则与作者原文分开角色；规则只由写作语言、是否有前驱、有无线索任务决定，不随作者原文变化。
  * 首稿、续写、压缩和历史恢复共用规则，但不扩大各次请求的操作范围。
  */
 function chapterExecutionContractText(writingLanguage: WritingLanguage, chapterInfo: WriterChapterInfo): {

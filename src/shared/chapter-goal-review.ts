@@ -2,7 +2,6 @@ import { writingLanguageText, type WritingLanguage } from './writing-language'
 import type { ChapterThreadTask } from './narrative-thread'
 
 export interface ChapterGoalEvidence { quote: string; start: number; end: number }
-/** 线索目标的审稿结论。回收和推进算本章任务完成，未处理按待核实。 */
 export type ChapterThreadOutcome = 'resolved' | 'advanced' | 'unaddressed'
 const THREAD_OUTCOME_STATUS: Record<ChapterThreadOutcome, ChapterGoalReviewItem['status']> = {
   resolved: 'completed', advanced: 'completed', unaddressed: 'unknown',
