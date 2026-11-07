@@ -302,9 +302,16 @@ it('旧项目复制导入后在当前版本上，角色导入时的状态补了�
   try {
     expect(db.pragma('user_version', { simple: true })).toBe(9)
     const owner = db.prepare("SELECT character_id FROM characters WHERE name='乙'").pluck().get() as string
-    expect(db.prepare('SELECT event_id,subject_id,aspect,value,effective_chapter,provenance_json FROM character_continuity_events').all())
-      .toEqual([{ event_id: `legacy:state:${owner}:location`, subject_id: owner, aspect: 'location', value: '旧山门',
-        effective_chapter: 0, provenance_json: '{"kind":"legacy"}' }])
+    const target = db.prepare("SELECT character_id FROM characters WHERE name='甲'").pluck().get() as string
+    const relationship = db.prepare('SELECT relationship_id FROM character_relationships WHERE source_character_id=? AND target_character_id=?')
+      .pluck().get(owner, target) as string
+    expect(db.prepare(`SELECT event_id,subject_id,target_id,aspect,value,effective_chapter,provenance_json
+      FROM character_continuity_events ORDER BY aspect`).all()).toEqual([
+      { event_id: `legacy:state:${owner}:location`, subject_id: owner, target_id: null, aspect: 'location', value: '旧山门',
+        effective_chapter: 0, provenance_json: '{"kind":"legacy"}' },
+      { event_id: `legacy:relation:${relationship}`, subject_id: owner, target_id: target, aspect: 'relation', value: '同门',
+        effective_chapter: 0, provenance_json: '{"kind":"legacy"}' },
+    ])
   } finally { db.close() }
 })
 

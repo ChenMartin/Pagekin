@@ -30,8 +30,8 @@ CREATE TABLE character_continuity_events (
   aspect TEXT NOT NULL CHECK(aspect IN (${aspects})),
   value TEXT NOT NULL,
   effective_chapter INTEGER NOT NULL CHECK(effective_chapter >= 0),
-  provenance_json TEXT NOT NULL CHECK(json_valid(provenance_json)
-    AND json_extract(provenance_json, '$.kind') IN ('author','derived','adopted','legacy')),
+  provenance_json TEXT NOT NULL CHECK(CASE WHEN json_valid(provenance_json)
+    THEN COALESCE(json_extract(provenance_json, '$.kind') IN ('author','derived','adopted','legacy'), 0) ELSE 0 END),
   draft_id INTEGER REFERENCES "drafts_all"(id) ON DELETE CASCADE,
   evidence_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(evidence_json)),
   CHECK((aspect = 'relation') = (target_id IS NOT NULL)),
@@ -110,7 +110,7 @@ export function insertContinuityBaseline(db: Database.Database): void {
   }
 
   const relationships = db.prepare(`SELECT r.relationship_id, r.source_character_id, r.target_character_id, r.relation,
-      r.source_display_snapshot, r.target_display_snapshot, r.provenance_json,
+      r.source_display_snapshot, r.target_display_snapshot,
       (SELECT COUNT(*) FROM character_relationships same
         WHERE same.source_character_id = r.source_character_id AND same.target_character_id = r.target_character_id) AS pair_rows
     FROM character_relationships r ORDER BY r.relationship_id`).all() as Array<Record<string, unknown>>
@@ -122,7 +122,7 @@ export function insertContinuityBaseline(db: Database.Database): void {
     }
     insert.run(`legacy:relation:${String(row.relationship_id)}`, row.source_character_id, row.source_display_snapshot,
       row.target_character_id, row.target_display_snapshot, 'relation', row.relation, chapter, JSON.stringify({
-        baseline: 'm08', relationshipId: row.relationship_id, relationProvenance: parsedOrNull(row.provenance_json),
+        baseline: 'm08', relationshipId: row.relationship_id,
         ...(Number(row.pair_rows) > 1 ? { baselineConflict: true } : {}),
       }))
   }

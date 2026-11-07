@@ -1,3 +1,6 @@
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { createRequire } from 'node:module'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { initializeLegacyBaselineSchema } from '../baseline-schema'
@@ -6,6 +9,7 @@ import { insertContinuityBaseline } from '../m08-continuity-foundation'
 import { createMigrationRegistry, type MigrationImplementation } from '../registry'
 import { migrateSchema, verifySchema } from '../runner'
 import { SqliteSchemaAdapter, sqliteSchemaFingerprint } from '../sqlite-schema-adapter'
+import { sanitizePortableDatabase } from '../../services/project-archive-service'
 
 const Database = createRequire(import.meta.url)('better-sqlite3') as typeof import('better-sqlite3')
 type Db = import('better-sqlite3').Database
@@ -54,7 +58,7 @@ const state = (id: string, name: string, aspect: string, value: string, fieldPro
 const relationNode = (id: string, from: string, fromName: string, to: string, toName: string, value: string, conflict: boolean) => ({
   event_id: `legacy:relation:${id}`, subject_id: from, subject_name: fromName, target_id: to, target_name: toName, aspect: 'relation',
   value, effective_chapter: 3, provenance_json: legacy, draft_id: null, evidence_json: JSON.stringify({
-    baseline: 'm08', relationshipId: id, relationProvenance: { kind: 'author' },
+    baseline: 'm08', relationshipId: id,
     ...(conflict ? { baselineConflict: true } : {}) }),
 })
 
@@ -116,6 +120,24 @@ describe('installed M08 lane', () => {
       migrateSchema(new SqliteSchemaAdapter(db), getDesktopMigrationRegistry(), 9)
       expect(events(db).map(row => [row.event_id, row.effective_chapter])).toEqual([['legacy:state:only:location', 0]])
     } finally { db.close() }
+  })
+
+  it('keeps relationship provenance, which export redacts, out of the baseline so archives cannot leak it', () => {
+    const db = v8Project()
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'm08-redact-'))
+    try {
+      db.prepare('UPDATE character_relationships SET provenance_json=? WHERE relationship_id=?')
+        .run(JSON.stringify({ kind: 'legacy', sourceKey: 'C:/Users/秘密/vela.db', token: 'tok-秘密' }), 'rel-ally')
+      migrateSchema(new SqliteSchemaAdapter(db), getDesktopMigrationRegistry(), 9)
+      const file = path.join(dir, 'project.db')
+      fs.writeFileSync(file, db.serialize())
+      sanitizePortableDatabase(file)
+      const exported = new Database(file, { readonly: true })
+      try {
+        expect(JSON.stringify(events(exported))).not.toContain('秘密')
+        expect(events(exported)).toEqual(EXPECTED_BASELINE)
+      } finally { exported.close() }
+    } finally { db.close(); fs.rmSync(dir, { recursive: true, force: true }) }
   })
 
   it('does not insert baseline nodes twice', () => {
@@ -194,6 +216,8 @@ describe('M08 tables', () => {
   it.each([
     ['an unknown provenance kind', { provenance_json: '{"kind":"guess"}' }],
     ['provenance that is not JSON', { provenance_json: 'author' }],
+    ['provenance without a kind', { provenance_json: '{}' }],
+    ['a null provenance kind', { provenance_json: '{"kind":null}' }],
     ['an unknown aspect', { aspect: 'mood' }],
     ['a relation without a target', { aspect: 'relation' }],
     ['a state field with a target', { target_id: SU, target_name: '苏晚' }],
