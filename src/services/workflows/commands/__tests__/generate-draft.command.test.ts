@@ -3464,6 +3464,30 @@ ${headingPrefix}第3章：潮门
     expect(callbacks.log).toHaveBeenCalledWith(expect.stringContaining('相关活跃叙事线索 1 条都超出长度上限'))
   })
 
+  it('skips an overlong thread line and still injects the shorter due thread after it', async () => {
+    let observedTask: GenerationTask | undefined
+    const runtime = fakeRuntime((_attempt, task) => {
+      observedTask = task
+      return outcome('新章正文。'.repeat(125), 'stop')
+    })
+    const { context, callbacks, command } = setup({
+      runtime,
+      chapterNumber: 5,
+      wordsTarget: 500,
+      previousFinalizedContent: '第四章定稿原文。',
+      narrativeThreads: [
+        { ...threadView(1, '青铜钥匙', 1, 2), authorIntent: '钥匙'.repeat(600) },
+        threadView(2, '父亲的旧信', 3, 5),
+      ],
+    })
+
+    await command.execute({ step: {}, context, callbacks })
+
+    const prompt = observedTask?.messages.find(message => message.role === 'user')?.content ?? ''
+    expect(promptLine(prompt, '父亲的旧信')).toContain('本章到期')
+    expect(callbacks.log).toHaveBeenCalledWith(expect.stringContaining('已加载相关活跃叙事线索（1 条；另有 1 条'))
+  })
+
   it('says the thread block was left out when the optional material budget has no room for it', async () => {
     let observedTask: GenerationTask | undefined
     const runtime = fakeRuntime((_attempt, task) => {
