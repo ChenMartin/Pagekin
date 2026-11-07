@@ -87,7 +87,7 @@ function importReply(prompt) {
   return null
 }
 
-/** 章节蓝图生成按提示里的「第 n 章到第 m 章」回齐全的蓝图；不开时与以前一样回正文，解析失败，留下蓝图恢复稿。 */
+/** 按提示里的章范围回齐全蓝图；关闭时回正文，使解析失败、留下蓝图恢复稿。 */
 function directoryReply(prompt) {
   const range = /为接下来的 第(\d+)章到第(\d+)章/u.exec(prompt)
   if (!range) return null
@@ -187,7 +187,6 @@ export async function startFakeModel(diagnostics) {
   const acceptKeylessEmbeddings = (accepted = true) => { keylessEmbeddings = accepted }
   /** 之后的参考小说导入：全局推演回一份合法 JSON（三张角色卡），分批蓝图推演按本批章号回齐全的蓝图。 */
   const replyImport = () => { importInference = true }
-  /** 之后的章节蓝图生成回合法蓝图（传 false 恢复回正文，生成失败）。 */
   const replyDirectoryBlueprints = (on = true) => { directoryBlueprints = on }
   const rejectContextLength = (rejected = true) => {
     if (!rejected) { contextLengthRejection = null; return }

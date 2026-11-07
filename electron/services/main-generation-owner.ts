@@ -844,7 +844,7 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
     if (continuation && planningSuperseded(run, outline, continuation.remainingRange)) return { ...base, standing: 'superseded' }
     return { ...base, standing: 'open' }
   }
-  /** 作者放弃一份规划恢复稿：只记在这条运行上，候选原文、尝试与正式内容都不动。正在生成的那份不能放弃。 */
+  /** 只记在运行上，候选原文与正式内容不动；正在生成的不能放弃。 */
   const dismissPlanningRecovery = (handle: MainGenerationRunHandle) => {
     const context = readContext(handle)
     if (!context.planningDraft) throw new Error('GENERATION_PLANNING_RECOVERY_INVALID')
@@ -1102,7 +1102,7 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
   }
   /**
    * 蓝图页挂载时要的那份：最新一个还没写完的章节蓝图恢复稿；只读章节蓝图运行，读不出的跳过，不挡更早的恢复稿。
-   * 判定与运行侧页同一条（planningRecoverable）；作者放弃的或缺的章后来都写好了的，跳过它找更早的。
+   * 判定同 planningRecoverable，不可恢复的跳过，找更早的。
    */
   const findBlueprintRecovery = (): GenerationRecoveryContext | null => {
     assertCurrent()

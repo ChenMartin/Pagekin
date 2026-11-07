@@ -48,7 +48,7 @@ export interface RunRecovery {
   continueCandidate: (entry: CandidateEntry) => void
   discardCandidate: (entry: CandidateEntry) => void
   openPlanning: (entry: PlanningEntry) => void
-  /** 作者放弃这份规划恢复稿：主进程记下后不再列出，候选原文与正式内容都不动。 */
+  /** 放弃只记在运行上，不动候选原文与正式内容。 */
   dismissPlanning: (entry: PlanningEntry) => void
   continueEditor: (entry: EditorEntry) => void
   resumeReview: (entry: ReviewEntry) => void

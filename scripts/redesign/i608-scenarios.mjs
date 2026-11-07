@@ -52,8 +52,6 @@ function recoveryCards(page) {
 export const I608_SCENARIOS = {
   /**
    * #608：第 13–14 章蓝图生成完成；第 15–16 章连着失败两次；作者再改第 13 章标题并保存。
-   * 运行侧页的「可恢复」只该剩第 15–16 章的一份（较早那份折叠），已生成完的第 13–14 章不该再出现。
-   * 放弃最新一份后，较早那份顶上来，没有折叠。
    */
   'i608-recovery-pile': { model: true, shell: 'stage', setup: context => seedStageSample(context, { totalChapters: 16 }), run: async ({ app, page, fake, shoot }) => {
     await blueprint.open(page)

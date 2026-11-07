@@ -80,7 +80,6 @@ function RecoveryShell({ title, meta, text, saved = false, notes = [], budget, a
   budget?: ReactNode
   actions?: ReactNode
   children?: ReactNode
-  /** 排在按钮之后，例如折叠起来的更早几份。 */
   after?: ReactNode
 }) {
   const titleId = useId()
@@ -100,7 +99,6 @@ function RecoveryShell({ title, meta, text, saved = false, notes = [], budget, a
   )
 }
 
-/** 同一范围只突出最新一份；更早的折叠在卡片底部，各自也能打开或放弃。 */
 function PlanningCard({ entry, recovery, text }: { entry: PlanningEntry; recovery: RunRecovery; text: Text }) {
   return (
     <RecoveryShell title={entry.title} meta={entry.meta} text={text} notes={[entry.note]}

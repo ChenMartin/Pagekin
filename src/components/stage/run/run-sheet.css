@@ -96,7 +96,6 @@
   flex: 1 1 100%;
 }
 
-/* 同一范围更早的恢复稿：折叠在卡片底部，展开后是一列带左细线的紧凑条目 */
 .run-earlier > summary {
   display: flex;
   align-items: center;

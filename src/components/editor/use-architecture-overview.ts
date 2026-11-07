@@ -157,7 +157,7 @@ export function useArchitectureOverview(projectKey: string) {
           if (kind === 'synopsis') {
             const context = await ipc.invokeWithProjectSession(projectSession, 'generation:read-context', { handle }).catch(() => null)
             if (context?.plotOutlineRecovery) {
-              // 与运行侧页同一条判定：作者放弃的、或缺的章后来都写进正式大纲的，这里也不再给，检查点里的同一份镜像一并不给。
+              // 与运行侧页同一判定；检查点里的同一份镜像一并不给。
               const recoverable = planningRecoverable(context)
               recoveredPlanning = recoverable ? context : null
               recoveredSynopsisCandidate = recoverable ? context.plotOutlineRecovery.draft : ''

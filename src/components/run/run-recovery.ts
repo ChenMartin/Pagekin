@@ -50,9 +50,8 @@ export interface PlanningEntry {
   meta: string
   note: string
   actionLabel: string
-  /** 正在生成时不能放弃，主进程也会拒绝。 */
   canDismiss: boolean
-  /** 同一范围更早的几份，新的在前；卡片只突出最新一份，其余折叠。 */
+  /** 同一范围更早的几份，新的在前。 */
   earlier: PlanningEntry[]
   labels: { dismiss: string; dismissConfirm: string; confirm: string; keep: string; earlier: string }
   recovery: GenerationRecoveryContext
@@ -171,7 +170,6 @@ export function candidateEntry(candidate: RecoveryCandidate, locale: Locale): Ca
 
 const chapterSpan = (range: { from: number; to: number }) => range.from === range.to ? `${range.from}` : `${range.from}–${range.to}`
 
-/** 大纲与蓝图分批生成会留下多份恢复稿，标题带上各自生成时的章节范围以便区分。 */
 export function planningTitle(recovery: Pick<GenerationRecoveryContext, 'plotOutlineRecovery' | 'plotOutline' | 'planningDraft'>, locale: Locale): string {
   const t = lang(locale)
   const outline = Boolean(recovery.plotOutlineRecovery)
@@ -182,7 +180,7 @@ export function planningTitle(recovery: Pick<GenerationRecoveryContext, 'plotOut
     : t(`蓝图恢复稿 · 第 ${chapters} 章`, `Blueprint recovery draft · ch. ${chapters}`)
 }
 
-/** 还缺哪几章、什么时候生成的；时间按作者电脑的时区写。 */
+/** 时间按作者电脑的时区。 */
 export function planningMeta(recovery: Pick<GenerationRecoveryContext, 'planningContinuation' | 'planningDraft'>, locale: Locale): string {
   const t = lang(locale)
   const remaining = recovery.planningContinuation?.remainingRange
@@ -260,7 +258,6 @@ function planningEntry(recovery: GenerationRecoveryContext, locale: Locale, earl
   }
 }
 
-/** 同一种、同一生成范围的恢复稿合成一张卡：最新一份在上，更早的折叠为「更早的 N 份」。 */
 function groupPlanning(recoveries: readonly GenerationRecoveryContext[], locale: Locale): PlanningEntry[] {
   const groups = new Map<string, GenerationRecoveryContext[]>()
   for (const recovery of recoveries) {
