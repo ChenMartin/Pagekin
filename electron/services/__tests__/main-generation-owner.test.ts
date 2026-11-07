@@ -3613,6 +3613,17 @@ describe('规划恢复稿是否还列为可恢复（#608）', () => {
     expect(f.owner.readContext(regenerate).planningDraft?.standing).toBe('open')
   })
 
+  it('开跑之后的正式提交覆盖了这几章，但其中一章后来被删了：恢复稿照常列出', async () => {
+    const f = directoryFixture()
+    for (const row of rows(1, 3, '作者早先写好的')) BlueprintRepository.upsert(row)
+    const regenerate = await f.failed(1, 3, 'regenerate')
+    f.startedMinuteEarlier(regenerate)
+    BlueprintRepository.commitRange({ mode: 'replace-range', operationId: 'later', startChapter: 1, endChapter: 3, blueprints: rows(1, 3, '后来生成的') })
+    expect(f.listed()).toEqual([])
+    BlueprintRepository.delete(2)
+    expect(f.listed()).toEqual([regenerate.runId])
+  })
+
   it('覆盖这几章的正式提交早于这次运行：作者之后再改也照常列出', async () => {
     const f = directoryFixture()
     await f.finished(1, 3, 'earlier-batch')
