@@ -104,7 +104,6 @@ export const PORTABLE_CLEARED_TABLES = Object.freeze(['import_legacy_identity_br
 
 export type PortableRedaction = 'cleared-table' | 'json-projection' | 'json-neutral' | 'safe-id' | 'blank'
 
-/** 每个 redacted-projection 列在副本里的处理；没登记的列让导出失败，不静默清空。 */
 export function portableRedactionFor(table: string, field: string): PortableRedaction | undefined {
   const key = `${table}.${field}`
   if (PORTABLE_CLEARED_TABLES.includes(table)) return 'cleared-table'

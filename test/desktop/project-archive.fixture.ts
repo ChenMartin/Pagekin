@@ -284,7 +284,6 @@ export const AUTHOR_IMPORT_EFFECTS = [
     kind: 'chapter-blueprint-range' },
 ] as const
 
-/** 做过「我的原稿」导入的作品：一次导入留下多条已提交的效果收据，账本逐条对应（#607）。 */
 export function insertAuthorImportReceipts(database: Database.Database): void {
   const namespace = `import:author-manuscript:${AUTHOR_IMPORT_RUN_ID}`
   database.prepare(`INSERT INTO import_runs(

@@ -1,5 +1,3 @@
-// #607 实机场景：做过「我的原稿」导入的作品（导入回执不止一条），在设置「项目备份」里点「导出本地存档」应当成功，
-// 存档能恢复成新副本并打开，副本保留每条导入回执的命名空间与效果键。
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
