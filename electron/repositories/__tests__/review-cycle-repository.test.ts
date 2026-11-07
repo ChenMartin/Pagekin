@@ -466,6 +466,27 @@ describe('ReviewCycleRepository.create', () => {
     } finally { db.close() }
   })
 
+  it('accepts thread-task goals with their outcome and opens a goal finding only for the unaddressed thread', () => {
+    const db = fixture()
+    const frozenGoals: FrozenChapterGoals = { chapterNumber: 1, coverage: 'not_configured', items: [
+      { id: 'ch1:thread:3', text: '本章推进或回收线索「开场」' }, { id: 'ch1:thread:4', text: '本章推进或回收线索「旧信」' },
+    ] }
+    const model = { summary: '审稿完成', items: [{ category: '文风', severity: 'pass', description: '通过' }],
+      goalReviews: [
+        { id: 'ch1:thread:3', status: 'resolved', description: '开场交代了结果。', evidence: [{ quote: '开场' }] },
+        { id: 'ch1:thread:4', status: 'unaddressed', description: '没有写到旧信。', evidence: [] },
+      ] }
+    try {
+      const seeded = seed(db, { frozenGoals, model })
+      const created = create(db, seeded.call)
+      expect(created.findingCount).toBe(2)
+      const goalFindings = (db.prepare('SELECT expected_text FROM review_findings WHERE expected_text IS NOT NULL').pluck().all() as string[])
+      expect(goalFindings).toHaveLength(1)
+      expect(goalFindings[0]).toContain('旧信')
+      expect(verifyM03ReviewCycle(db)).toBe(true)
+    } finally { db.close() }
+  })
+
   it('keeps different preflight identities after duplicate-quote anchoring fails and deduplicates an exact repeat', () => {
     const db = fixture()
     const source = '开场，重复证据，重复证据。'
