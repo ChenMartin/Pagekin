@@ -610,8 +610,8 @@ function assertReviewContext(value: unknown): Record<string, unknown> {
       reviewIntegerFields(goalReview, ['version', 'chapterNumber'])
       reviewTextFields(goalReview, ['coverage'])
       for (const value of reviewArray(goalReview.items)) {
-        const item = object(value, ['id', 'text', 'status', 'description', 'evidence'])
-        reviewTextFields(item, ['id', 'text', 'status', 'description'])
+        const item = object(value, ['id', 'text', 'status', 'description', 'evidence', 'threadOutcome'])
+        reviewTextFields(item, ['id', 'text', 'status', 'description', 'threadOutcome'])
         for (const evidenceValue of reviewArray(item.evidence)) {
           const evidence = object(evidenceValue, ['quote', 'start', 'end'])
           reviewTextFields(evidence, ['quote'])

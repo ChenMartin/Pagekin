@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3'
 import { LIVE_PARENT } from './draft-source-guard'
 import { canonicalM03FindingSetHash, verifyM03ReviewCycle, type M03FindingDescriptor } from '../migrations/m03-review-cycle'
 import { parseHumanConfirmedReviewSnapshot, type HumanConfirmedReviewSnapshot } from '../../src/shared/human-confirmed-review'
+import { parseChapterGoalReview } from '../../src/shared/chapter-goal-review'
 import { classifyFindingEvidenceChange, unshownMustShowRecheckFindings, type ReviewCycleRecheckContext,
   type ReviewCycleRecheckFinding, type ReviewCycleProjection } from '../../src/shared/review-cycle'
 
@@ -191,7 +192,7 @@ function parseSavedReport(body: string): SavedReport {
   const goalIds = new Set<string>()
   const goals = goalReview.items.map((value): SavedGoal => {
     const item = record(value)
-    if (!item || !exactKeys(item, ['id', 'text', 'status', 'description', 'evidence'])
+    if (!item || !exactKeys(item, ['id', 'text', 'status', 'description', 'evidence', ...(item.threadOutcome === undefined ? [] : ['threadOutcome'])])
       || !nonempty(item.id) || goalIds.has(item.id) || !nonempty(item.text) || !nonempty(item.description)
       || !['completed', 'unmet', 'unknown'].includes(String(item.status)) || !Array.isArray(item.evidence)) invalid()
     goalIds.add(item.id)
@@ -205,6 +206,7 @@ function parseSavedReport(body: string): SavedReport {
     return { id: item.id, text: item.text, description: item.description,
       status: item.status as SavedGoal['status'], evidence }
   })
+  if (!parseChapterGoalReview(goalReview)) invalid()
 
   const items = report.items.map((value, index): SavedItem => {
     const item = record(value)
