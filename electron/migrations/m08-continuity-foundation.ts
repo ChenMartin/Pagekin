@@ -55,7 +55,7 @@ INSERT INTO consistency_exemptions_m08(stable_fact_key, chapter_number, reason, 
   SELECT stable_fact_key, NULL, reason, revoked, '' FROM consistency_exemptions ORDER BY stable_fact_key;
 DROP TABLE consistency_exemptions;
 ALTER TABLE consistency_exemptions_m08 RENAME TO consistency_exemptions;
--- chapter_number 为空表示全书豁免。UNIQUE 里两个 NULL 互不冲突，全书豁免的唯一性另用部分索引守住。
+-- SQLite 的 UNIQUE 把多个 NULL 视为互不相同，全书豁免（chapter_number 为空）的唯一性只能靠这个部分索引。
 CREATE UNIQUE INDEX idx_consistency_exemptions_global ON consistency_exemptions(stable_fact_key) WHERE chapter_number IS NULL;
 
 CREATE TABLE blueprint_continuity_suggestions (
