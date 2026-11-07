@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { archOutlineSource, readArchCheckpoint } from '../../services/architecture-service'
+import { archOutlineSource, readArchCheckpointWithOutline } from '../../services/architecture-service'
 import { useProjectStore } from '../../stores/project-store'
 import { useWorkflowStore } from '../../stores/workflow-store'
 import { useLocaleStore } from '../../stores/locale-store'
@@ -144,7 +144,7 @@ export function useArchitectureOverview(projectKey: string) {
     const outlineSource = archOutlineSource(core, currentProject?.novelConfig)
     const { synopsis: dbSynopsis, totalChapters, writingLanguage } = outlineSource
     try {
-      const partial = await readArchCheckpoint(projectSession)
+      const { checkpoint: partial, outline } = await readArchCheckpointWithOutline(projectSession)
       recoveredWorldBuildingCandidate = partial?.world_building_incomplete === true && typeof partial.world_building_partial_result === 'string'
         ? partial.world_building_partial_result : ''
       recoveredSynopsisCandidate = partial?.synopsis_incomplete === true && typeof partial.synopsis_result === 'string'
@@ -154,16 +154,11 @@ export function useArchitectureOverview(projectKey: string) {
         const handle = architectureRecoveryHandle(partial, kind, projectSession.projectId)
         if (!handle) continue
         try {
-          if (kind === 'synopsis') {
-            const context = await ipc.invokeWithProjectSession(projectSession, 'generation:read-context', { handle }).catch(() => null)
-            if (context?.plotOutlineRecovery) {
-              // 与运行侧页同一判定；检查点里的同一份镜像一并不给。
-              const recoverable = planningRecoverable(context)
-              recoveredPlanning = recoverable ? context : null
-              recoveredSynopsisCandidate = recoverable ? context.plotOutlineRecovery.draft : ''
-              confirmedSynopsisHandle = recoverable ? handle : null
-              continue
-            }
+          if (kind === 'synopsis' && outline?.plotOutlineRecovery) {
+            recoveredPlanning = outline
+            recoveredSynopsisCandidate = outline.plotOutlineRecovery.draft
+            confirmedSynopsisHandle = handle
+            continue
           }
           const composition = await ipc.invokeWithProjectSession(projectSession, 'generation:read-visible-composition', handle)
           if (composition?.algorithm !== 'visible-append-v1' || !composition.text) continue

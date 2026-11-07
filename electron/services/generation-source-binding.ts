@@ -153,19 +153,13 @@ function readFile(root: string, relative: string, optional = false): Buffer | nu
     return fs.readFileSync(absolute);
 }
 function without(row: Record<string, unknown>, excluded: readonly string[]): Record<string, unknown> { return Object.fromEntries(Object.entries(row).filter(([key]) => !excluded.includes(key))); }
-function planningBlueprintText(db: Database.Database, chapter: number): { authored: boolean; text: string } {
+function planningBlueprintText(db: Database.Database, chapter: number): string {
     const row = db.prepare('SELECT * FROM blueprints WHERE chapter_number=?').get(chapter) as Record<string, unknown> | undefined;
-    return { authored: !!row && blueprintRowAuthored(row), text: stable(row ? without(row, ['created_at', 'updated_at', 'notes', 'notes_updated_at']) : null) };
+    return stable(row ? without(row, ['created_at', 'updated_at', 'notes', 'notes_updated_at']) : null);
 }
-/** role 有默认值、user_guidance 是生成前的输入，两者不算作者已写蓝图。 */
-function blueprintRowAuthored(row: Record<string, unknown>): boolean {
-    return ['title', 'purpose', 'key_events', 'suspense_hook'].some(key => typeof row[key] === 'string' && row[key].trim() !== '')
-        || !['', '[]'].includes(String(row.characters ?? '').trim());
-}
-/** 规划范围里一章蓝图此刻的来源哈希，与开跑时冻结的 `blueprint:<章>` 引用同一算法；没有这一章或只是空白行时 authored 为 false。 */
-export function planningBlueprintSourceHash(db: Database.Database, chapter: number): { authored: boolean; contentHash: string } {
-    const { authored, text } = planningBlueprintText(db, chapter);
-    return { authored, contentHash: hash(text) };
+/** 规划范围里一章蓝图此刻的来源哈希，与开跑时冻结的 `blueprint:<章>` 引用同一算法。 */
+export function planningBlueprintSourceHash(db: Database.Database, chapter: number): string {
+    return hash(planningBlueprintText(db, chapter));
 }
 function freezeAuthorInputs(value: unknown): GenerationAuthorInput[] {
     if (value === undefined) return [];
@@ -424,7 +418,7 @@ export function buildGenerationSourceBinding(deps: GenerationSourceBindingDepend
         for (const chapter of blueprintChapters) {
             if (chapter === input.chapterNumber) continue;
             // A requested empty slot is evidence too: later creation must invalidate this snapshot.
-            add(`blueprint:${chapter}`, 0, planningBlueprintText(deps.db, chapter).text,
+            add(`blueprint:${chapter}`, 0, planningBlueprintText(deps.db, chapter),
                 'author-constraint', 'explicit planning range; current row or absent slot');
         }
         for (const [ids, finalized] of [[input.selectedDraftIds, false], [input.selectedFinalizedDraftIds, true]] as const)
