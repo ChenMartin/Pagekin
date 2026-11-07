@@ -104,7 +104,7 @@ function physicalSnapshot(source: string) {
 type DomainColumns = { name: string; columns: string[] }[]
 const quoteIdentifier = (value: string) => '"' + value.replaceAll('"', '""') + '"'
 const M05_ASSET_TABLES = ['character_avatar_assets', 'character_avatar_unresolved'] as const
-// 跨版本比对正文时，后来的迁移加的表和列不算：preRecycle 也排除 M08 补的基线节点。
+// 跨版本比对正文时，后来迁移加的表和列不算，M08 补的基线节点同理。
 function domainColumns(db: BetterSqlite3.Database, preIdentity = false, preAsset = false, preRecycle = preIdentity,
   preContinuity = preRecycle): DomainColumns {
   const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as { name: string }[]

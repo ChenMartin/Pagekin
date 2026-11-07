@@ -1,17 +1,13 @@
 import path from 'node:path'
 import type BetterSqlite3 from 'better-sqlite3'
 
-/**
- * db03cf70（schema 8）导出的真实便携包。林澈、苏晚、已退场的老周带当前状态，
- * 林澈→苏晚同时有「盟友」「死敌」，苏晚→林澈「师姐」；第 1–3 章定稿，第 4 章是草稿。
- */
+/** 从 db03cf70（schema 8）导出的真实便携包，不是合成数据。 */
 export const SCHEMA8_CONTINUITY_ARCHIVE = path.resolve('test/fixtures/portable/schema8-continuity-baseline.ainovel')
 
 const LIN = '66666666-6666-4666-8666-666666666661'
 const SU = '66666666-6666-4666-8666-666666666662'
 const ZHOU = '66666666-6666-4666-8666-666666666663'
 
-/** 包里每个非空状态字段、每条关系各一个 legacy 节点，生效章都是最大定稿章 3。 */
 export const SCHEMA8_EXPECTED_BASELINE = [
   ['legacy:relation:relation-ally', LIN, SU, 'relation', '盟友', true],
   ['legacy:relation:relation-enemy', LIN, SU, 'relation', '死敌', true],

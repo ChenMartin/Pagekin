@@ -1,10 +1,7 @@
 import type Database from 'better-sqlite3'
 import type { MigrationImplementation, SchemaReader } from './registry'
 
-/**
- * 批 11 连续性一组与线索指定共用的一次 schema 升级（8→9）。只建表、补基线，不接任何读写。
- * 迁移是冻结的历史：取值清单写死在这里，不引用会继续演进的共享常量，否则指纹会跟着漂。
- */
+/** 迁移是冻结的历史：取值清单写死在这里，不引用会继续演进的共享常量，否则指纹会漂。 */
 const M08_STATE_COLUMNS = Object.freeze({
   location: 'cs_location',
   powerLevel: 'cs_power_level',
@@ -22,7 +19,7 @@ export const M08_EXEMPTION_COLUMNS = Object.freeze(['chapter_number', 'created_a
 const aspects = ['relation', ...Object.keys(M08_STATE_COLUMNS)].map(aspect => `'${aspect}'`).join(',')
 
 // 角色会被整表删除后回填（手工保存名单），所以 subject_id、target_id 不挂外键，靠名字快照留住当时的称呼。
-// 只有派生节点绑定稿件；稿件彻底删除时它随之消失，作者节点与基线节点不受影响。
+// 外键目标带引号，与 SQLite 改名时改写出的写法相同，表来回改名后 schema 文本不变。
 const M08_CONTINUITY_FOUNDATION_SQL = `
 CREATE TABLE character_continuity_events (
   event_id TEXT PRIMARY KEY,
@@ -35,7 +32,7 @@ CREATE TABLE character_continuity_events (
   effective_chapter INTEGER NOT NULL CHECK(effective_chapter >= 0),
   provenance_json TEXT NOT NULL CHECK(json_valid(provenance_json)
     AND json_extract(provenance_json, '$.kind') IN ('author','derived','adopted','legacy')),
-  draft_id INTEGER REFERENCES drafts_all(id) ON DELETE CASCADE,
+  draft_id INTEGER REFERENCES "drafts_all"(id) ON DELETE CASCADE,
   evidence_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(evidence_json)),
   CHECK((aspect = 'relation') = (target_id IS NOT NULL)),
   CHECK((target_id IS NULL) = (target_name IS NULL))
@@ -50,7 +47,7 @@ ALTER TABLE consistency_exemptions ADD COLUMN created_at TEXT NOT NULL DEFAULT '
 
 CREATE TABLE blueprint_continuity_suggestions (
   suggestion_id TEXT PRIMARY KEY,
-  finalization_id TEXT NOT NULL REFERENCES finalization_outbox_all(finalization_id) ON DELETE CASCADE,
+  finalization_id TEXT NOT NULL REFERENCES "finalization_outbox_all"(finalization_id) ON DELETE CASCADE,
   chapter_number INTEGER NOT NULL CHECK(chapter_number > 0),
   base_blueprint_hash TEXT NOT NULL,
   patch_json TEXT NOT NULL CHECK(json_valid(patch_json)),
@@ -87,10 +84,7 @@ function skip(reason: string, ids: Record<string, unknown>): void {
   console.warn('[M08] 跳过一个基线节点', { reason, ...ids })
 }
 
-/**
- * 升级前的当前值各记一个 legacy 节点，生效章取迁移时的最大定稿章（没有就是 0）。历史不回填。
- * 节点号由来源行确定，重复执行只会被 OR IGNORE 吸收；恢复旧包时重试也得到同样的字节，所以不写时间。
- */
+/** 节点号由来源行确定，重复执行被 OR IGNORE 吸收；不写时间，恢复旧包时重试才得到相同的字节。 */
 export function insertContinuityBaseline(db: Database.Database): void {
   const chapter = db.prepare("SELECT COALESCE(MAX(chapter_number), 0) FROM drafts WHERE status = 'finalized'").pluck().get() as number
   const insert = db.prepare(`INSERT OR IGNORE INTO character_continuity_events(
@@ -134,7 +128,6 @@ export function insertContinuityBaseline(db: Database.Database): void {
   }
 }
 
-/** The central schema runner owns this transaction and PRAGMA user_version. */
 export function applyM08ContinuityFoundation(db: Database.Database): void {
   if (!db.inTransaction) throw new Error('M08_MIGRATION_TRANSACTION_REQUIRED')
   db.exec(M08_CONTINUITY_FOUNDATION_SQL)

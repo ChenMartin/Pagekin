@@ -19,7 +19,6 @@ function chapter(db: Db, number: number, status: 'finalized' | 'deleted' | 'draf
     VALUES(?,1,?,?,?,?,?)`).run(number, status, contentId, ...deletion).lastInsertRowid)
 }
 
-/** v8 作品：第 1–3 章已定稿，第 4 章定稿后进了回收站，第 5 章是草稿。 */
 function v8Project(): Db {
   const db = new Database(':memory:')
   db.pragma('foreign_keys=ON')
@@ -59,7 +58,7 @@ const relationNode = (id: string, from: string, fromName: string, to: string, to
     ...(conflict ? { baselineConflict: true } : {}) }),
 })
 
-/** 按需求写出的完整基线：非空状态字段各一个，每条关系一个，同向两条的那一对都标冲突，生效章是最大的未删定稿章 3。 */
+/** 生效章取最大的未删定稿章：第 4 章在回收站，所以是 3。 */
 const EXPECTED_BASELINE = [
   relationNode('rel-ally', LIN, '林澈', SU, '苏晚', '盟友', true),
   relationNode('rel-enemy', LIN, '林澈', SU, '苏晚', '死敌', true),

@@ -191,7 +191,7 @@ describe('ProjectPeekService source-zero-write overview', { timeout: WINDOWS_RUN
     }
   })
 
-  // 最近项目列表在正常打开升级之前就预览：M07（#564）之前的 7、M08 之前的 8 都必须照常统计。
+  // 最近项目列表在正常打开升级之前就预览，旧 schema 也必须照常统计。
   it.each([7, 8])('previews a schema-%i project by migrating only its private snapshot, leaving the source as it was', version => {
     const f = fixture({ schemaVersion: version, journalMode: 'wal' })
     seedCore(f.database)

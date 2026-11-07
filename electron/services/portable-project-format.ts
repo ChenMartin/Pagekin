@@ -7,7 +7,7 @@ import fieldPolicyDocument from './portable-project-field-policy.json'
 
 export const PORTABLE_PROJECT_FORMAT_VERSION = 1 as const
 export const PORTABLE_SOURCE_SCHEMA_VERSION = 9 as const
-/** 能恢复的包：v1.2.0-Preview 到 v1.4.0 导出的是 7（M07 之前），之后到 M08 之前是 8；恢复时先迁到当前版本。 */
+/** 可恢复的旧包版本：v1.2.0-Preview 到 v1.4.0 导出的是 7，之后到 M08 之前是 8。 */
 export const PORTABLE_READABLE_SOURCE_SCHEMA_VERSIONS = Object.freeze([7, 8, PORTABLE_SOURCE_SCHEMA_VERSION] as const)
 export type PortableSourceSchemaVersion = typeof PORTABLE_READABLE_SOURCE_SCHEMA_VERSIONS[number]
 
@@ -85,7 +85,6 @@ export function listPortableFieldPolicyKeys(): readonly string[] {
 function quoteIdentifier(value: string): string { return `"${value.replaceAll('"', '""')}"` }
 
 const liveRowViews = new Set<string>(LIVE_ROW_VIEWS.map(item => item.view))
-/** 每个旧版本的库比当前版本少的字段。 */
 const fieldsAddedAfter: Readonly<Record<PortableSourceSchemaVersion, ReadonlySet<string>>> = {
   7: new Set([...m07Fields, ...m08Fields]),
   8: m08Fields,
@@ -96,8 +95,7 @@ const fieldsAddedAfter: Readonly<Record<PortableSourceSchemaVersion, ReadonlySet
  * Read-only bidirectional schema gate. sqlite_* implementation objects are deliberately outside the portable contract.
  * Views carry no data; only M07's live views are admitted, and verifySchema's fingerprint pins their exact SQL.
  * A schema-7 source predates M07: no views, the managed tables under their original names, and none of M07's drafts columns.
- * A schema-8 source predates M08: none of its tables or consistency_exemptions columns.
- * The field policy names managed tables by their original names (drafts, not drafts_all) on every version.
+ * 字段策略在所有版本里都按原名登记受管表（drafts，不是 drafts_all）。
  */
 export function assertPortableSourceSchema(database: Database.Database,
   version: PortableSourceSchemaVersion = PORTABLE_SOURCE_SCHEMA_VERSION): { tables: number; fields: number } {
