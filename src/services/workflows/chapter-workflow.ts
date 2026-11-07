@@ -5,6 +5,7 @@ import type { DraftMeta } from '../draft-index'
 import { ipc } from '../ipc-client'
 
 import type { DraftStatus } from '../../shared/draft-status'
+import type { ChapterThreadTask } from '../../shared/narrative-thread'
 import type { ProjectSessionContext } from '../../shared/ipc-channels'
 import { sameProjectPathKey } from '../../shared/project-session-context'
 import { FINALIZATION_SHARED_WRITE_RESOURCE_KINDS, type WorkflowResourceClaims } from '../../shared/workflow-resource-claims'
@@ -32,6 +33,8 @@ export interface ChapterInfo {
   wordsTarget?: number
   /** 用户自定义知识库检索关键词（追加到向量搜索 query） */
   knowledgeQueryHint?: string
+  /** 开写时冻结的本章线索硬任务；从恢复记录读回时沿用记录里的值。旧记录没有这一项。 */
+  threadTasks?: readonly ChapterThreadTask[]
 }
 
 export interface ChapterWorkflowOptions {
