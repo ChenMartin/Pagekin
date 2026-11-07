@@ -814,7 +814,7 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
     "SELECT 1 FROM generation_attempts WHERE run_id=? AND json_extract(attempt_json,'$.status') IN ('reserved','dispatch-marked') LIMIT 1").get(runId)
   /**
    * 还缺的每一章后来都有了正式内容（与开跑时冻结的那一章不同）才算过时；本批已写完的（还缺为空）也算。
-   * 只补了一部分、或重新生成已有章节没成功，正式内容与冻结时一样，照旧给作者。
+   * 只补了一部分、重新生成已有章节没成功，或只新建了空白蓝图行，都照旧给作者。
    */
   const planningSuperseded = (run: DurableGenerationRun, outline: PlotOutlineProgress | null, remaining: PlanningContinuation['remainingRange']): boolean => {
     if (!remaining) return true
@@ -828,7 +828,7 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
     }
     return chapters.every(chapter => {
       const now = planningBlueprintSourceHash(deps.database, chapter)
-      return now.present && now.contentHash !== run.binding.sourceRefs.find(ref => ref.sourceId === `blueprint:${chapter}`)?.contentHash
+      return now.authored && now.contentHash !== run.binding.sourceRefs.find(ref => ref.sourceId === `blueprint:${chapter}`)?.contentHash
     })
   }
   const planningDraft = (run: DurableGenerationRun, outline: PlotOutlineProgress | null, continuation: PlanningContinuation | undefined): PlanningDraftStanding | undefined => {

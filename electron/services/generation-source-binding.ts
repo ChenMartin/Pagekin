@@ -153,14 +153,19 @@ function readFile(root: string, relative: string, optional = false): Buffer | nu
     return fs.readFileSync(absolute);
 }
 function without(row: Record<string, unknown>, excluded: readonly string[]): Record<string, unknown> { return Object.fromEntries(Object.entries(row).filter(([key]) => !excluded.includes(key))); }
-function planningBlueprintText(db: Database.Database, chapter: number): { present: boolean; text: string } {
+function planningBlueprintText(db: Database.Database, chapter: number): { authored: boolean; text: string } {
     const row = db.prepare('SELECT * FROM blueprints WHERE chapter_number=?').get(chapter) as Record<string, unknown> | undefined;
-    return { present: !!row, text: stable(row ? without(row, ['created_at', 'updated_at', 'notes', 'notes_updated_at']) : null) };
+    return { authored: !!row && blueprintRowAuthored(row), text: stable(row ? without(row, ['created_at', 'updated_at', 'notes', 'notes_updated_at']) : null) };
 }
-/** 规划范围里一章蓝图此刻的来源哈希，与开跑时冻结的 `blueprint:<章>` 引用同一算法；没有这一章时 present 为 false。 */
-export function planningBlueprintSourceHash(db: Database.Database, chapter: number): { present: boolean; contentHash: string } {
-    const { present, text } = planningBlueprintText(db, chapter);
-    return { present, contentHash: hash(text) };
+/** 蓝图正文里有作者写的东西：标题、目的、关键事件、悬念钩子有字，或列了出场角色。章节角色有默认值，写作指导是生成前的输入，都不算。 */
+function blueprintRowAuthored(row: Record<string, unknown>): boolean {
+    return ['title', 'purpose', 'key_events', 'suspense_hook'].some(key => typeof row[key] === 'string' && row[key].trim() !== '')
+        || !['', '[]'].includes(String(row.characters ?? '').trim());
+}
+/** 规划范围里一章蓝图此刻的来源哈希，与开跑时冻结的 `blueprint:<章>` 引用同一算法；没有这一章或只是空白行时 authored 为 false。 */
+export function planningBlueprintSourceHash(db: Database.Database, chapter: number): { authored: boolean; contentHash: string } {
+    const { authored, text } = planningBlueprintText(db, chapter);
+    return { authored, contentHash: hash(text) };
 }
 function freezeAuthorInputs(value: unknown): GenerationAuthorInput[] {
     if (value === undefined) return [];
