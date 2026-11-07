@@ -187,6 +187,18 @@ describe('伏笔线索任务的审稿目标', () => {
     expect(advanced.coverage).toBe('not_configured')
   })
 
+  it('未处理的结论不能带引文，带了按无效判断处理，存档也不接受', () => {
+    const frozen = withChapterThreadGoals(freezeChapterGoals(6, ''), tasks, 'zh-CN')
+    const review = normalizeChapterGoalReview([
+      { id: 'ch6:thread:7', status: 'unaddressed', description: '钥匙没有交代。', evidence: [{ quote: '她用青铜钥匙打开了父亲的木匣' }] },
+      { id: 'ch6:thread:9', status: 'unaddressed', description: '正文没有写到来信。', evidence: [] },
+    ], frozen, prose, 'zh-CN')
+    expect(review.items.map(item => [item.status, item.threadOutcome, item.evidence.length])).toEqual([['unknown', undefined, 0], ['unknown', 'unaddressed', 0]])
+    expect(review.coverage).toBe('not_configured')
+    const stored = { ...review, items: [{ ...review.items[1]!, evidence: [{ quote: '窗外雨声渐密', start: 26, end: 32 }] }] }
+    expect(parseChapterGoalReview(stored)).toBeNull()
+  })
+
   it('作者目标仍用原来的三种状态，线索结论只能出现在线索目标上', () => {
     const frozen = withChapterThreadGoals(freezeChapterGoals(6, '打开木匣'), tasks.slice(0, 1), 'zh-CN')
     const review = normalizeChapterGoalReview([

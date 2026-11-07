@@ -402,6 +402,9 @@ describe('portable project export service', { timeout: 20_000 }, () => {
     const invalid = fixture()
     seedConfirmed(invalid, { machinePath: 'C:/secret' })
     await expect(exportPortableProject(input(invalid))).rejects.toThrow('PORTABLE_UNSAFE_PROJECTION')
+    const unknownOutcome = fixture()
+    seedConfirmed(unknownOutcome, { threadOutcome: 'finished' })
+    await expect(exportPortableProject(input(unknownOutcome))).rejects.toThrow('PORTABLE_UNSAFE_PROJECTION')
   })
 
   it('cleans staging when a runtime freeze sidecar is invalid', async () => {
