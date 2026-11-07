@@ -710,6 +710,24 @@ describe('大纲恢复稿与运行侧页同一判定（#608）', () => {
     expect(names).not.toContain('编辑恢复稿')
     expect(outline.textContent).not.toContain('只能查看或复制')
   })
+
+  it('放弃一份被打断的大纲恢复稿后：大纲一节不再说被打断，给出能点的续写缺的章', async () => {
+    core = { ...core, synopsis: renderPlotOutlineSynopsis(outlineBody(1, 5), 5, OUTLINE_SOURCE) }
+    const handle = { projectId: session.projectId, epoch: session.leaseId, rootActionId: '大纲动作', runId: '第二批' }
+    const draft = outlineBody(6, 7)
+    partial = { synopsis_protocol: PLOT_OUTLINE_PROTOCOL, synopsis_result: draft, synopsis_incomplete: true, synopsis_generation_handle: handle,
+      synopsis_covered_to: 5, synopsis_range: { from: 6, to: 10 } }
+    recoveryContext = { handle, plotOutline: { range: { from: 6, to: 10 }, cursor: { kind: 'request', chapterNumber: 8, attempt: 'normal' } },
+      plotOutlineRecovery: { draft, completeChapters: [6, 7], writeState: { kind: 'ready' }, saved: null },
+      planningDraft: { requestedRange: { from: 6, to: 10 }, createdAtMs: 1, standing: 'dismissed' } }
+    filledSpine(['premise', 'synopsis'])
+    await render()
+    const outline = host!.querySelector('[data-section="synopsis"]')!
+    const buttons = [...outline.querySelectorAll('button')]
+    expect(outline.textContent).not.toContain('被输出长度打断')
+    expect(buttons.map(item => item.textContent)).not.toContain('断点续写大纲')
+    expect(buttons.find(item => item.textContent === '续写第 6 章起')?.disabled).toBe(false)
+  })
 })
 
 describe('架构页开着时在运行侧页放弃大纲恢复稿（#608）', () => {

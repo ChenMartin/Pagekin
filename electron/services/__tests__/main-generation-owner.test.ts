@@ -3577,6 +3577,17 @@ describe('规划恢复稿是否还列为可恢复（#608）', () => {
     expect(f.owner.readContext(interrupted).blueprintRecovery?.draft).toBe(raw)
   })
 
+  it('缺的章节作者只新建了空白蓝图（没填内容就保存）：恢复稿照常列出', async () => {
+    const f = directoryFixture()
+    const interrupted = await f.failed(1, 3, 'interrupted')
+    for (const chapterNumber of [1, 2]) BlueprintRepository.upsert({ chapterNumber, title: '', role: '发展', purpose: '', keyEvents: '', characters: [],
+      suspenseHook: '', userGuidance: '', notes: '', notesUpdatedAt: '' })
+    f.db.prepare('INSERT INTO blueprints (chapter_number, title, role, purpose, key_events, characters, suspense_hook, user_guidance) VALUES (3, \'\', NULL, NULL, NULL, NULL, NULL, NULL)').run()
+    expect(f.listed()).toEqual([interrupted.runId])
+    expect(f.owner.findBlueprintRecovery()?.handle).toEqual(interrupted)
+    expect(f.owner.readContext(interrupted).planningDraft?.standing).toBe('open')
+  })
+
   it('只补齐了缺的一部分章节，或重新生成已有章节没成功：恢复稿照常列出', async () => {
     const f = directoryFixture()
     BlueprintRepository.upsert(rows(2, 2, '作者早先写好的第 2 章')[0])
