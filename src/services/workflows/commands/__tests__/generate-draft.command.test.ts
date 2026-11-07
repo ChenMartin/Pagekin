@@ -3387,7 +3387,7 @@ ${headingPrefix}第3章：潮门
     const threadContextEnd = prompt.indexOf('\n\n', threadContextStart)
     expect(threadContextEnd).toBeGreaterThan(threadContextStart)
     expect(threadContextEnd - threadContextStart).toBeLessThanOrEqual(1200)
-    expect(callbacks.log).toHaveBeenCalledWith(expect.stringContaining('已加载相关活跃叙事线索（6 条；另有 2 条超出上限'))
+    expect(callbacks.log).toHaveBeenCalledWith(expect.stringContaining('已加载相关活跃叙事线索（6 条；另有 2 条'))
     expect(invoke).toHaveBeenCalledWith(
       'db:narrative-thread-list-relevant',
       expect.objectContaining({ chapterNumber: 5, characters: ['林岚'] }),
@@ -3447,6 +3447,21 @@ ${headingPrefix}第3章：潮门
 
     const prompt = observedTask?.messages.find(message => message.role === 'user')?.content ?? ''
     expect(promptLine(prompt, '青铜钥匙')).toContain('本章到期')
+  })
+
+  it('says relevant threads were left out when none of them fits the thread block length', async () => {
+    const runtime = fakeRuntime(() => outcome('新章正文。'.repeat(125), 'stop'))
+    const { context, callbacks, command } = setup({
+      runtime,
+      chapterNumber: 5,
+      wordsTarget: 500,
+      previousFinalizedContent: '第四章定稿原文。',
+      narrativeThreads: [{ ...threadView(1, '青铜钥匙', 1, 2), authorIntent: '钥匙'.repeat(600) }],
+    })
+
+    await command.execute({ step: {}, context, callbacks })
+
+    expect(callbacks.log).toHaveBeenCalledWith(expect.stringContaining('相关活跃叙事线索 1 条都超出长度上限'))
   })
 
   it('says the thread block was left out when the optional material budget has no room for it', async () => {
