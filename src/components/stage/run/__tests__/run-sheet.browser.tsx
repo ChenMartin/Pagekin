@@ -1037,4 +1037,29 @@ describe('运行侧页的规划恢复稿（#608）', () => {
     expect(button('编辑恢复稿')).toBeTruthy()
     expect(button('放弃…')).toBeUndefined()
   })
+
+  it('确认放弃时另一张卡正在打开恢复稿：确认条留着，打开结束后再点「放弃」才放弃', async () => {
+    let opened: (() => void) | undefined
+    const fallback = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'generation:read-context') {
+        await new Promise<void>(resolve => { opened = resolve })
+        return listed[1]
+      }
+      return fallback(channel, ...args)
+    })
+    await render()
+    await vi.waitFor(() => expect(cards()).toHaveLength(2))
+    const card = (index: number) => host!.querySelectorAll('.run-recovery > .run-card')[index]!
+    const inCard = (index: number, name: string) => [...card(index).querySelectorAll('.run-card-buttons button')].find(item => item.textContent === name)!
+    await act(async () => inCard(0, '放弃…').click())
+    await act(async () => inCard(1, '编辑恢复稿').click())
+    await act(async () => inCard(0, '放弃').click())
+    expect(card(0).querySelector('[role="group"]')?.textContent).toContain('正式内容不受影响；放弃后这份恢复稿不再列出。')
+    expect(dismissed()).toEqual([])
+
+    await act(async () => opened!())
+    await act(async () => inCard(0, '放弃').click())
+    await vi.waitFor(() => expect(dismissed()).toEqual(['最新']))
+  })
 })

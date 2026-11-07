@@ -795,3 +795,27 @@ describe('架构页开着时在运行侧页放弃大纲恢复稿（#608）', () 
     expect(openedRecoveryTabs()).toEqual([])
   })
 })
+
+describe('架构页打开大纲恢复稿时读取失败（#608）', () => {
+  it('点「编辑恢复稿」时读不到恢复稿：提示恢复稿还在、没能打开，让作者再点一次', async () => {
+    core = { ...core, synopsis: renderPlotOutlineSynopsis(outlineBody(1, 5), 5, OUTLINE_SOURCE) }
+    const handle = { projectId: session.projectId, epoch: session.leaseId, rootActionId: '大纲动作', runId: '第二批' }
+    const draft = outlineBody(6, 7)
+    partial = { synopsis_result: draft, synopsis_incomplete: true, synopsis_generation_handle: handle }
+    recoveryContext = { handle, plotOutline: { range: { from: 6, to: 10 }, cursor: { kind: 'request', chapterNumber: 8, attempt: 'normal' } },
+      plotOutlineRecovery: { draft, completeChapters: [6, 7], writeState: { kind: 'ready' }, saved: null },
+      planningDraft: { requestedRange: { from: 6, to: 10 }, createdAtMs: 1, standing: 'open' } }
+    filledSpine(['premise', 'synopsis'])
+    await render()
+    const edit = [...host!.querySelector('[data-section="synopsis"]')!.querySelectorAll('button')].find(item => item.textContent === '编辑恢复稿')!
+    const fallback = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'generation:read-context') throw new Error('GENERATION_DATABASE_NOT_READY')
+      return fallback(channel, ...args)
+    })
+    await act(async () => edit.click())
+    await vi.waitFor(() => expect([...document.querySelectorAll('.pi-toast')].map(toast => toast.textContent))
+      .toContain('恢复稿还在，但没能打开读取时出错。请再点一次「编辑恢复稿」。'))
+    expect(useEditorStore.getState().tabs.filter(tab => tab.planningRecovery)).toEqual([])
+  })
+})

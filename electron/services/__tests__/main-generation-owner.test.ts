@@ -3586,6 +3586,16 @@ describe('规划恢复稿是否还列为可恢复（#608）', () => {
     expect(f.owner.findBlueprintRecovery()?.handle).toEqual(regenerate)
   })
 
+  it('缺的章节都补上了，但重新生成没成功的那章仍是作者原来的内容：恢复稿照常列出', async () => {
+    const f = directoryFixture()
+    BlueprintRepository.upsert(rows(2, 2, '作者早先写好的第 2 章')[0])
+    const regenerate = await f.failed(1, 3, 'regenerate')
+    BlueprintRepository.upsert(rows(1, 1, '作者后来补的第 1 章')[0])
+    BlueprintRepository.upsert(rows(3, 3, '作者后来补的第 3 章')[0])
+    expect(f.listed()).toEqual([regenerate.runId])
+    expect(f.owner.findBlueprintRecovery()?.handle).toEqual(regenerate)
+  })
+
   it('每份恢复稿带上生成时的章节范围与生成时间', async () => {
     const f = directoryFixture()
     const before = Date.now()

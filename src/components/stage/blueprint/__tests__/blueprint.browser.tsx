@@ -865,3 +865,27 @@ describe('蓝图页开着时在运行侧页放弃蓝图恢复稿（#608）', () 
     expect(openedRecoveryTabs()).toEqual([])
   })
 })
+
+describe('蓝图页打开蓝图恢复稿时读取失败（#608）', () => {
+  it('点横幅的「编辑恢复稿」时读不到恢复稿：提示恢复稿还在、没能打开，让作者再点一次', async () => {
+    const recovery = { handle: { projectId: SESSION.projectId, epoch: SESSION.leaseId, rootActionId: '根', runId: '最新' },
+      blueprintRecovery: { writeState: 'ready', draft: '第 15–16 章蓝图', editRange: { from: 15, to: 16 } },
+      planningDraft: { requestedRange: { from: 15, to: 16 }, createdAtMs: 1, standing: 'open' } }
+    let findFails = false
+    const fallback = invoke.getMockImplementation() as (channel: string, ...args: unknown[]) => Promise<unknown>
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'generation:find-blueprint-recovery') {
+        if (findFails) throw new Error('GENERATION_DATABASE_NOT_READY')
+        return recovery
+      }
+      return fallback(channel, ...args)
+    })
+    await renderPage()
+    await expect.element(page.getByRole('button', { name: '编辑恢复稿' })).toBeVisible()
+    findFails = true
+    await act(async () => page.getByRole('button', { name: '编辑恢复稿' }).click())
+    await vi.waitFor(() => expect([...document.querySelectorAll('.pi-toast')].map(toast => toast.textContent))
+      .toContain('恢复稿还在，但没能打开读取时出错。请再点一次「编辑恢复稿」。'))
+    expect(useEditorStore.getState().tabs.filter(tab => tab.planningRecovery)).toEqual([])
+  })
+})
