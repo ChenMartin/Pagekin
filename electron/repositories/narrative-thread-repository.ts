@@ -1,12 +1,14 @@
 import { getProjectDb } from '../database'
 import {
+  compareNarrativeThreadSchedules,
   narrativeEvidenceInText,
+  narrativeThreadSchedule,
+  narrativeThreadView,
   type NarrativeThreadEvent,
   type NarrativeThreadEventInput,
   type NarrativeThreadChapterContext,
   type NarrativeThreadPlanInput,
   type NarrativeThreadPlanRecord,
-  type NarrativeThreadStatus,
   type NarrativeThreadView,
 } from '../../src/shared/narrative-thread'
 
@@ -153,7 +155,7 @@ export class NarrativeThreadRepository {
       .all() as Record<string, unknown>[]
     return plans.map((row) => {
       const plan = rowToPlan(row)
-      const eventRows = db.prepare(`
+      const events = db.prepare(`
         SELECT confirmations.id, confirmations.plan_id AS planId,
                confirmations.draft_id AS draftId, confirmations.event_type AS type,
                confirmations.evidence, confirmations.reason, confirmations.created_at AS createdAt,
@@ -165,27 +167,15 @@ export class NarrativeThreadRepository {
         WHERE confirmations.plan_id = ?
         ORDER BY drafts.chapter_number ASC, confirmations.id ASC
       `).all(plan.id) as NarrativeThreadEvent[]
-      const status = (eventRows.at(-1)?.type ?? 'planned') as NarrativeThreadStatus
-      const terminal = status === 'resolved' || status === 'abandoned'
-      const lastChapter = eventRows.at(-1)?.chapterNumber ?? plan.targetStartChapter
-      return {
-        ...plan,
-        status,
-        dormantChapters: terminal ? 0 : Math.max(0, currentFinalizedChapter - lastChapter),
-        overdue: !terminal && currentFinalizedChapter > plan.targetEndChapter,
-        events: eventRows,
-      }
+      return narrativeThreadView(plan, events, currentFinalizedChapter)
     })
   }
 
+  /** 写第 N 章参考的线索：逾期、到期、区间内的必选，区间未到的只在名字命中时选；逾期最久的排最前。 */
   static listRelevantActive(context: NarrativeThreadChapterContext, db = requireDb()): NarrativeThreadView[] {
     const currentText = `${context.title}\n${context.keyEvents}`
     const characters = context.characters.map(character => character.trim()).filter(Boolean)
-    return this.list(db).filter((thread) => {
-      if (thread.status === 'resolved' || thread.status === 'abandoned') return false
-      if (context.chapterNumber >= thread.targetStartChapter && context.chapterNumber <= thread.targetEndChapter) {
-        return true
-      }
+    const mentioned = (thread: NarrativeThreadView) => {
       const threadText = [
         thread.title,
         thread.type,
@@ -194,6 +184,14 @@ export class NarrativeThreadRepository {
       ].join('\n')
       return characters.some(character => threadText.includes(character))
         || (thread.title.length >= 2 && currentText.includes(thread.title))
-    })
+    }
+    return this.list(db)
+      .flatMap((thread) => {
+        const schedule = narrativeThreadSchedule(thread, context.chapterNumber)
+        if (!schedule || schedule.kind === 'terminal' || (schedule.kind === 'later' && !mentioned(thread))) return []
+        return [{ thread, schedule }]
+      })
+      .sort((left, right) => compareNarrativeThreadSchedules(left.schedule, right.schedule))
+      .map(({ thread }) => thread)
   }
 }

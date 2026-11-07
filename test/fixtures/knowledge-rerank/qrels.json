@@ -1,0 +1,717 @@
+{
+  "schemaVersion": 1,
+  "grades": {
+    "0": "不相关",
+    "1": "部分相关",
+    "2": "正确"
+  },
+  "judgments": [
+    {
+      "queryId": "q01",
+      "paragraphSha256": "2966d2e54baa313f8b27dc1a9bd72ca9d528dc897425b0d4919c49340e21efda",
+      "grade": 2,
+      "distractor": false,
+      "label": "box"
+    },
+    {
+      "queryId": "q01",
+      "paragraphSha256": "cbd4a0f5d403c272b255121ad6c156c2abca8460b7b95160178fa0717d31169c",
+      "grade": 1,
+      "distractor": false,
+      "label": "sachet"
+    },
+    {
+      "queryId": "q01",
+      "paragraphSha256": "65d13a219c097f7d9b9aed1078d81b22bc1d4b74b1adc9b5d2794cb6d074fb79",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_archive_key"
+    },
+    {
+      "queryId": "q01",
+      "paragraphSha256": "208bf0177ab53de3a221bccb7145d63e6a6d18a3a1a7192576ec036b7864612b",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_father_calligraphy"
+    },
+    {
+      "queryId": "q01",
+      "paragraphSha256": "631b2ee048c2fd566e74b994c5ee1f64ed3191867a9e8e8943ae6e8fcb1da62d",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_lunchbox"
+    },
+    {
+      "queryId": "q02",
+      "paragraphSha256": "a62c728dd2bc4f7f087478b80732a835b30e6d4368d63cf15ced170110319281",
+      "grade": 2,
+      "distractor": false,
+      "label": "masked"
+    },
+    {
+      "queryId": "q02",
+      "paragraphSha256": "20677cd9ed34d022a3a6177f732d0d7d5049ccaba4a0d59bdbe6ec3f27d0fa35",
+      "grade": 1,
+      "distractor": false,
+      "label": "maojiu_fingers"
+    },
+    {
+      "queryId": "q02",
+      "paragraphSha256": "441edc6bcab4085b45043eea639aea6da5f7cb872d2244e37097a35e92850301",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_amen_bun"
+    },
+    {
+      "queryId": "q02",
+      "paragraphSha256": "88addd07cb28c4c9747e277c037f6032ffab246ad01336249aab32bd2b2fbbd5",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_amen_dream"
+    },
+    {
+      "queryId": "q02",
+      "paragraphSha256": "5dc43b549dbb8f5cb2b08e3a9b3690c7de6f9dd058c1d7ff92236044e8250cb8",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_ferry_price"
+    },
+    {
+      "queryId": "q03",
+      "paragraphSha256": "b9ddf10b3514ef6b8f075d6a2786a356000987458cc8f486d63f17eb826d6fc1",
+      "grade": 2,
+      "distractor": false,
+      "label": "poison_note"
+    },
+    {
+      "queryId": "q03",
+      "paragraphSha256": "c143c1e19ed71a92a793381e2152ae749834b1bb703210331371a27d89d43cbe",
+      "grade": 1,
+      "distractor": false,
+      "label": "cough_blood"
+    },
+    {
+      "queryId": "q03",
+      "paragraphSha256": "2174ad9051948aabadd119fc941a6a3713d5e59988ea4a57f536edf99b6e9b0c",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_liu_cold"
+    },
+    {
+      "queryId": "q03",
+      "paragraphSha256": "f35f860465cdbd4f05fe2c4fde390f8a86d83488d943641c3fee1074e5690c5c",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_liu_talk"
+    },
+    {
+      "queryId": "q03",
+      "paragraphSha256": "442ec58be3a896550a91482f8e7e42a149348bc1b04516faf31837ca25401887",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_liu_herbs"
+    },
+    {
+      "queryId": "q04",
+      "paragraphSha256": "49defa1426be9f0fb5cf173207d59206717b4155c51d863a0340579f8c98f9bf",
+      "grade": 2,
+      "distractor": false,
+      "label": "ledger_gap"
+    },
+    {
+      "queryId": "q04",
+      "paragraphSha256": "12a68ac442771e8db684c3b21b9fa9cbd6fa40f74c7b93bf187ffcec99ea69f3",
+      "grade": 1,
+      "distractor": false,
+      "label": "salt_permit"
+    },
+    {
+      "queryId": "q04",
+      "paragraphSha256": "0e415acf1dacb5d034a369731f2bf112066384916d23d9c0203976a04650430b",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_zhou_haggle"
+    },
+    {
+      "queryId": "q04",
+      "paragraphSha256": "2be36489c103c6196c980c1863100dbf414a98fe8500f17ae3f76bb10021c21a",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_sy_copy"
+    },
+    {
+      "queryId": "q04",
+      "paragraphSha256": "4eee84466e1cc84f8eefc5686966366131800c74cdb633e1b6aed60d385cbe24",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_zhou_gift"
+    },
+    {
+      "queryId": "q05",
+      "paragraphSha256": "702cd23f3d1ffacdc4156b651ee65110c9d59dfee17d7cd7ed5e09308a5149e4",
+      "grade": 2,
+      "distractor": false,
+      "label": "escort"
+    },
+    {
+      "queryId": "q05",
+      "paragraphSha256": "d08a768b4dc36cbe1cd52f97699019e700f7e15e97d383f86f80c9fbe316aebe",
+      "grade": 1,
+      "distractor": false,
+      "label": "eagle_slope"
+    },
+    {
+      "queryId": "q05",
+      "paragraphSha256": "a20bbdc0703d9fa9993ab6738789b7d7a682447c98f952143456be1851b66a61",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_han_train"
+    },
+    {
+      "queryId": "q05",
+      "paragraphSha256": "dec68fdb640db0975720c8a84e6a8e5c4e185c7dac535f0047628214d0589ce6",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_han_drunk"
+    },
+    {
+      "queryId": "q05",
+      "paragraphSha256": "bb9227e009388cafd88641b85bd6483067e41717525a29c94fb51f875af3e386",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_han_door"
+    },
+    {
+      "queryId": "q06",
+      "paragraphSha256": "5d256ff4e272080605f862cb6858d1a787d1d50e71bd8c6d06e8c32543133aa8",
+      "grade": 2,
+      "distractor": false,
+      "label": "retrial"
+    },
+    {
+      "queryId": "q06",
+      "paragraphSha256": "4550a6c2bbf7960fc99644277cf23c2351529b66b1df2d2149b95731e960a409",
+      "grade": 1,
+      "distractor": false,
+      "label": "prev_magistrate"
+    },
+    {
+      "queryId": "q06",
+      "paragraphSha256": "0d6801c17e2c4e772f7a1647f65f1d865c85f302c8841d6ada6a5a3e2f3b2898",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_lu_cow"
+    },
+    {
+      "queryId": "q06",
+      "paragraphSha256": "9c276a8b07f7d9d89320fed707481c48884214688e1476ac95de483a3c48ea93",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_lu_chrysanthemum"
+    },
+    {
+      "queryId": "q06",
+      "paragraphSha256": "3fd832b0871df1b2db9957f5dc15880af185d5692aeb6733c83717a41c276504",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_lu_grain"
+    },
+    {
+      "queryId": "q07",
+      "paragraphSha256": "f841855c51dcd09bc9977d9fd0ff80a4fce50410f6b3545da916669fb349c2e3",
+      "grade": 2,
+      "distractor": false,
+      "label": "cellar_letter"
+    },
+    {
+      "queryId": "q07",
+      "paragraphSha256": "aa7d04dbd724cfefd379f0f703b7c9e087c27259847f62bff5bceff0ab31c6c9",
+      "grade": 1,
+      "distractor": false,
+      "label": "cellar_door"
+    },
+    {
+      "queryId": "q07",
+      "paragraphSha256": "66aaf2a4a8fb5a02e47104c94816e5a03ab6f78044a46f0b8b6fd7313241d729",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_gu_guests"
+    },
+    {
+      "queryId": "q07",
+      "paragraphSha256": "b863efb4a353779b58b4104d76367f92f8aabf604d98e66de6fbadfddeb091e3",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_sy_storyteller"
+    },
+    {
+      "queryId": "q07",
+      "paragraphSha256": "b13f27b469f7212d0b4094755c604f65fb5fd5f82c73e1d99355f78aceaa7718",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_gu_gossip"
+    },
+    {
+      "queryId": "q08",
+      "paragraphSha256": "33bfee56b9a5629f8d1697d1bfc9fb812924468a7a734ec114434b16195cf408",
+      "grade": 2,
+      "distractor": false,
+      "label": "kiln_salt"
+    },
+    {
+      "queryId": "q08",
+      "paragraphSha256": "eab17bf57a620768ef43c00047d8a65375c58505f17bc925c0ddc2f3e92b55d7",
+      "grade": 1,
+      "distractor": false,
+      "label": "zhao_transfer"
+    },
+    {
+      "queryId": "q08",
+      "paragraphSha256": "65bc24148ec35da90d138bb095bfb1b00b31196e6ed83bf3a5c5ff89d9fa7508",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_zhao_drill"
+    },
+    {
+      "queryId": "q08",
+      "paragraphSha256": "3f112428d965874f4f7e684021f2e1b5faa44e90013f3218b6ab0ec49b2fd36f",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_zhao_banquet"
+    },
+    {
+      "queryId": "q08",
+      "paragraphSha256": "d8bbdbaafd93deb7a52e28bcc0ae69ff66c57d1ead74a6a3c588a55fb3abd998",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_zhao_horse"
+    },
+    {
+      "queryId": "q09",
+      "paragraphSha256": "edc0c5988aab8df7fe3211b0c285fb6e10e68f5fab534335fd1ec8b8388c529b",
+      "grade": 2,
+      "distractor": false,
+      "label": "handwriting"
+    },
+    {
+      "queryId": "q09",
+      "paragraphSha256": "072a7d64a610f18331c2961cedb819e1459726cac63696da3be464e227caa0af",
+      "grade": 1,
+      "distractor": false,
+      "label": "qin_students"
+    },
+    {
+      "queryId": "q09",
+      "paragraphSha256": "80267af29d4ce46b5719a464614760ec478d7ca8afac527f3c8e124cad3d1a40",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_qin_recite"
+    },
+    {
+      "queryId": "q09",
+      "paragraphSha256": "1981234352118bd2fa1f4bb469b86029cc0a18ccd0f7199ef4466bf59ebfd277",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_qin_chess"
+    },
+    {
+      "queryId": "q09",
+      "paragraphSha256": "7a0c8b3950050947045ec63f8316e0ff0ba532253d2bd056128c2a44bd3f7ac4",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_qin_couplet"
+    },
+    {
+      "queryId": "q10",
+      "paragraphSha256": "d161abd31e79a00f2ed4748a2b13dcaf4d9044d57d6fd373f888ee77bb40209b",
+      "grade": 2,
+      "distractor": false,
+      "label": "gang_order"
+    },
+    {
+      "queryId": "q10",
+      "paragraphSha256": "fc39c098a7ec8193f949f687d71c15b275cb5ee55f406b8f508af2da5de66eb4",
+      "grade": 1,
+      "distractor": false,
+      "label": "maojiu_origin"
+    },
+    {
+      "queryId": "q10",
+      "paragraphSha256": "2a5e084a7153509ebfc6b7946510b1ce941135fc31a5e38c07c06ad15d25a543",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_maojiu_toll"
+    },
+    {
+      "queryId": "q10",
+      "paragraphSha256": "bb5118cd69b4a3ab976c6604c3af54e87c3cae88ba32cf416115fd29ff892377",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_sy_drunk"
+    },
+    {
+      "queryId": "q10",
+      "paragraphSha256": "75c706b2d8f46ed0d7ff9c8997e2d19dff2f00e45a99fa0d22a4f5cee9039155",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_maojiu_birthday"
+    },
+    {
+      "queryId": "q11",
+      "paragraphSha256": "a622eafe186b942d1b75c36849b9c72266097955ad742ad3295d95867bf83372",
+      "grade": 2,
+      "distractor": false,
+      "label": "forged_verdict"
+    },
+    {
+      "queryId": "q11",
+      "paragraphSha256": "a6584e4f8d45d6f7bd97574fceb6079a68f518ffc3399698a72728c1e6cc93fd",
+      "grade": 1,
+      "distractor": false,
+      "label": "qian_career"
+    },
+    {
+      "queryId": "q11",
+      "paragraphSha256": "09b96986bc4841c688d4a6d575d3a1565554d880a16d8dcc6fe5c73393cc64f0",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_qian_accounts"
+    },
+    {
+      "queryId": "q11",
+      "paragraphSha256": "e74e7b061976c6b0be39c0c5ce28c23bd302fca62557e049c3b6e346c42ee2fa",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_qian_meal"
+    },
+    {
+      "queryId": "q11",
+      "paragraphSha256": "b503c2e44b108280cb3d7dc5f60959fa6c6715862e8117a85d7650b5bc214563",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_qian_house"
+    },
+    {
+      "queryId": "q12",
+      "paragraphSha256": "3d2e9042f3cf989dc0b91ca647e54bddebcfe6f4f7ebcc82258986cb3cac9c83",
+      "grade": 2,
+      "distractor": false,
+      "label": "crossbow"
+    },
+    {
+      "queryId": "q12",
+      "paragraphSha256": "702cd23f3d1ffacdc4156b651ee65110c9d59dfee17d7cd7ed5e09308a5149e4",
+      "grade": 1,
+      "distractor": false,
+      "label": "escort"
+    },
+    {
+      "queryId": "q12",
+      "paragraphSha256": "63495df4d2fc05247849d6592a0ec1b11c4ea2cd455fd3193e672028b6f41238",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_han_hunt"
+    },
+    {
+      "queryId": "q12",
+      "paragraphSha256": "660807a969e120185cc8529f58b8c647d690756c89db17136c5dc6e4a6684e57",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_sy_dispatch"
+    },
+    {
+      "queryId": "q12",
+      "paragraphSha256": "9d4fbb79b6ed86ccc713375151439737786dd598fba87d786ad6442e61e1d0a8",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_slope_teahouse"
+    },
+    {
+      "queryId": "q13",
+      "paragraphSha256": "a62c728dd2bc4f7f087478b80732a835b30e6d4368d63cf15ced170110319281",
+      "grade": 2,
+      "distractor": false,
+      "label": "masked"
+    },
+    {
+      "queryId": "q13",
+      "paragraphSha256": "28bbc0b6c1f825e72546be711d973becaf2aa566d59ae453c70ec7b1d354976d",
+      "grade": 2,
+      "distractor": false,
+      "label": "deep_pool"
+    },
+    {
+      "queryId": "q13",
+      "paragraphSha256": "e6f82c45ff01dfc4c2906ef5e88bd6a55eff34d1239582b2247edf2b13296f2d",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_amen_fish"
+    },
+    {
+      "queryId": "q13",
+      "paragraphSha256": "674318dc46efe778d34023c2b86acee0dc50fefa48d3e5be3f6bb99fe0676705",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_river_wash"
+    },
+    {
+      "queryId": "q13",
+      "paragraphSha256": "3bd466bef73bfcafd87a1939e97494e3afab011a541c3014f54019539bd5ab4d",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_sy_boat"
+    },
+    {
+      "queryId": "q14",
+      "paragraphSha256": "960b0f098de70954194fc08b1b898e369e9b60d555b8436226922f2d52fddbc4",
+      "grade": 2,
+      "distractor": false,
+      "label": "herb_ledger"
+    },
+    {
+      "queryId": "q14",
+      "paragraphSha256": "b9ddf10b3514ef6b8f075d6a2786a356000987458cc8f486d63f17eb826d6fc1",
+      "grade": 1,
+      "distractor": false,
+      "label": "poison_note"
+    },
+    {
+      "queryId": "q14",
+      "paragraphSha256": "c0279959c11f7f7888599805f3b2445ad780b22e420bb300265b5d57fe53324f",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_liu_angelica"
+    },
+    {
+      "queryId": "q14",
+      "paragraphSha256": "1a7500e83134048be73dda125851e191287ef93bb48ca587a2f34afbfc65a2d2",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_liu_teach"
+    },
+    {
+      "queryId": "q14",
+      "paragraphSha256": "9d6671ab4949a48edb596a0250aeea4b8613d83d164c45d0757968646240b489",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_duanchang_rats"
+    },
+    {
+      "queryId": "q15",
+      "paragraphSha256": "861da2a3256afb5aa56f1fb6b28da723d88284af005f7c18dd788ca0dbf17b52",
+      "grade": 2,
+      "distractor": false,
+      "label": "inspector"
+    },
+    {
+      "queryId": "q15",
+      "paragraphSha256": "5d256ff4e272080605f862cb6858d1a787d1d50e71bd8c6d06e8c32543133aa8",
+      "grade": 1,
+      "distractor": false,
+      "label": "retrial"
+    },
+    {
+      "queryId": "q15",
+      "paragraphSha256": "96fb17e9a6dd5bdce9aff2c5c365fdf9e665ded7a5d91a894e73c49263a1090f",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_lu_censor"
+    },
+    {
+      "queryId": "q15",
+      "paragraphSha256": "38d7775c37720eb7569b049edd8abcbceb8068bc9917cf1ed36f727ef899acc2",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_silk_merchant"
+    },
+    {
+      "queryId": "q15",
+      "paragraphSha256": "4f58083f6c85956b1d30b08f1541acf7d9d43747a0df24374b6fbc5108760433",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_lu_gate"
+    },
+    {
+      "queryId": "q16",
+      "paragraphSha256": "42aa8aad0b44d79d7c236fa8c6a5fe044c52ef27261c5ea008e8d9d0fb35148d",
+      "grade": 2,
+      "distractor": false,
+      "label": "gu_debt"
+    },
+    {
+      "queryId": "q16",
+      "paragraphSha256": "f841855c51dcd09bc9977d9fd0ff80a4fce50410f6b3545da916669fb349c2e3",
+      "grade": 1,
+      "distractor": false,
+      "label": "cellar_letter"
+    },
+    {
+      "queryId": "q16",
+      "paragraphSha256": "a26fe74ce043e3d875db8f9bd6c316ec0567d54857a74dcb01477e7c9e1b318c",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_old_calligraphy"
+    },
+    {
+      "queryId": "q16",
+      "paragraphSha256": "fc381965be4b62019bc372f4e0d6ad7140071af0b6c220a0398e1232953a9bc4",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_gu_price"
+    },
+    {
+      "queryId": "q16",
+      "paragraphSha256": "c0a73e9569eb33a7b1d8dc80ec26dedc5e98eee7e1f168becbdea0499a4230fa",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_gu_temple"
+    },
+    {
+      "queryId": "q17",
+      "paragraphSha256": "f37dca83d02d38aa9d117752c3a7bf349e1005b9f90b7138a0cf95634185e8e2",
+      "grade": 2,
+      "distractor": false,
+      "label": "army_record"
+    },
+    {
+      "queryId": "q17",
+      "paragraphSha256": "3d2e9042f3cf989dc0b91ca647e54bddebcfe6f4f7ebcc82258986cb3cac9c83",
+      "grade": 1,
+      "distractor": false,
+      "label": "crossbow"
+    },
+    {
+      "queryId": "q17",
+      "paragraphSha256": "5484cf282c7d28c4ca6fa5991069e82105c3c13c8f263e301f8e6f9b599231ef",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_zhao_patrol"
+    },
+    {
+      "queryId": "q17",
+      "paragraphSha256": "af26ad4993cc01b173e8dde52be5ab70e27974a91f1377932e7182e8c712e551",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_sy_roster"
+    },
+    {
+      "queryId": "q17",
+      "paragraphSha256": "b4f423e6caf94e4d21046f0180b9c0d27d518ba6c60653952dd2b1bef16c1a43",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_zhao_praise"
+    },
+    {
+      "queryId": "q18",
+      "paragraphSha256": "33bfee56b9a5629f8d1697d1bfc9fb812924468a7a734ec114434b16195cf408",
+      "grade": 2,
+      "distractor": false,
+      "label": "kiln_salt"
+    },
+    {
+      "queryId": "q18",
+      "paragraphSha256": "8f6bcd5e7dfc9edd619057dc56d349f3e807ec9fa4fe63c67c649bef60f75177",
+      "grade": 2,
+      "distractor": false,
+      "label": "kiln_layout"
+    },
+    {
+      "queryId": "q18",
+      "paragraphSha256": "4328d1281bd05390bdc8d0ad95bd247a3c8811d99d4e9f7b30bdffdcde694976",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_han_ghost"
+    },
+    {
+      "queryId": "q18",
+      "paragraphSha256": "767c6c0d76d81eba622740f6fe6d8a41f18919d99e215c62df743420187e06d9",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_sy_lantern"
+    },
+    {
+      "queryId": "q18",
+      "paragraphSha256": "3b044b93fb2396f4ae973ea4ae491c565553664e867c7e19c8d2d008e28607fe",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_han_bricks"
+    },
+    {
+      "queryId": "q19",
+      "paragraphSha256": "cbd4a0f5d403c272b255121ad6c156c2abca8460b7b95160178fa0717d31169c",
+      "grade": 2,
+      "distractor": false,
+      "label": "sachet"
+    },
+    {
+      "queryId": "q19",
+      "paragraphSha256": "2966d2e54baa313f8b27dc1a9bd72ca9d528dc897425b0d4919c49340e21efda",
+      "grade": 1,
+      "distractor": false,
+      "label": "box"
+    },
+    {
+      "queryId": "q19",
+      "paragraphSha256": "918f86f3985b8f2324ae0260bf187e45fe8f059d407d04762b13ff75068ceaa0",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_liu_sachet"
+    },
+    {
+      "queryId": "q19",
+      "paragraphSha256": "9001543ad390b59d64b2667e8a03ebce4b50b8e9845b2cd85986fa55d907b928",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_sy_mother"
+    },
+    {
+      "queryId": "q19",
+      "paragraphSha256": "66462b93f68d06d912000cc426bc6d7a9fdb6e110f2386813f0dc6bc19c18b6e",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_sachet_vendor"
+    },
+    {
+      "queryId": "q20",
+      "paragraphSha256": "a622eafe186b942d1b75c36849b9c72266097955ad742ad3295d95867bf83372",
+      "grade": 2,
+      "distractor": false,
+      "label": "forged_verdict"
+    },
+    {
+      "queryId": "q20",
+      "paragraphSha256": "edc0c5988aab8df7fe3211b0c285fb6e10e68f5fab534335fd1ec8b8388c529b",
+      "grade": 2,
+      "distractor": false,
+      "label": "handwriting"
+    },
+    {
+      "queryId": "q20",
+      "paragraphSha256": "960b0f098de70954194fc08b1b898e369e9b60d555b8436226922f2d52fddbc4",
+      "grade": 1,
+      "distractor": false,
+      "label": "herb_ledger"
+    },
+    {
+      "queryId": "q20",
+      "paragraphSha256": "17ab52e9f596d9f81fa0c8b6af097559619a82f43144beccf9eb4873d82448bd",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_qian_court"
+    },
+    {
+      "queryId": "q20",
+      "paragraphSha256": "4d3457e8160e9064d635dd7b3f9e62da4480d9cd2ba90cb64eca80d392485250",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_lu_tea"
+    },
+    {
+      "queryId": "q20",
+      "paragraphSha256": "60e4abcf343e90f9895b66717c779824cc4ca7bc33b05cbb1f18c6c7b983fa06",
+      "grade": 0,
+      "distractor": true,
+      "label": "d_sy_wait"
+    }
+  ]
+}

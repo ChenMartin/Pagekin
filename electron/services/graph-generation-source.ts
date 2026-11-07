@@ -4,6 +4,7 @@ import type { GraphGenerationContext, GraphGenerationInput } from '../../src/sha
 import { resolveWritingLanguage } from '../../src/shared/writing-language'
 import { buildPlotTreeTask } from '../../src/shared/plot-tree-generation-pure'
 import { buildNarrativeThreadEventTask, buildNarrativeThreadPlanTask } from '../../src/shared/narrative-thread-generation-pure'
+import { narrativeThreadView } from '../../src/shared/narrative-thread'
 import { PlotTreeRepository } from '../repositories/plot-tree-repository'
 import { NarrativeThreadRepository } from '../repositories/narrative-thread-repository'
 import { BlueprintRepository } from '../repositories/blueprint-repository'
@@ -48,7 +49,7 @@ export function captureGraphGenerationContext(db: Database.Database, input: Grap
     if (!blueprint || !positive(core.total_chapters) || valid.chapterNumber > core.total_chapters) throw new Error('GENERATION_GRAPH_BLUEPRINT_REQUIRED')
     return { ...base, kind: 'plan', blueprint, totalChapters: core.total_chapters }
   }
-  const plan = NarrativeThreadRepository.list(db).find(row => row.id === valid.planId)
+  let plan = NarrativeThreadRepository.list(db).find(row => row.id === valid.planId)
   if (!plan) throw new Error('GENERATION_GRAPH_PLAN_REQUIRED')
   const row = db.prepare(`SELECT d.chapter_number AS chapterNumber,d.status,c.body AS content,
     f.finalization_id AS finalizationId,f.content_hash AS contentHash,f.content_snapshot AS snapshot,
@@ -64,12 +65,8 @@ export function captureGraphGenerationContext(db: Database.Database, input: Grap
     || row.content !== row.snapshot || textHash(row.snapshot) !== row.contentHash
     || !Number.isSafeInteger(row.projectionGeneration) || row.projectionGeneration < 0) throw new Error('GENERATION_GRAPH_FINALIZED_SOURCE_INVALID')
   if (ignoredOwnEventIds.length) {
-    plan.events = plan.events.filter(event => !ignoredOwnEventIds.includes(event.id))
-    plan.status = plan.events.at(-1)?.type ?? 'planned'
     const currentChapter = db.prepare("SELECT COALESCE(MAX(chapter_number),0) FROM drafts WHERE status='finalized'").pluck().get() as number
-    const terminal = plan.status === 'resolved' || plan.status === 'abandoned'
-    plan.dormantChapters = terminal ? 0 : Math.max(0, currentChapter - (plan.events.at(-1)?.chapterNumber ?? plan.targetStartChapter))
-    plan.overdue = !terminal && currentChapter > plan.targetEndChapter
+    plan = narrativeThreadView(plan, plan.events.filter(event => !ignoredOwnEventIds.includes(event.id)), currentChapter)
   }
   return { ...base, kind: 'event', plan, source: { draftId: valid.draftId, chapterNumber: row.chapterNumber,
     finalizationId: row.finalizationId, contentHash: row.contentHash }, content: row.content, contentRevision: row.contentRevision, projectionGeneration: row.projectionGeneration }
