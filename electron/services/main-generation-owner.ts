@@ -829,8 +829,9 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
     }
     const committedAfterRun = deps.database.prepare(`SELECT 1 FROM blueprint_commit_operations
       WHERE start_chapter<=? AND end_chapter>=? AND CAST(strftime('%s',committed_at) AS INTEGER)*1000>? LIMIT 1`)
+    const present = deps.database.prepare('SELECT 1 FROM blueprints WHERE chapter_number=?')
     const startedAtMs = repository.createdAtMs(run.runId)
-    return chapters.every(chapter => !!committedAfterRun.get(chapter, chapter, startedAtMs)
+    return chapters.every(chapter => !!committedAfterRun.get(chapter, chapter, startedAtMs) && !!present.get(chapter)
       && planningBlueprintSourceHash(deps.database, chapter) !== run.binding.sourceRefs.find(ref => ref.sourceId === `blueprint:${chapter}`)?.contentHash)
   }
   const planningDraft = (run: DurableGenerationRun, outline: PlotOutlineProgress | null, continuation: PlanningContinuation | undefined): PlanningDraftStanding | undefined => {
