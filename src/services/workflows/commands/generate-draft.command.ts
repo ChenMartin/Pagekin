@@ -594,10 +594,10 @@ export class GenerateDraftCommand extends BaseWorkflowCommand {
         cleanDraftText: saved.content, id: saved.id, nextVersion: saved.version, mergedGuidance: '',
         targetChars: Number(earlyRecovery.authorInputs.find(input => input.id === 'draft:target-units')?.text) })
     }
-    const relevantThreads = await this.listRelevantNarrativeThreads(expectedProjectPath, projectSession)
-    const threadTaskSelection = this.resumeHandle
-      ? { tasks: (earlyRecovery ? recordedThreadTasks(earlyRecovery.authorInputs) : null) ?? this.chapterInfo.threadTasks ?? [], leftOut: 0 }
-      : chapterThreadTasks(relevantThreads, this.chapterInfo.chapterNumber)
+    const threadsAtStart = this.resumeHandle ? null : await this.listRelevantNarrativeThreads(expectedProjectPath, projectSession)
+    const threadTaskSelection = threadsAtStart
+      ? chapterThreadTasks(threadsAtStart, this.chapterInfo.chapterNumber)
+      : { tasks: (earlyRecovery ? recordedThreadTasks(earlyRecovery.authorInputs) : null) ?? this.chapterInfo.threadTasks ?? [], leftOut: 0 }
     const writerChapterInfo = toWriterChapterInfo(this.chapterInfo, threadTaskSelection.tasks)
     if (threadTaskSelection.tasks.length > 0) {
       const { tasks, leftOut } = threadTaskSelection
@@ -781,7 +781,8 @@ export class GenerateDraftCommand extends BaseWorkflowCommand {
         .withPreviousEnding('')
         .withShortSummary('')
     }
-    const activeThreads = this.activeNarrativeThreadBlock(relevantThreads, writingLanguage)
+    const activeThreads = this.activeNarrativeThreadBlock(
+      threadsAtStart ?? await this.listRelevantNarrativeThreads(expectedProjectPath, projectSession), writingLanguage)
 
     if (defaultMain && earlyRecovery?.selectedDraftIds.length && !earlyRecovery.selectedDrafts)
       throw new Error('GENERATION_DRAFT_SOURCE_CHANGED')
