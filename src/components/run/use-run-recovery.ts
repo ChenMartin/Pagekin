@@ -3,6 +3,7 @@ import { ipc } from '../../services/ipc-client'
 import { createBatchRecoveryWorkflow, createDraftRecoveryWorkflow } from '../../services/workflows/draft-recovery-workflow'
 import { createReviewRevisionRecoveryWorkflow } from '../../services/workflows/review-revision-recovery-workflow'
 import type { ProjectSessionContext } from '../../shared/ipc-channels'
+import { globalEventBus } from '../../shared/event-bus'
 import { projectSessionContextFromProject, sameProjectSessionContext } from '../../shared/project-session-context'
 import { openPlanningRecoveryDraft, useEditorStore } from '../../stores/editor-store'
 import { useLocaleStore } from '../../stores/locale-store'
@@ -132,6 +133,13 @@ export function useRunRecovery(): RunRecovery {
   }, [session, lastEnded, refreshTick])
 
   useEffect(() => {
+    if (!session) return
+    return globalEventBus.on('PLANNING_RECOVERY_CHANGED', ({ projectSession }) => {
+      if (sameProjectSessionContext(projectSession, session)) setRefreshTick(value => value + 1)
+    })
+  }, [session])
+
+  useEffect(() => {
     if (writing || !missedWhileWriting.current) return
     missedWhileWriting.current = false
     setRefreshTick(value => value + 1)
@@ -235,7 +243,7 @@ export function useRunRecovery(): RunRecovery {
     }),
     dismissPlanning: entry => void act(async current => {
       await ipc.invokeWithProjectSession(current, 'generation:dismiss-planning-recovery', { handle: entry.recovery.handle })
-      if (stillCurrent()) setRefreshTick(value => value + 1)
+      globalEventBus.emit('PLANNING_RECOVERY_CHANGED', { projectSession: current })
     }),
     continueEditor: entry => void act(async current => {
       const receipt = await ipc.invokeWithProjectSession(current, 'editor-inline:execute', { handle: entry.recovery.view.handle })

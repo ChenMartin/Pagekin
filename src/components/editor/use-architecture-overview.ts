@@ -273,7 +273,10 @@ export function useArchitectureOverview(projectKey: string) {
       loadStatus()
       loadCharacterRosterStatus()
     })
-    return () => { unsub3(); unsub4() }
+    const unsub5 = globalEventBus.on('PLANNING_RECOVERY_CHANGED', ({ projectSession }) => {
+      if (isProjectSessionCurrent(projectSession)) void loadStatus()
+    })
+    return () => { unsub3(); unsub4(); unsub5() }
   }, [currentProject, loadCharacterRosterStatus, loadStatus, projectKey])
 
   /** 打开单个架构文件（arch-file 类型；若 tab 已存在则刷新磁盘内容） */
@@ -436,11 +439,13 @@ export function useArchitectureOverview(projectKey: string) {
     if (outlineRestartRange) setGenerateIntent({ steps: ['synopsis'], synopsisRange: { from: outlineRestartRange.from, to: outlineRestartRange.to } })
   }
 
-  /** 情节大纲有可编辑的恢复稿时打开它。 */
+  /** 情节大纲有可编辑的恢复稿时打开它；按点击这一刻主进程的判定，放弃请求已经发出时不再打开。 */
   const openRecoveryDraft = () => {
-    if (!planningRecovery) return
     const session = captureProjectSession(currentProject)
-    if (session && isProjectSessionCurrent(session)) openPlanningRecoveryDraft(planningRecovery, projectKey, planningTitle(planningRecovery, useLocaleStore.getState().locale))
+    if (!planningRecovery || !session) return
+    void ipc.invokeWithProjectSession(session, 'generation:read-context', { handle: planningRecovery.handle }).then(fresh => {
+      if (planningRecoverable(fresh) && isProjectSessionCurrent(session)) openPlanningRecoveryDraft(fresh, projectKey, planningTitle(fresh, useLocaleStore.getState().locale))
+    }).catch(() => {})
   }
 
   return {
