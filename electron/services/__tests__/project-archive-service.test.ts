@@ -27,7 +27,12 @@ import {
   type PortableAssetSnapshot,
   type PortableProvidedFile,
 } from '../project-archive-service'
-import { createProjectArchiveRoundtripFixture } from '../../../test/desktop/project-archive.fixture'
+import {
+  AUTHOR_IMPORT_EFFECTS,
+  AUTHOR_IMPORT_RUN_ID,
+  createProjectArchiveRoundtripFixture,
+  insertAuthorImportReceipts,
+} from '../../../test/desktop/project-archive.fixture'
 import { WINDOWS_RUNNER_IO_STALL_TIMEOUT_MS } from '../../../test/helpers/windows-runner-io-stall'
 
 const require = createRequire(import.meta.url)
@@ -569,6 +574,54 @@ describe('portable project export service', { timeout: 20_000 }, () => {
         for (const forbidden of f.sensitiveValues) expect(bytes.includes(Buffer.from(forbidden))).toBe(false)
       }
     } finally { f.dispose() }
+  })
+
+  it('exports and restores an author import that left several effect receipts (#607)', { timeout: WINDOWS_RUNNER_IO_STALL_TIMEOUT_MS }, async () => {
+    const f = await createProjectArchiveRoundtripFixture()
+    try {
+      const namespace = `import:author-manuscript:${AUTHOR_IMPORT_RUN_ID}`
+      const expected = AUTHOR_IMPORT_EFFECTS.map(effect => ({ stage: effect.stage, batch: effect.batchId, namespace, key: effect.effectKey }))
+        .sort((left, right) => `${left.stage}:${left.batch}`.localeCompare(`${right.stage}:${right.batch}`))
+      const sourceBefore = fs.readFileSync(f.sourceDatabasePath)
+      await f.exportAndRestore()
+      expect(fs.readFileSync(f.sourceDatabasePath)).toEqual(sourceBefore)
+
+      const restored = new Database(f.targetDatabasePath, { readonly: true })
+      try {
+        const ledger = (table: string) => restored.prepare(`SELECT stage,batch_id AS batch,effect_namespace AS namespace,
+          effect_key AS key FROM ${table} WHERE run_id=? ORDER BY stage,batch_id`).all(AUTHOR_IMPORT_RUN_ID)
+        expect(ledger('import_run_receipts')).toEqual(expected)
+        expect(ledger('import_effect_ledger')).toEqual(expected)
+        expect(restored.prepare('SELECT effect_namespace,status FROM import_runs WHERE id=?').get(AUTHOR_IMPORT_RUN_ID))
+          .toEqual({ effect_namespace: namespace, status: 'completed' })
+      } finally { restored.close() }
+      const frozen = readPortableRuntimeFreeze(f.targetRoot)
+      expect(() => frozen.assertMutable('import_runs', AUTHOR_IMPORT_RUN_ID)).toThrow('PORTABLE_RUNTIME_FROZEN')
+    } finally { f.dispose() }
+  })
+
+  it('leaves the source database untouched whether or not the import receipts project', async () => {
+    const f = await createProjectArchiveRoundtripFixture()
+    try {
+      const sourceBefore = fs.readFileSync(f.sourceDatabasePath)
+      await Promise.allSettled([f.exportArchive()])
+      expect(fs.readFileSync(f.sourceDatabasePath)).toEqual(sourceBefore)
+    } finally { f.dispose() }
+  })
+
+  it('refuses an import effect key that is not a domain-safe identifier, with a readable code and no archive', async () => {
+    const f = fixture()
+    seedProject(f)
+    const db = new Database(f.databasePath)
+    db.pragma('foreign_keys = ON')
+    try {
+      insertAuthorImportReceipts(db)
+      db.prepare("UPDATE import_run_receipts SET effect_key='C:\\Users\\writer\\原稿.txt' WHERE stage='global'").run()
+    } finally { db.close() }
+    const before = fs.readFileSync(f.databasePath)
+    await expect(exportPortableProject(input(f))).rejects.toMatchObject({ code: 'PORTABLE_UNSAFE_PROJECTION' })
+    expect(fs.existsSync(f.target)).toBe(false)
+    expect(fs.readFileSync(f.databasePath)).toEqual(before)
   })
 
   it('keeps SQLite sidecar paths below the Windows limit under a long cloud staging parent', async () => {
