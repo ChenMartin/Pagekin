@@ -444,7 +444,9 @@ export function useArchitectureOverview(projectKey: string) {
     const session = captureProjectSession(currentProject)
     if (!planningRecovery || !session) return
     void ipc.invokeWithProjectSession(session, 'generation:read-context', { handle: planningRecovery.handle }).then(fresh => {
-      if (planningRecoverable(fresh) && isProjectSessionCurrent(session)) openPlanningRecoveryDraft(fresh, projectKey, planningTitle(fresh, useLocaleStore.getState().locale))
+      if (!isProjectSessionCurrent(session)) return
+      if (planningRecoverable(fresh)) openPlanningRecoveryDraft(fresh, projectKey, planningTitle(fresh, useLocaleStore.getState().locale))
+      else void loadStatus()
     }).catch(async () => {
       if (!isProjectSessionCurrent(session)) return
       const [zh, en] = outlineSourceChangedBlocked(planningRecovery) ? ['查看恢复稿', 'View recovery draft'] : ['编辑恢复稿', 'Edit recovery draft']

@@ -92,9 +92,15 @@ export function useChapterBlueprints({
   const [planningRecovery, setPlanningRecovery] = useState<GenerationRecoveryContext | null>(null)
   const latestDirectoryRun = useWorkflowStore(state => state.history.find(run => run.type === 'directory' && run.projectPath === projectKey)?.id)
   const [recoveryRevision, setRecoveryRevision] = useState(0)
-  useEffect(() => globalEventBus.on('PLANNING_RECOVERY_CHANGED', ({ projectSession }) => {
-    if (isCurrentProjectSession(projectSession)) setRecoveryRevision(value => value + 1)
-  }), [])
+  useEffect(() => {
+    const offDismiss = globalEventBus.on('PLANNING_RECOVERY_CHANGED', ({ projectSession }) => {
+      if (isCurrentProjectSession(projectSession)) setRecoveryRevision(value => value + 1)
+    })
+    const offBlueprints = globalEventBus.on('REFRESH_RESOURCE', ({ projectSession, resources }) => {
+      if (shouldRefreshBlueprints(resources) && isCurrentProjectSession(projectSession)) setRecoveryRevision(value => value + 1)
+    })
+    return () => { offDismiss(); offBlueprints() }
+  }, [])
   useEffect(() => {
     const session = currentProjectSessionForPath(projectKey)
     if (!session) return
@@ -109,7 +115,9 @@ export function useChapterBlueprints({
     const session = currentProjectSessionForPath(projectKey)
     if (!session) return
     void ipc.invokeWithProjectSession(session, 'generation:find-blueprint-recovery').then(recovery => {
-      if (recovery && isCurrentProjectSession(session)) openPlanningRecoveryDraft(recovery, projectKey, useLocaleStore.getState().text('蓝图恢复稿', 'Blueprint recovery draft'))
+      if (!isCurrentProjectSession(session)) return
+      setPlanningRecovery(recovery)
+      if (recovery) openPlanningRecoveryDraft(recovery, projectKey, useLocaleStore.getState().text('蓝图恢复稿', 'Blueprint recovery draft'))
     }).catch(() => {
       if (!isCurrentProjectSession(session)) return
       toast.error(useLocaleStore.getState().text('恢复稿还在，但没能打开\n\n读取时出错。请再点一次「编辑恢复稿」。',
