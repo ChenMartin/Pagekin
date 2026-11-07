@@ -18,7 +18,7 @@ export async function waitUntilOpen(page) {
 /** 用 Ctrl K 的「运行侧页」打开；侧页已开着时不动。 */
 export async function openFromPalette(page) {
   if (await sheet(page).isVisible()) return
-  await page.keyboard.press('Control+K')
+  await page.keyboard.press('ControlOrMeta+K')
   const input = page.getByRole('dialog', { name: '搜索与跳转' }).getByRole('combobox')
   await input.waitFor({ state: 'visible' })
   await input.fill('运行侧页')

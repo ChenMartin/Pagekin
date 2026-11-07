@@ -445,7 +445,13 @@ export function useArchitectureOverview(projectKey: string) {
     if (!planningRecovery || !session) return
     void ipc.invokeWithProjectSession(session, 'generation:read-context', { handle: planningRecovery.handle }).then(fresh => {
       if (planningRecoverable(fresh) && isProjectSessionCurrent(session)) openPlanningRecoveryDraft(fresh, projectKey, planningTitle(fresh, useLocaleStore.getState().locale))
-    }).catch(() => {})
+    }).catch(async () => {
+      if (!isProjectSessionCurrent(session)) return
+      const [zh, en] = outlineSourceChangedBlocked(planningRecovery) ? ['查看恢复稿', 'View recovery draft'] : ['编辑恢复稿', 'Edit recovery draft']
+      const { toast } = await import('../ui/Toast')
+      toast.error(useLocaleStore.getState().text(`恢复稿还在，但没能打开\n\n读取时出错。请再点一次「${zh}」。`,
+        `The recovery draft is still there but did not open.\n\nReading it failed. Click ${en} again.`))
+    })
   }
 
   return {

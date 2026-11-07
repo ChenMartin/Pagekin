@@ -61,7 +61,7 @@ export const I608_SCENARIOS = {
     for (let attempt = 0; attempt < 2; attempt++) await generate(page, fake, 15, 16, '失败')
     await blueprint.planItem(page, 13).click()
     await blueprint.titleInput(page).fill('第十三夜改名')
-    await page.keyboard.press('Control+S')
+    await page.keyboard.press('ControlOrMeta+S')
     await stage.saveStatus(page).getByText('已保存').waitFor({ state: 'visible' })
     await recoveryListed(app, page)
     const cards = await recoveryCards(page)

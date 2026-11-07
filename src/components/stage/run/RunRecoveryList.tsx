@@ -129,7 +129,11 @@ function PlanningActions({ entry, recovery }: { entry: PlanningEntry; recovery: 
       message={entry.labels.dismissConfirm}
       confirmLabel={entry.labels.confirm}
       cancelLabel={entry.labels.keep}
-      onConfirm={() => { setConfirming(false); recovery.dismissPlanning(entry) }}
+      onConfirm={() => {
+        if (recovery.busy) return
+        setConfirming(false)
+        recovery.dismissPlanning(entry)
+      }}
       onCancel={() => setConfirming(false)}
       returnFocusRef={dismissButton}
     />

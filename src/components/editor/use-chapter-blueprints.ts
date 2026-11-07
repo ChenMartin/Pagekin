@@ -110,7 +110,11 @@ export function useChapterBlueprints({
     if (!session) return
     void ipc.invokeWithProjectSession(session, 'generation:find-blueprint-recovery').then(recovery => {
       if (recovery && isCurrentProjectSession(session)) openPlanningRecoveryDraft(recovery, projectKey, useLocaleStore.getState().text('蓝图恢复稿', 'Blueprint recovery draft'))
-    }).catch(() => {})
+    }).catch(() => {
+      if (!isCurrentProjectSession(session)) return
+      toast.error(useLocaleStore.getState().text('恢复稿还在，但没能打开\n\n读取时出错。请再点一次「编辑恢复稿」。',
+        'The recovery draft is still there but did not open.\n\nReading it failed. Click Edit recovery draft again.'))
+    })
   }, [projectKey])
   // ✅ action 用 getState() 获取，不订阅 workflow store 高频更新
   const addLog = useWorkflowStore.getState().addLog

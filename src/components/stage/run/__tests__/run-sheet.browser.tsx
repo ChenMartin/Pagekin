@@ -1051,7 +1051,7 @@ describe('运行侧页的规划恢复稿（#608）', () => {
     await render()
     await vi.waitFor(() => expect(cards()).toHaveLength(2))
     const card = (index: number) => host!.querySelectorAll('.run-recovery > .run-card')[index]!
-    const inCard = (index: number, name: string) => [...card(index).querySelectorAll('.run-card-buttons button')].find(item => item.textContent === name)!
+    const inCard = (index: number, name: string) => [...card(index).querySelectorAll<HTMLButtonElement>('.run-card-buttons button')].find(item => item.textContent === name)!
     await act(async () => inCard(0, '放弃…').click())
     await act(async () => inCard(1, '编辑恢复稿').click())
     await act(async () => inCard(0, '放弃').click())
