@@ -1,0 +1,239 @@
+{
+  "schemaVersion": 1,
+  "queryConstruction": "generate-draft.command.ts: [knowledgeQueryHint, title, keyEvents, characters.join(\" \")].filter(Boolean).join(\" \")",
+  "queries": [
+    {
+      "id": "q01",
+      "chapterInfo": {
+        "knowledgeQueryHint": "",
+        "title": "铁匣",
+        "keyEvents": "沈砚找到父亲埋下的铁匣并用钥匙打开",
+        "characters": [
+          "沈砚"
+        ]
+      }
+    },
+    {
+      "id": "q02",
+      "chapterInfo": {
+        "knowledgeQueryHint": "",
+        "title": "渡口夜话",
+        "keyEvents": "阿蛮说出那晚在渡口看见的蒙面人",
+        "characters": [
+          "阿蛮",
+          "沈砚"
+        ]
+      }
+    },
+    {
+      "id": "q03",
+      "chapterInfo": {
+        "knowledgeQueryHint": "狱中药方",
+        "title": "药庐",
+        "keyEvents": "柳青禾验出沈伯言狱中所服汤药有毒",
+        "characters": [
+          "柳青禾",
+          "沈伯言"
+        ]
+      }
+    },
+    {
+      "id": "q04",
+      "chapterInfo": {
+        "knowledgeQueryHint": "",
+        "title": "盐引存根",
+        "keyEvents": "沈砚比对盐引存根与周掌柜的账本，发现数目不符",
+        "characters": [
+          "沈砚",
+          "周掌柜"
+        ]
+      }
+    },
+    {
+      "id": "q05",
+      "chapterInfo": {
+        "knowledgeQueryHint": "",
+        "title": "镖局旧约",
+        "keyEvents": "韩铁承认当年受沈伯言之托护送账册出城",
+        "characters": [
+          "韩铁"
+        ]
+      }
+    },
+    {
+      "id": "q06",
+      "chapterInfo": {
+        "knowledgeQueryHint": "重审",
+        "title": "知县的信",
+        "keyEvents": "陆知县暗中写信给府城，请求重审盐税旧案",
+        "characters": [
+          "陆知县"
+        ]
+      }
+    },
+    {
+      "id": "q07",
+      "chapterInfo": {
+        "knowledgeQueryHint": "",
+        "title": "客栈密室",
+        "keyEvents": "顾三娘带沈砚进入客栈地窖，取出父亲寄存的书信",
+        "characters": [
+          "顾三娘",
+          "沈砚"
+        ]
+      }
+    },
+    {
+      "id": "q08",
+      "chapterInfo": {
+        "knowledgeQueryHint": "",
+        "title": "千户来访",
+        "keyEvents": "赵千户带兵封锁渡口，搜查私盐",
+        "characters": [
+          "赵千户"
+        ]
+      }
+    },
+    {
+      "id": "q09",
+      "chapterInfo": {
+        "knowledgeQueryHint": "笔迹",
+        "title": "私塾旧学生",
+        "keyEvents": "秦先生认出结案文书上的笔迹是自己学生所写",
+        "characters": [
+          "秦先生"
+        ]
+      }
+    },
+    {
+      "id": "q10",
+      "chapterInfo": {
+        "knowledgeQueryHint": "",
+        "title": "黑水帮",
+        "keyEvents": "毛九派人跟踪沈砚，想抢走铁匣",
+        "characters": [
+          "毛九",
+          "沈砚"
+        ]
+      }
+    },
+    {
+      "id": "q11",
+      "chapterInfo": {
+        "knowledgeQueryHint": "",
+        "title": "师爷",
+        "keyEvents": "沈砚怀疑钱师爷伪造了结案文书",
+        "characters": [
+          "沈砚",
+          "钱师爷"
+        ]
+      }
+    },
+    {
+      "id": "q12",
+      "chapterInfo": {
+        "knowledgeQueryHint": "",
+        "title": "落鹰坡",
+        "keyEvents": "沈砚与韩铁重返落鹰坡，寻找当年遇伏的痕迹",
+        "characters": [
+          "沈砚",
+          "韩铁"
+        ]
+      }
+    },
+    {
+      "id": "q13",
+      "chapterInfo": {
+        "knowledgeQueryHint": "",
+        "title": "盐河沉箱",
+        "keyEvents": "沈砚请人下河打捞十年前沉下的木箱",
+        "characters": [
+          "沈砚",
+          "阿蛮"
+        ]
+      }
+    },
+    {
+      "id": "q14",
+      "chapterInfo": {
+        "knowledgeQueryHint": "药铺账簿",
+        "title": "断肠草",
+        "keyEvents": "柳青禾追查是谁从药铺买走断肠草",
+        "characters": [
+          "柳青禾"
+        ]
+      }
+    },
+    {
+      "id": "q15",
+      "chapterInfo": {
+        "knowledgeQueryHint": "",
+        "title": "府城来人",
+        "keyEvents": "按察司派来的官员抵达青石镇",
+        "characters": [
+          "陆知县"
+        ]
+      }
+    },
+    {
+      "id": "q16",
+      "chapterInfo": {
+        "knowledgeQueryHint": "",
+        "title": "顾三娘的旧事",
+        "keyEvents": "顾三娘说出自己与沈伯言的旧交",
+        "characters": [
+          "顾三娘",
+          "沈伯言"
+        ]
+      }
+    },
+    {
+      "id": "q17",
+      "chapterInfo": {
+        "knowledgeQueryHint": "",
+        "title": "营号",
+        "keyEvents": "沈砚查出弩箭上的营号属于赵千户旧部",
+        "characters": [
+          "沈砚",
+          "赵千户"
+        ]
+      }
+    },
+    {
+      "id": "q18",
+      "chapterInfo": {
+        "knowledgeQueryHint": "",
+        "title": "废窑",
+        "keyEvents": "沈砚与韩铁夜探盐河下游的废窑",
+        "characters": [
+          "沈砚",
+          "韩铁"
+        ]
+      }
+    },
+    {
+      "id": "q19",
+      "chapterInfo": {
+        "knowledgeQueryHint": "",
+        "title": "香囊",
+        "keyEvents": "沈砚拆开母亲留下的香囊",
+        "characters": [
+          "沈砚"
+        ]
+      }
+    },
+    {
+      "id": "q20",
+      "chapterInfo": {
+        "knowledgeQueryHint": "",
+        "title": "对质",
+        "keyEvents": "沈砚在公堂上与钱师爷对质，拿出结案文书原件",
+        "characters": [
+          "沈砚",
+          "钱师爷",
+          "陆知县"
+        ]
+      }
+    }
+  ]
+}
