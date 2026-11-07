@@ -17,12 +17,16 @@ import { buildReviewGenerationReport } from '../../../src/shared/review-generati
 import type { ReviewCycleRecheckContext } from '../../../src/shared/review-cycle'
 import type { GenerationTransportDiagnostics } from '../../../src/shared/generation-contract'
 import { extractPortableProjectArchive } from '../portable-project-archive'
+import { getPortableFieldPolicy, listPortableFieldPolicyKeys } from '../portable-project-format'
+import { logicalTableName } from '../../migrations/m07-chapter-recycle'
 import { restorePortableProject } from '../project-restore-service'
 import { readPortableRuntimeFreeze } from '../portable-runtime-freeze'
 import { ReviewRevisionGeneration } from '../review-revision-generation'
 import { GenerationRunRepository } from '../../repositories/generation-run-repository'
 import {
   exportPortableProject,
+  PORTABLE_CLEARED_TABLES,
+  portableRedactionFor,
   type ExportPortableProjectInput,
   type PortableAssetSnapshot,
   type PortableProvidedFile,
@@ -940,5 +944,38 @@ describe('portable project export service', { timeout: 20_000 }, () => {
     await expect(exportPortableProject(input(f, provider(), {
       targetArchivePath: path.join(f.root, 'forbidden.ainovel'),
     }))).rejects.toThrow('PORTABLE_TARGET_INSIDE_SOURCE')
+  })
+})
+
+describe('portable redaction registry', () => {
+  it('classifies every redacted-projection field and never collapses a field that a unique key distinguishes', () => {
+    const split = (key: string) => key.split('.') as [string, string]
+    const redacted = listPortableFieldPolicyKeys().filter(key => getPortableFieldPolicy(...split(key)).disposition === 'redacted-projection')
+    expect(redacted.filter(key => !portableRedactionFor(...split(key)))).toEqual([])
+
+    const f = fixture()
+    const db = new Database(f.databasePath, { readonly: true })
+    const collapsed: string[] = []
+    try {
+      const tables = db.prepare("SELECT name FROM pragma_table_list WHERE schema='main' AND type='table' AND name NOT LIKE 'sqlite_%'")
+        .pluck().all() as string[]
+      for (const physical of tables) {
+        const table = logicalTableName(physical)
+        if (PORTABLE_CLEARED_TABLES.includes(table)) continue
+        const keyed = new Set((db.prepare(`PRAGMA table_info("${physical}")`).all() as Array<{ name: string; pk: number }>)
+          .filter(column => column.pk > 0).map(column => column.name))
+        for (const index of db.prepare(`PRAGMA index_list("${physical}")`).all() as Array<{ name: string; unique: number }>) {
+          if (!index.unique) continue
+          for (const column of db.prepare(`PRAGMA index_info("${index.name}")`).all() as Array<{ name: string }>) keyed.add(column.name)
+        }
+        for (const field of keyed) {
+          const { disposition } = getPortableFieldPolicy(table, field)
+          const redaction = disposition === 'exclude-machine-authority' ? 'blank'
+            : disposition === 'redacted-projection' ? portableRedactionFor(table, field) : 'kept'
+          if (redaction === 'blank' || redaction === 'json-neutral') collapsed.push(`${table}.${field}`)
+        }
+      }
+    } finally { db.close() }
+    expect(collapsed.sort()).toEqual([])
   })
 })

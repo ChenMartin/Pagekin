@@ -72,6 +72,48 @@ const REQUIRED_JSON_PROJECTORS = new Set([
   'import_runs.source_display_json',
   'recovery_candidates.source_snapshot',
 ])
+/** 导入效果的命名空间与键由运行号和固定字面量拼成，各行互不相同（receipts 表有唯一约束），校验后保留原值。 */
+const PRESERVED_SAFE_ID_FIELDS = new Set([
+  'import_run_receipts.effect_namespace',
+  'import_run_receipts.effect_key',
+  'import_runs.effect_namespace',
+])
+const BLANKED_REDACTED_FIELDS = new Set([
+  'blueprint_character_sync_operations.blueprint_commit_payload_hash',
+  'blueprint_commit_operations.payload_hash',
+  'chapter_deletion_operations.manuscript_error',
+  'chapter_deletion_operations.knowledge_error',
+  'finalization_outbox.last_error',
+  'finalized_draft_import_operations.payload_hash',
+  'import_global_fact_operations.payload_hash',
+  'import_run_receipts.payload_hash',
+  'import_run_sources.source_fingerprint',
+  'import_run_sources.legacy_source_fingerprint',
+  'import_run_sources.manifest_fingerprint',
+  'import_run_sources.last_error',
+  'import_runs.source_fingerprint',
+  'import_runs.manifest_fingerprint',
+  'import_runs.authority_fingerprint',
+  'import_runs.legacy_source_fingerprint',
+  'import_runs.last_error',
+  'post_process_steps.error_msg',
+  'recovery_candidates.source_hash',
+  'recovery_candidates.failure_reason',
+])
+export const PORTABLE_CLEARED_TABLES = Object.freeze(['import_legacy_identity_bridge', 'text_metric_versions', 'llm_calls'])
+
+export type PortableRedaction = 'cleared-table' | 'json-projection' | 'json-neutral' | 'safe-id' | 'blank'
+
+/** 每个 redacted-projection 列在副本里的处理；没登记的列让导出失败，不静默清空。 */
+export function portableRedactionFor(table: string, field: string): PortableRedaction | undefined {
+  const key = `${table}.${field}`
+  if (PORTABLE_CLEARED_TABLES.includes(table)) return 'cleared-table'
+  if (REQUIRED_JSON_PROJECTORS.has(key)) return 'json-projection'
+  if (JSON_NEUTRAL.has(key)) return 'json-neutral'
+  if (PRESERVED_SAFE_ID_FIELDS.has(key)) return 'safe-id'
+  if (BLANKED_REDACTED_FIELDS.has(key)) return 'blank'
+  return undefined
+}
 const REVIEW_FINGERPRINT_FIELDS = [
   'chapterBriefHash', 'authorGuidanceHash', 'dependencyHash', 'contextSnapshotHash', 'templateHash',
   'skillSnapshotHash', 'modelLeaseRevision', 'policyHash', 'outputContractHash',
@@ -762,6 +804,7 @@ function neutralValue(key: string, column: { type: string; notnull: number }, va
       || key === 'generation_attempts.usage_receipt_json'
       || key === 'import_run_receipts.effect_receipt_json' ? null : '{}'
   }
+  if (PRESERVED_SAFE_ID_FIELDS.has(key)) return safeId(value)
   if (!column.notnull) return null
   return /INT|REAL|NUM|DEC|BOOL/u.test(column.type.toUpperCase()) ? 0 : ''
 }
@@ -798,6 +841,7 @@ function projectionForRow(
     const policy = getPortableFieldPolicy(table, column.name)
     if (policy.disposition !== 'redacted-projection') continue
     if (REQUIRED_JSON_PROJECTORS.has(key)) projection[column.name] = requiredProjection(key, row[column.name])
+    else if (PRESERVED_SAFE_ID_FIELDS.has(key)) projection[column.name] = safeId(row[column.name])
     else excludedFields.push(column.name)
   }
   return { projection, excludedFields }
@@ -833,9 +877,7 @@ export function sanitizePortableDatabase(databasePath: string): {
     const history: HistoryProjection[] = []
     const tableCounts: Record<string, number> = {}
     db.transaction(() => {
-      db.prepare('DELETE FROM import_legacy_identity_bridge').run()
-      db.prepare('DELETE FROM text_metric_versions').run()
-      db.prepare('DELETE FROM llm_calls').run()
+      for (const table of PORTABLE_CLEARED_TABLES) db.prepare(`DELETE FROM ${quote(table)}`).run()
       db.prepare("UPDATE character_avatar_assets SET source_reference='' ").run()
       const tables = db.prepare("SELECT name FROM pragma_table_list WHERE schema='main' AND type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
         .all() as Array<{ name: string }>
@@ -847,6 +889,8 @@ export function sanitizePortableDatabase(databasePath: string): {
         }>
         accountedFields += columns.length
         const policies = columns.map(column => getPortableFieldPolicy(table, column.name))
+        if (columns.some((column, index) => policies[index]!.disposition === 'redacted-projection'
+          && !portableRedactionFor(table, column.name))) fail('PORTABLE_UNSAFE_PROJECTION')
         const hasProjection = policies.some(policy => policy.disposition === 'redacted-projection')
         const hasHistory = policies.some(policy => policy.disposition === 'historical-nonreplayable')
         const rows = db.prepare(`SELECT rowid AS __portable_rowid__, * FROM ${quote(physical)}`).all() as Array<Record<string, unknown>>
