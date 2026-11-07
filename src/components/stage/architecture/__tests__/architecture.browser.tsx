@@ -858,3 +858,34 @@ describe('架构页的大纲恢复稿入口跟着主进程的判定走（#608）
     expect(useEditorStore.getState().tabs.filter(tab => tab.planningRecovery)).toEqual([])
   })
 })
+
+describe('架构页一次刷新里恢复稿刚好变成不再给作者（#608）', () => {
+  it('大纲一节说被打断时一定有能点的恢复入口；入口没了就不再说被打断', async () => {
+    core = { ...core, synopsis: renderPlotOutlineSynopsis(outlineBody(1, 5), 5, OUTLINE_SOURCE) }
+    const handle = { projectId: session.projectId, epoch: session.leaseId, rootActionId: '大纲动作', runId: '第二批' }
+    const draft = outlineBody(6, 7)
+    partial = { synopsis_protocol: PLOT_OUTLINE_PROTOCOL, synopsis_result: draft, synopsis_incomplete: true, synopsis_generation_handle: handle,
+      synopsis_covered_to: 5, synopsis_range: { from: 6, to: 10 } }
+    const context = (standing: string) => ({ handle, plotOutline: { range: { from: 6, to: 10 }, cursor: { kind: 'request', chapterNumber: 8, attempt: 'normal' } },
+      plotOutlineRecovery: { draft, completeChapters: [6, 7], writeState: { kind: 'ready' }, saved: null },
+      planningDraft: { requestedRange: { from: 6, to: 10 }, createdAtMs: 1, standing } })
+    filledSpine(['premise', 'synopsis'])
+    const fallback = invoke.getMockImplementation()!
+    let previous = ''
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'generation:read-context') {
+        // 同一次刷新里紧接着的第二次读取，恰好赶上这份恢复稿被别处补齐。
+        const repeated = previous === channel
+        previous = channel
+        return context(repeated ? 'superseded' : 'open')
+      }
+      if (channel === 'fs:read-json') previous = channel
+      return fallback(channel, ...args)
+    })
+    await render()
+    const outline = host!.querySelector('[data-section="synopsis"]')!
+    const names = [...outline.querySelectorAll('button')].map(item => item.textContent)
+    expect(names.includes('断点续写大纲')).toBe(names.includes('编辑恢复稿'))
+    expect(outline.textContent!.includes('被输出长度打断')).toBe(names.includes('编辑恢复稿'))
+  })
+})

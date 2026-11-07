@@ -3551,7 +3551,9 @@ describe('规划恢复稿是否还列为可恢复（#608）', () => {
       return run.handle
     }
     const listed = () => f.owner.listRecovery().planning.map(item => item.handle.runId)
-    return { ...f, failed, finished, listed }
+    const startedMinuteEarlier = (handle: { runId: string }) =>
+      f.db.prepare('UPDATE generation_runs SET created_at_ms=created_at_ms-60000 WHERE run_id=?').run(handle.runId)
+    return { ...f, failed, finished, listed, startedMinuteEarlier }
   }
 
   it('生成完的一批蓝图，作者改了其中一章或角色名单变了以后，运行侧页与蓝图页都不再给它', async () => {
@@ -3571,6 +3573,7 @@ describe('规划恢复稿是否还列为可恢复（#608）', () => {
     const f = directoryFixture()
     const interrupted = await f.failed(1, 3, 'interrupted')
     expect(f.listed()).toEqual([interrupted.runId])
+    f.startedMinuteEarlier(interrupted)
     await f.finished(1, 3, 'filled-later')
     expect(f.listed()).toEqual([])
     expect(f.owner.findBlueprintRecovery()).toBeNull()
@@ -3586,6 +3589,46 @@ describe('规划恢复稿是否还列为可恢复（#608）', () => {
     expect(f.listed()).toEqual([interrupted.runId])
     expect(f.owner.findBlueprintRecovery()?.handle).toEqual(interrupted)
     expect(f.owner.readContext(interrupted).planningDraft?.standing).toBe('open')
+  })
+
+  it('缺的章节作者手写补齐（没有走生成提交）：恢复稿照常列出', async () => {
+    const f = directoryFixture()
+    const interrupted = await f.failed(1, 3, 'interrupted')
+    f.startedMinuteEarlier(interrupted)
+    for (const row of rows(1, 3, '作者手写补齐')) BlueprintRepository.upsert(row)
+    expect(f.listed()).toEqual([interrupted.runId])
+    expect(f.owner.findBlueprintRecovery()?.handle).toEqual(interrupted)
+  })
+
+  it.each([
+    ['user_guidance', { userGuidance: '这几章改成雨夜' }],
+    ['role', { role: '高潮' }],
+  ])('重新生成已有章节没成功，作者只改了 %s：恢复稿照常列出', async (_field, change) => {
+    const f = directoryFixture()
+    for (const row of rows(1, 3, '作者早先写好的')) BlueprintRepository.upsert(row)
+    const regenerate = await f.failed(1, 3, 'regenerate')
+    f.startedMinuteEarlier(regenerate)
+    for (const row of rows(1, 3, '作者早先写好的')) BlueprintRepository.upsert({ ...row, ...change })
+    expect(f.listed()).toEqual([regenerate.runId])
+    expect(f.owner.readContext(regenerate).planningDraft?.standing).toBe('open')
+  })
+
+  it('覆盖这几章的正式提交早于这次运行：作者之后再改也照常列出', async () => {
+    const f = directoryFixture()
+    await f.finished(1, 3, 'earlier-batch')
+    f.db.prepare("UPDATE blueprint_commit_operations SET committed_at=datetime('now','-1 minute')").run()
+    const regenerate = await f.failed(1, 3, 'regenerate')
+    for (const row of rows(1, 3, '作者后来改过')) BlueprintRepository.upsert(row)
+    expect(f.listed()).toEqual([regenerate.runId])
+  })
+
+  it('正式提交与这次运行开跑在同一秒，分不清先后：恢复稿照常列出', async () => {
+    const f = directoryFixture()
+    const interrupted = await f.failed(1, 3, 'interrupted')
+    await f.finished(1, 3, 'same-second')
+    f.db.prepare("UPDATE generation_runs SET created_at_ms=(SELECT CAST(strftime('%s',committed_at) AS INTEGER)*1000+500 FROM blueprint_commit_operations WHERE operation_id='commit-same-second') WHERE run_id=?")
+      .run(interrupted.runId)
+    expect(f.listed()).toEqual([interrupted.runId])
   })
 
   it('只补齐了缺的一部分章节，或重新生成已有章节没成功：恢复稿照常列出', async () => {
@@ -3649,7 +3692,8 @@ describe('规划恢复稿是否还列为可恢复（#608）', () => {
     const run = f.owner.begin(selection(f, 1, 3, 'running'))
     const work = f.owner.execute({ handle: run.handle, invocationNonce: 'running', task: directoryTask })
     await vi.waitFor(() => expect(release).toBeTypeOf('function'))
-    for (const row of rows(1, 3, '别处写好的蓝图')) BlueprintRepository.upsert(row)
+    f.db.prepare('UPDATE generation_runs SET created_at_ms=created_at_ms-60000 WHERE run_id=?').run(run.handle.runId)
+    BlueprintRepository.commitRange({ mode: 'replace-range', operationId: 'elsewhere', startChapter: 1, endChapter: 3, blueprints: rows(1, 3, '别处生成的蓝图') })
     expect(f.owner.readContext(run.handle).planningDraft?.standing).toBe('open')
     expect(() => f.owner.dismissPlanningRecovery(run.handle)).toThrow('GENERATION_PLANNING_RECOVERY_IN_FLIGHT')
     release!(); await work
@@ -3691,5 +3735,22 @@ describe('规划恢复稿是否还列为可恢复（#608）', () => {
     f.db.prepare('UPDATE project_core SET synopsis=?').run(synopsis.replace('林岚确认第1份证词', '作者改写了第 1 章'))
     expect(f.owner.listRecovery().planning).toEqual([])
     expect(f.owner.readContext(run.handle).planningDraft).toMatchObject({ requestedRange: { from: 1, to: 2 }, standing: 'superseded' })
+  })
+
+  it('大纲一批中断后，作者只给缺的章加了空标题：照常列出；写了这一章的内容才不再列出', async () => {
+    const dispatch = vi.fn<GenerationRunServiceDependencies['dispatch']>(async (request, options) => {
+      options.onVisible({ kind: 'delta', text: outlineEntry(Number((request as { task: GenerationTask }).task.purpose.split(':')[2])) })
+      return { finishReason: 'stop', usage: null }
+    })
+    const f = fixture(dispatch)
+    f.db.prepare('UPDATE project_core SET total_chapters=?').run(2)
+    const run = f.owner.begin(outlineSelection(f, 2))
+    await f.owner.execute({ handle: run.handle, invocationNonce: 'outline-1', task: outlineTask(f.owner.read(run.handle).plotOutline!) })
+    acceptOutline(f.owner, run.handle)
+    expect(f.owner.listRecovery().planning.map(item => item.handle.runId)).toEqual([run.handle.runId])
+    f.db.prepare('UPDATE project_core SET synopsis=?').run(`${outlineEntry(1)}\n\n## 第2章：待定\n`)
+    expect(f.owner.listRecovery().planning.map(item => item.handle.runId)).toEqual([run.handle.runId])
+    f.db.prepare('UPDATE project_core SET synopsis=?').run(`${outlineEntry(1)}\n\n## 第2章：待定\n作者自己写了第 2 章的行动与结果。`)
+    expect(f.owner.listRecovery().planning).toEqual([])
   })
 })
