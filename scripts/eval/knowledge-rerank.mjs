@@ -43,6 +43,7 @@ const METRIC_DEFINITIONS = {
   "MRR@5": "前 5 里第一个等级 2 段落名次的倒数，没有记 0",
   "Distractor@5": "前 5 里标为撞词干扰的段落数 / 5",
   rerankOutcome: "同一次运行、同一组候选上，重排后 nDCG@5 比检索原序高记 win，低记 loss，相等记 tie",
+  grades: "查询是下一章的写作计划；2 = 写这一章前必须知道、要与之保持一致的既有事实，1 = 有用的背景，0 = 无关（撞词干扰另标）",
   chunkMapping: "每个块恰好包含一个完整语料段落；块的等级取该段落的判定等级，未判定记 0",
 }
 
@@ -200,6 +201,16 @@ function mean(rows, key) {
   return rows.length ? rows.reduce((sum, row) => sum + row.metrics[key], 0) / rows.length : 0
 }
 
+/** 重排结果必须是候选里不重复的前 min(5, 候选数) 项，否则 Distractor@5 和 nDCG@5 的分母对不上。 */
+function checkReranked(id, candidates, reranked) {
+  const known = new Set(candidates.map(item => item.paragraphSha256))
+  const hashes = reranked.map(item => item.paragraphSha256)
+  const expected = Math.min(FINAL, candidates.length)
+  if (hashes.length !== expected) fail(`${id} 的重排结果有 ${hashes.length} 项，应为 ${expected}`)
+  if (new Set(hashes).size !== hashes.length || hashes.some(hash => !known.has(hash))) fail(`${id} 的重排结果有重复项或不在候选里的段落`)
+  return reranked
+}
+
 function outcomeOf(base, other) {
   const delta = other["nDCG@5"] - base["nDCG@5"]
   if (Math.abs(delta) < 1e-9) return "tie"
@@ -216,13 +227,13 @@ async function runGroup(groupName, rerankName, outPath) {
   const reranker = rerankName ? RERANKERS[rerankName] : null
   if (rerankName && !reranker) fail(`未知重排器：${rerankName}，可选 ${Object.keys(RERANKERS).join(", ")}（BAAI/bge-reranker-v2-m3 等 R2 合入）`)
   const fixture = await loadFixture()
-  const workDir = path.join(CACHE_ROOT, `${groupName.replace(/\W/g, "-")}-${randomUUID()}`)
-  const projectPath = path.join(workDir, "project")
-  await mkdir(projectPath, { recursive: true })
   const model = embeddingModel(group)
   const configuration = group.retrieval === "vector" ? { protocol: "openai", model } : null
+  const workDir = path.join(CACHE_ROOT, `${groupName.replace(/\W/g, "-")}-${randomUUID()}`)
+  const projectPath = path.join(workDir, "project")
   let production
   try {
+    await mkdir(projectPath, { recursive: true })
     production = await bundleProduction(workDir)
     production.prepareCanonicalStorageFixture(projectPath)
     for (const chapter of fixture.corpus.chapters) {
@@ -266,7 +277,7 @@ async function runGroup(groupName, rerankName, outPath) {
       if (configuration && candidates.length && candidates.every(item => item.score === 0.5)) fail(`${id} 的候选全是全文检索的固定分 0.5，向量检索可能已回退`)
       const final = candidates.slice(0, FINAL)
       const metrics = scoreQuery(candidates, final, judged)
-      const reranked = reranker ? await reranker.rank(query, candidates) : null
+      const reranked = reranker ? checkReranked(id, candidates, await reranker.rank(query, candidates)) : null
       const rerankMetrics = reranked ? scoreQuery(candidates, reranked, judged) : null
       const wrapper = await production.captureWritingKnowledgeSnapshot(query, projectPath, configuration)
       const wrapperTop = wrapper.items.map(item => chunkToParagraph.get(item.chunkId))
@@ -316,6 +327,9 @@ async function writeReceipt(outPath, value) {
 /** 跨运行比较。全文组平分段的顺序会因块 id 随机而变，需单独标出；比较重排请用 run --rerank。 */
 async function compare(basePath, otherPath, outPath) {
   const [base, other] = await Promise.all([basePath, otherPath].map(async file => JSON.parse(await readFile(file, "utf8"))))
+  for (const [file, receipt] of [[basePath, base], [otherPath, other]]) {
+    if (receipt.kind !== "knowledge-rerank-eval" || receipt.schemaVersion !== 1) fail(`${path.basename(file)} 不是评估收据`)
+  }
   if (JSON.stringify(base.fixture.sha256) !== JSON.stringify(other.fixture.sha256)) fail("两份收据的夹具哈希不同")
   const otherById = new Map(other.queries.map(row => [row.id, row]))
   const perQuery = base.queries.map(row => {
