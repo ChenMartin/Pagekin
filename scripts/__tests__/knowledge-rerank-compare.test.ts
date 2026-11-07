@@ -50,7 +50,9 @@ describe('knowledge-rerank compare 只比较可信的收据', () => {
     ['基准 queries 不是数组', receipt(undefined, 1), receipt([row('q01')]), 'base.json'],
     ['对照 queries 条数与 fixture.queries 不符', receipt([row('q01')]), receipt([row('q01')], 2), 'other.json'],
     ['基准有缺 id 的行', receipt([row('q01'), row(null)]), receipt([row('q01'), row('q02')]), 'base.json'],
-    ['基准 id 重复', receipt([row('q01'), row('q01')]), receipt([row('q01'), row('q02')]), 'base.json'],
+    ['两份收据的 id 都是空串', receipt([row('')]), receipt([row('')]), 'base.json'],
+    ['两份收据的 id 都是数字', receipt([row(1)]), receipt([row(1)]), 'base.json'],
+    ['基准 id 重复',receipt([row('q01'), row('q01')]), receipt([row('q01'), row('q02')]), 'base.json'],
     ['对照多出基准没有的查询', receipt([row('q01')]), receipt([row('q01'), row('q02')]), 'other.json'],
   ])('%s时失败退出，不写比较结果', (_name, base, other, blamed) => {
     const result = compare(base, other)
