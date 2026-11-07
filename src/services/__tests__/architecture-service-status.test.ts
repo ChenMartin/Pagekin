@@ -52,6 +52,23 @@ describe('流程脊的架构四节是否已确认：与架构页徽标同一判�
     expect((await checkArchConfirmed(session)).synopsis).toBe(false)
   })
 
+  it('被打断的那批恢复稿已不再给作者（放弃或缺的章已补齐），正式大纲写满全书：大纲已确认，与架构页同一说法', async () => {
+    synopsis = renderPlotOutlineSynopsis(body, 24, { totalChapters: 24, writingLanguage: 'zh-CN' })
+    const handle = { projectId: session.projectId, epoch: '本次', rootActionId: '大纲动作', runId: '第三批' }
+    partial = { synopsis_protocol: PLOT_OUTLINE_PROTOCOL, synopsis_incomplete: true, synopsis_generation_handle: handle, synopsis_covered_to: 16, synopsis_range: { from: 17, to: 24 } }
+    let standing = 'dismissed'
+    invoke.mockImplementation(async (_session: unknown, channel: string) => {
+      if (channel === 'db:project-core-get') return { premise: LONG, worldbuilding: LONG, synopsis, totalChapters: 24, writingLanguage: 'zh-CN' }
+      if (channel === 'fs:read-json') return { success: true, data: partial }
+      if (channel === 'generation:read-context') return { handle, plotOutlineRecovery: { draft: body, completeChapters: [], writeState: { kind: 'ready' }, saved: null },
+        planningDraft: { requestedRange: { from: 17, to: 24 }, createdAtMs: 1, standing } }
+      return { status: 'ready' }
+    })
+    expect((await checkArchConfirmed(session)).synopsis).toBe(true)
+    standing = 'open'
+    expect((await checkArchConfirmed(session)).synopsis).toBe(false)
+  })
+
   it('分批写满全书或没有分批检查点：大纲已确认', async () => {
     synopsis = LONG
     expect((await checkArchConfirmed(session)).synopsis).toBe(true)
