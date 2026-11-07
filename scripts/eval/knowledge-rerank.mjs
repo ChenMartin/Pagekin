@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// 知识库检索评估：把冻结的合成语料导入真实 LanceDB，用生产检索代码取候选，输出可复核的 JSON 收据。
 // 用法：
 //   node scripts/eval/knowledge-rerank.mjs run --group fts --out <收据.json>
 //   node scripts/eval/knowledge-rerank.mjs run --group vector --out <收据.json>   （需要环境变量 SILICONFLOW_API_KEY）
@@ -22,7 +21,6 @@ const SILICONFLOW = { provider: "siliconflow", baseUrl: "https://api.siliconflow
 const EMBEDDING_MODEL = "BAAI/bge-m3"
 const RERANK_MODEL = "BAAI/bge-reranker-v2-m3"
 
-// rerank 为 null 的组按检索原序取前 5。重排组在 R2（electron/rerank.ts）合入后填上 rerank 函数即可跑。
 const GROUPS = {
   fts: { retrieval: "fts", rerank: null },
   vector: { retrieval: "vector", rerank: null },
@@ -104,7 +102,6 @@ function buildQuery(chapterInfo) {
   return [hint, chapterInfo.title, chapterInfo.keyEvents, chapterInfo.characters.join(" ")].filter(Boolean).join(" ")
 }
 
-/** 只用于在收据里标注候选命中了哪些词，便于核对全文组的平分段；不参与排序。 */
 function ftsTerms(query) {
   const raw = query.match(/[\p{L}\p{N}-]+/gu) ?? []
   const meaningful = raw.filter(term => Array.from(term).length >= 2)
@@ -153,12 +150,11 @@ function embeddingModel(group) {
   return { ...SILICONFLOW, apiKey, modelName: EMBEDDING_MODEL }
 }
 
-/** 与 knowledge-base.ts 的 embeddingSpaceFor 相同；对不上时生产代码会抛 SPACE_NOT_MATCHED，不会静默回退。 */
+/** 与 knowledge-base.ts 的 embeddingSpaceFor 保持一致，否则生产代码抛 SPACE_NOT_MATCHED。 */
 function embeddingSpace(model) {
   return { modelFingerprint: `openai|${model.baseUrl.trim().replace(/\/+$/, "")}|${model.modelName.trim()}`, distanceMetric: "l2" }
 }
 
-/** 每个块必须恰好包含一个完整段落，指标才是按段落判定算的。 */
 function mapChunks(chunks, paragraphs) {
   const byChunk = new Map()
   const seen = new Map()
@@ -294,7 +290,7 @@ async function writeReceipt(outPath, value) {
   await writeFile(outPath, text, "utf8")
 }
 
-/** 逐查询胜负与两次运行的一致性。全文组的平分段可能因块 id 随机而换序，单独标出。 */
+/** 全文组平分段的顺序会因块 id 随机而变，需单独标出。 */
 async function compare(basePath, otherPath, outPath) {
   const [base, other] = await Promise.all([basePath, otherPath].map(async file => JSON.parse(await readFile(file, "utf8"))))
   if (JSON.stringify(base.fixture.sha256) !== JSON.stringify(other.fixture.sha256)) fail("两份收据的夹具哈希不同")
