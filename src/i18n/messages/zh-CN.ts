@@ -30,6 +30,7 @@ export const zhCN = {
   'error.projectDeleteFailed': '项目文件夹删除失败。请关闭正在使用其中文件的程序后重试。',
   'error.projectRecentListUpdateFailed': '最近项目列表暂未更新，项目本身不受影响。',
   'error.projectArchiveTargetExists': '目标文件已存在，请选择其他文件名。项目存档不会覆盖已有文件。',
+  'error.portableUnsafeProjection': '作品没有改动。有一项数据无法安全打包，存档没有生成。请把这条提示反馈给我们。',
   'error.externalFileGrantExpired': '所选文件或文件夹的访问授权已失效，请重新选择。',
   'error.unknown': '发生错误：{message}',
   'error.generationRequestFailed': '生成请求在保存结果前出错，本次结果没有保存。请重试；如果反复出现，请把这条提示和出错时间反馈给我们。',
