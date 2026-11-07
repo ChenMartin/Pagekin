@@ -13,6 +13,10 @@ import {
   type CloudBackupControllerDependencies,
 } from '../cloud-backup-controller'
 import { removeDirectoryWithWindowsRetry } from '../../utils/remove-directory'
+import { exportPortableProject } from '../../services/project-archive-service'
+import { createPortableProjectAssetProvider } from '../../services/portable-project-assets'
+import { createProjectArchiveRoundtripFixture } from '../../../test/desktop/project-archive.fixture'
+import { WINDOWS_RUNNER_IO_STALL_TIMEOUT_MS } from '../../../test/helpers/windows-runner-io-stall'
 
 vi.mock('../../utils/remove-directory', async importOriginal => {
   const actual = await importOriginal<typeof import('../../utils/remove-directory')>()
@@ -325,6 +329,25 @@ describe('registerCloudBackupController', () => {
       backupPoint: 'snapshot-a', bindingSaved: true,
     })
     expect(fs.readdirSync(path.join(f.root, 'cloud-backup-staging'))).toEqual([])
+  })
+
+  it('backs up a real project whose author import left several effect receipts (#607)', { timeout: WINDOWS_RUNNER_IO_STALL_TIMEOUT_MS }, async () => {
+    const project = await createProjectArchiveRoundtripFixture()
+    try {
+      expect(project.sourceProjectId).toBe(PROJECT)
+      const projectSession = { ...session, projectPath: project.sourceRoot }
+      const f = fixture({
+        exportPortableProject,
+        portableAssets: createPortableProjectAssetProvider(),
+        assertCurrentProjectContext: vi.fn(() => ({ projectId: PROJECT, leaseId: session.leaseId, rootPath: project.sourceRoot })),
+        getCurrentProjectPath: vi.fn(() => project.sourceRoot),
+      })
+
+      const result = await f.invoke('cloud-backup:backup', { operationId: OPERATION, projectSession, disclosureConfirmed: true })
+
+      expect(result).toMatchObject({ success: true, state: 'backup-complete', operationId: OPERATION })
+      expect(f.deps.webDav.appendGeneration).toHaveBeenCalledWith(expect.objectContaining({ originProjectId: project.sourceProjectId }))
+    } finally { project.dispose() }
   })
 
   it('requires disclosure before export and resolves the upload secret only after export', async () => {

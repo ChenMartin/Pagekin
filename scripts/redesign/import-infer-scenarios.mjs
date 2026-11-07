@@ -110,7 +110,7 @@ export async function openAuthorImport(app, page, bookName, file) {
   return imported
 }
 
-async function confirmAndWait(page, dialog, chapterCount) {
+export async function confirmAndWait(page, dialog, chapterCount) {
   assert.equal(await dialog.getByRole('checkbox', { name: /同时反推设定、架构、角色和蓝图/u }).isChecked(), true, '反推默认勾选')
   await dialog.getByRole('button', { name: `确认导入（${chapterCount} 章）`, disabled: false }).click()
   await dialog.waitFor({ state: 'hidden' })
