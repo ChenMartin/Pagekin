@@ -157,7 +157,7 @@ function planningBlueprintText(db: Database.Database, chapter: number): { author
     const row = db.prepare('SELECT * FROM blueprints WHERE chapter_number=?').get(chapter) as Record<string, unknown> | undefined;
     return { authored: !!row && blueprintRowAuthored(row), text: stable(row ? without(row, ['created_at', 'updated_at', 'notes', 'notes_updated_at']) : null) };
 }
-/** 蓝图正文里有作者写的东西：标题、目的、关键事件、悬念钩子有字，或列了出场角色。章节角色有默认值，写作指导是生成前的输入，都不算。 */
+/** role 有默认值、user_guidance 是生成前的输入，两者不算作者已写蓝图。 */
 function blueprintRowAuthored(row: Record<string, unknown>): boolean {
     return ['title', 'purpose', 'key_events', 'suspense_hook'].some(key => typeof row[key] === 'string' && row[key].trim() !== '')
         || !['', '[]'].includes(String(row.characters ?? '').trim());

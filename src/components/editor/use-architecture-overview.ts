@@ -141,7 +141,6 @@ export function useArchitectureOverview(projectKey: string) {
     let confirmedWorldHandle: MainGenerationRunHandle | null = null
     let confirmedSynopsisHandle: MainGenerationRunHandle | null = null
     let recoveredPlanning: GenerationRecoveryContext | null = null
-    let synopsisCheckpointWithdrawn = false
     const outlineSource = archOutlineSource(core, currentProject?.novelConfig)
     const { synopsis: dbSynopsis, totalChapters, writingLanguage } = outlineSource
     try {
@@ -158,11 +157,11 @@ export function useArchitectureOverview(projectKey: string) {
           if (kind === 'synopsis') {
             const context = await ipc.invokeWithProjectSession(projectSession, 'generation:read-context', { handle }).catch(() => null)
             if (context?.plotOutlineRecovery) {
-              // 与运行侧页同一判定；不给的，检查点里的同一份镜像也不给，进度也不再按它算成被打断。
-              synopsisCheckpointWithdrawn = !planningRecoverable(context)
-              recoveredPlanning = synopsisCheckpointWithdrawn ? null : context
-              recoveredSynopsisCandidate = synopsisCheckpointWithdrawn ? '' : context.plotOutlineRecovery.draft
-              confirmedSynopsisHandle = synopsisCheckpointWithdrawn ? null : handle
+              // 与运行侧页同一判定；检查点里的同一份镜像一并不给。
+              const recoverable = planningRecoverable(context)
+              recoveredPlanning = recoverable ? context : null
+              recoveredSynopsisCandidate = recoverable ? context.plotOutlineRecovery.draft : ''
+              confirmedSynopsisHandle = recoverable ? handle : null
               continue
             }
           }
@@ -177,7 +176,7 @@ export function useArchitectureOverview(projectKey: string) {
           }
         } catch { /* Preserve the readable mirror; it does not authorize continuation. */ }
       }
-      progress = outlineProgress(dbSynopsis, synopsisCheckpointWithdrawn ? undefined : partial, writingLanguage, totalChapters)
+      progress = outlineProgress(dbSynopsis, partial, writingLanguage, totalChapters)
       recoveryFailed = progress.kind === 'unresumable'
     } catch {
       progress = outlineProgress(dbSynopsis, undefined, writingLanguage, totalChapters)

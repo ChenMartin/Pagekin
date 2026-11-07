@@ -12,13 +12,23 @@ import type { PlotOutlineRangeSource } from '../shared/plot-outline-contract'
 import { resolveWritingLanguage } from '../shared/writing-language'
 import { ipc } from './ipc-client'
 import { judgeArchCore } from './architecture-step-selection'
+import { architectureRecoveryHandle } from '../shared/architecture-recovery-navigation'
+import { planningRecoverable } from '../shared/planning-recovery'
 
-/** 读架构生成的分批检查点 partial_arch.json；没有、读不到或读失败都按没有检查点（undefined）。 */
+/**
+ * 读架构生成的分批检查点 partial_arch.json；没有、读不到或读失败都按没有检查点（undefined）。
+ * 大纲那一批的恢复稿已不再给作者（与运行侧页同一判定）时，去掉检查点里的大纲部分：架构页、流程脊、生成对话框都不再把它算成被打断的一批。
+ */
 export async function readArchCheckpoint(projectSession: ProjectSessionContext): Promise<Record<string, unknown> | undefined> {
   const { projectPath } = projectSession
   const result = await ipc.invokeWithProjectSession(projectSession, 'fs:read-json', `${projectPath}/${CANONICAL_PROJECT_DIRECTORY}/partial_arch.json`, projectPath)
     .catch(() => null)
-  return result?.success === true ? (result as { data?: Record<string, unknown> }).data : undefined
+  const checkpoint = result?.success === true ? (result as { data?: Record<string, unknown> }).data : undefined
+  const handle = architectureRecoveryHandle(checkpoint, 'synopsis', projectSession.projectId)
+  if (!checkpoint || !handle) return checkpoint
+  const context = await ipc.invokeWithProjectSession(projectSession, 'generation:read-context', { handle }).catch(() => null)
+  if (!context?.plotOutlineRecovery || planningRecoverable(context)) return checkpoint
+  return Object.fromEntries(Object.entries(checkpoint).filter(([key]) => !key.startsWith('synopsis_')))
 }
 
 /** 作品核心里情节大纲的范围来源：章数与写作语言以作品核心为准，作品核心读不到时用作品设置。 */
