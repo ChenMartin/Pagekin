@@ -35,7 +35,7 @@ export interface PortableTransferAuthority {
   originProjectId: string
   targetProjectId: string | null
   snapshotGeneration: string
-  /** 收据记的是导出时的 schema 版本：v7 包导入的作品升到 v8 后原收据仍须可读（#564 M07）。 */
+  /** 收据记的是导出时的 schema 版本：旧版本包导入的作品升到当前版本后，原收据仍须可读。 */
   sourceSchemaVersion: PortableSourceSchemaVersion
   portableDatabaseSha256: string
   requiresRuntimeFreezeGuard: true

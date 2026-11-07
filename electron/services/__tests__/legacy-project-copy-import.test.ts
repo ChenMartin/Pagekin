@@ -294,6 +294,20 @@ async function markLegacyCardsReady(f: ReturnType<typeof fixture>, officialV100 
   return meta
 }
 
+it('旧项目复制导入后在当前版本上，角色导入时的状态补了基线节点', async () => {
+  const f = fixture('v110', '')
+  addLegacyCards(f)
+  expect(await importLegacyProjectCopy({ sourceRoot: f.source, targetRoot: f.target, preflightOptions })).toMatchObject({ state: 'ready' })
+  const db = new Database(path.join(f.target, '.ai-novel', 'project.db'), { readonly: true })
+  try {
+    expect(db.pragma('user_version', { simple: true })).toBe(9)
+    const owner = db.prepare("SELECT character_id FROM characters WHERE name='乙'").pluck().get() as string
+    expect(db.prepare('SELECT event_id,subject_id,aspect,value,effective_chapter,provenance_json FROM character_continuity_events').all())
+      .toEqual([{ event_id: `legacy:state:${owner}:location`, subject_id: owner, aspect: 'location', value: '旧山门',
+        effective_chapter: 0, provenance_json: '{"kind":"legacy"}' }])
+  } finally { db.close() }
+})
+
 it('v1.1 ready 旧卡在离线副本内绑定唯一 PK 关系并保持作者投影', async () => {
   const f = fixture('v110', '')
   addLegacyCards(f)
@@ -570,7 +584,7 @@ it.each(['v100', 'v110'] as const)('%s 合法空角色名单的离线完整副�
   expect(fs.readFileSync(path.join(f.target, 'outline.md'), 'utf8')).toBe('作者目录级大纲')
   expect(fs.readFileSync(path.join(f.target, '.ai-novel', 'prompts', 'author.txt'), 'utf8')).toBe('作者项目级提示词')
   expect(fs.readFileSync(path.join(f.target, '.ai-novel', 'skills', 'author.md'), 'utf8')).toBe('作者项目级 Skill 原文')
-  expect(verifyProjectSqlite({ databasePath: path.join(f.target, '.ai-novel', 'project.db') }).schemaVersion).toBe(8)
+  expect(verifyProjectSqlite({ databasePath: path.join(f.target, '.ai-novel', 'project.db') }).schemaVersion).toBe(9)
   const db = new Database(path.join(f.target, '.ai-novel', 'project.db'), { readonly: true })
   try {
     expect(db.prepare('SELECT characters_arch FROM project_core WHERE id=?').pluck().get('main')).toBe('')
@@ -753,7 +767,7 @@ it.each(['sqlite-converted', 'renamed'] as const)('%s 子进程终止后源保�
     expect(await importLegacyProjectCopy({ sourceRoot: f.source, targetRoot: f.target, preflightOptions }))
       .toMatchObject({ state: 'ready', targetRoot: f.target })
   } else {
-    expect(verifyProjectSqlite({ databasePath: path.join(f.target, '.ai-novel', 'project.db') }).schemaVersion).toBe(8)
+    expect(verifyProjectSqlite({ databasePath: path.join(f.target, '.ai-novel', 'project.db') }).schemaVersion).toBe(9)
     const access = new ProjectAccessService(preflightOptions)
     const trusted = access.adoptLegacyProject(access.probeExistingProject(f.target))
     expect(trusted.projectId).not.toBe(f.sourceProjectId)

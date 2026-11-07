@@ -25,8 +25,8 @@ const require = createRequire(import.meta.url)
 const Database = require('better-sqlite3') as typeof import('better-sqlite3')
 const UNAVAILABLE: ProjectOverview = Object.freeze({ state: 'unavailable' })
 const SQLITE_SUFFIXES = ['', '-wal', '-shm'] as const
-// 最近项目列表在正常打开升级之前就预览。M07（#564）之前的 schema 7 只在私有快照上迁到当前版本再统计，原库不动。
-const SNAPSHOT_UPGRADABLE_SCHEMA_VERSION = 7
+// 最近项目列表在正常打开升级之前就预览。schema 7、8 的作品只在私有快照上迁到当前版本再统计，原库不动。
+const SNAPSHOT_UPGRADABLE_SCHEMA_VERSIONS: readonly number[] = [7, 8]
 
 interface ManifestState {
   rootPath: string
@@ -300,13 +300,13 @@ function aggregateProject(
   })
 }
 
-/** 快照先按 v7 形态严格校验，再迁到当前版本；只写这份私有副本。 */
-function upgradeSnapshot(snapshotPath: string): void {
+/** 快照先按它自己的版本严格校验，再迁到当前版本；只写这份私有副本。 */
+function upgradeSnapshot(snapshotPath: string, version: number): void {
   const database = new Database(snapshotPath, { fileMustExist: true })
   try {
     database.pragma('foreign_keys = ON')
     const adapter = new SqliteSchemaAdapter(database)
-    verifySchema(adapter, getDesktopMigrationRegistry(), SNAPSHOT_UPGRADABLE_SCHEMA_VERSION)
+    verifySchema(adapter, getDesktopMigrationRegistry(), version)
     migrateSchema(adapter, getDesktopMigrationRegistry(), CURRENT_DESKTOP_SCHEMA_VERSION)
   } finally { database.close() }
 }
@@ -410,9 +410,10 @@ export class ProjectPeekService {
         throw new Error('PROJECT_PEEK_SOURCE_CHANGED')
       }
       database = new Database(snapshotPath, { readonly: true, fileMustExist: true })
-      if (new SqliteSchemaAdapter(database).readUserVersion() === SNAPSHOT_UPGRADABLE_SCHEMA_VERSION) {
+      const version = new SqliteSchemaAdapter(database).readUserVersion()
+      if (SNAPSHOT_UPGRADABLE_SCHEMA_VERSIONS.includes(version)) {
         database.close()
-        upgradeSnapshot(snapshotPath)
+        upgradeSnapshot(snapshotPath, version)
         database = new Database(snapshotPath, { readonly: true, fileMustExist: true })
       }
       database.pragma('foreign_keys = ON')
