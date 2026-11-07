@@ -594,10 +594,14 @@ export class GenerateDraftCommand extends BaseWorkflowCommand {
         cleanDraftText: saved.content, id: saved.id, nextVersion: saved.version, mergedGuidance: '',
         targetChars: Number(earlyRecovery.authorInputs.find(input => input.id === 'draft:target-units')?.text) })
     }
-    const threadsAtStart = this.resumeHandle ? null : await this.listRelevantNarrativeThreads(expectedProjectPath, projectSession)
-    const threadTaskSelection = threadsAtStart
-      ? chapterThreadTasks(threadsAtStart, this.chapterInfo.chapterNumber)
-      : { tasks: (earlyRecovery ? recordedThreadTasks(earlyRecovery.authorInputs) : null) ?? this.chapterInfo.threadTasks ?? [], leftOut: 0 }
+    const threadsAtStart = this.resumeHandle ? undefined : await this.listRelevantNarrativeThreads(expectedProjectPath, projectSession)
+    if (threadsAtStart === null) callbacks.log(uiText(
+      '  伏笔线索没能读取：本章不列线索硬任务，正文照常写；线索恢复读取后可重写本章补上。',
+      '  Narrative threads could not be read: this chapter has no thread tasks and is written as usual. Rewrite it once threads load to add them.',
+    ))
+    const threadTaskSelection = this.resumeHandle
+      ? { tasks: (earlyRecovery ? recordedThreadTasks(earlyRecovery.authorInputs) : parseChapterThreadTasks(this.chapterInfo.threadTasks ?? [])) ?? [], leftOut: 0 }
+      : chapterThreadTasks(threadsAtStart ?? [], this.chapterInfo.chapterNumber)
     const writerChapterInfo = toWriterChapterInfo(this.chapterInfo, threadTaskSelection.tasks)
     if (threadTaskSelection.tasks.length > 0) {
       const { tasks, leftOut } = threadTaskSelection
@@ -781,8 +785,11 @@ export class GenerateDraftCommand extends BaseWorkflowCommand {
         .withPreviousEnding('')
         .withShortSummary('')
     }
-    const activeThreads = this.activeNarrativeThreadBlock(
-      threadsAtStart ?? await this.listRelevantNarrativeThreads(expectedProjectPath, projectSession), writingLanguage)
+    // 恢复时冻结任务只按合同里的冻结值发，不再带上它们开写后改过的计划。
+    const frozenPlanIds = new Set(threadTaskSelection.tasks.map(task => task.planId))
+    const blockThreads = threadsAtStart !== undefined ? threadsAtStart ?? []
+      : (await this.listRelevantNarrativeThreads(expectedProjectPath, projectSession) ?? []).filter(thread => !frozenPlanIds.has(thread.id))
+    const activeThreads = this.activeNarrativeThreadBlock(blockThreads, writingLanguage)
 
     if (defaultMain && earlyRecovery?.selectedDraftIds.length && !earlyRecovery.selectedDrafts)
       throw new Error('GENERATION_DRAFT_SOURCE_CHANGED')
@@ -2049,10 +2056,11 @@ ${params.candidate.text}`,
     return { sources, locatedFactCandidates: selected.reduce((sum, item) => sum + item.evidence.length, 0) }
   }
 
+  /** 读取失败返回 null，与没有相关线索区分开。 */
   private async listRelevantNarrativeThreads(
     projectPath: string,
     projectSession: ProjectSessionContext,
-  ): Promise<NarrativeThreadView[]> {
+  ): Promise<NarrativeThreadView[] | null> {
     try {
       return await ipc.invokeWithProjectSession(
         projectSession,
@@ -2066,7 +2074,7 @@ ${params.candidate.text}`,
         projectPath,
       )
     } catch {
-      return []
+      return null
     }
   }
 

@@ -165,6 +165,7 @@ export function normalizeChapterGoalReview(
         else evidence.push(located)
       }
       if (status !== 'unknown' && evidence.length === 0) valid = false
+      if (outcome === 'unaddressed' && evidence.length > 0) valid = false
     }
     if (!valid && !threadGoal) invalidCoverage = true
     if (!valid) return { ...goal, status: 'unknown', description: writingLanguageText(language,
@@ -176,6 +177,14 @@ export function normalizeChapterGoalReview(
     }
   })
   return { version: 1, chapterNumber: goals.chapterNumber, coverage: invalidCoverage ? 'unknown' : goals.coverage, items }
+}
+
+/** 存档的目标条目上线索结论是否成立；审稿记录和项目归档共用这一条规则。没有结论时成立。 */
+export function validThreadOutcome(item: Record<string, unknown>): boolean {
+  if (item.threadOutcome === undefined) return true
+  return typeof item.id === 'string' && isChapterThreadGoalId(item.id) && Object.hasOwn(THREAD_OUTCOME_STATUS, String(item.threadOutcome))
+    && THREAD_OUTCOME_STATUS[item.threadOutcome as ChapterThreadOutcome] === item.status
+    && !(item.threadOutcome === 'unaddressed' && Array.isArray(item.evidence) && item.evidence.length > 0)
 }
 
 /** Read persisted canonical reports, including historical reports without this optional field. */
@@ -190,8 +199,7 @@ export function parseChapterGoalReview(value: unknown): ChapterGoalReview | null
       || !['completed', 'unmet', 'unknown'].includes(String(item.status)) || !Array.isArray(item.evidence)) return null
     ids.add(item.id)
     if (item.status !== 'unknown' && item.evidence.length === 0) return null
-    if (item.threadOutcome !== undefined && (!isChapterThreadGoalId(item.id) || !Object.hasOwn(THREAD_OUTCOME_STATUS, String(item.threadOutcome))
-      || THREAD_OUTCOME_STATUS[item.threadOutcome as ChapterThreadOutcome] !== item.status)) return null
+    if (!validThreadOutcome(item)) return null
     for (const value of item.evidence) {
       const evidence = record(value)
       if (!evidence || !nonempty(evidence.quote) || !Number.isSafeInteger(evidence.start) || Number(evidence.start) < 0
