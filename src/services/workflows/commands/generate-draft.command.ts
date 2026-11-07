@@ -823,9 +823,15 @@ export class GenerateDraftCommand extends BaseWorkflowCommand {
       && !chapterMaterials.selection.included.some(material => material.ref.sourceId === `finalized:${requiredFinalizedSource.draftId}`)) {
       throw new Error('GENERATION_DRAFT_REQUIRED_PREDECESSOR_NOT_ADMITTED')
     }
+    if (activeThreads.count === 0 && activeThreads.leftOut > 0) {
+      callbacks.log(uiText(
+        `  相关活跃叙事线索 ${activeThreads.leftOut} 条都超出长度上限，本次未纳入`,
+        `  ${activeThreads.leftOut} relevant active narrative ${pluralEn(activeThreads.leftOut, 'thread')} exceeded the length limit and were left out`,
+      ))
+    }
     if (activeThreads.count > 0) {
       const leftOut = activeThreads.leftOut > 0
-        ? uiText(`；另有 ${activeThreads.leftOut} 条超出上限，本次未纳入`, `; ${activeThreads.leftOut} more did not fit the limit`)
+        ? uiText(`；另有 ${activeThreads.leftOut} 条超出条数或长度上限，本次未纳入`, `; ${activeThreads.leftOut} more did not fit the count or length limit`)
         : ''
       callbacks.log(chapterMaterials.selection.included.some(material => material.text === activeThreads.text)
         ? uiText(

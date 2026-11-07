@@ -188,7 +188,7 @@ export class NarrativeThreadRepository {
     return this.list(db)
       .flatMap((thread) => {
         const schedule = narrativeThreadSchedule(thread, context.chapterNumber)
-        if (!schedule || schedule.kind === 'terminal' || schedule.kind === 'later' && !mentioned(thread)) return []
+        if (!schedule || schedule.kind === 'terminal' || (schedule.kind === 'later' && !mentioned(thread))) return []
         return [{ thread, schedule }]
       })
       .sort((left, right) => compareNarrativeThreadSchedules(left.schedule, right.schedule))
