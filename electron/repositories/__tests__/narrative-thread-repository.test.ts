@@ -222,6 +222,52 @@ describe('NarrativeThreadRepository', () => {
     }).map(thread => thread.id)).not.toContain(unrelated.id)
   })
 
+  it('#301: a thread planned for chapters 1–2 stays relevant when chapter 6 is written after chapters 1–5 are final', () => {
+    const overdue = NarrativeThreadRepository.createPlan({
+      title: '青铜钥匙', type: '伏笔', targetStartChapter: 1, targetEndChapter: 2, authorIntent: '第二章揭示钥匙能打开地宫。',
+    })
+    FinalizedDraftImportRepository.commit(projectRoot, {
+      operationId: 'thread-301',
+      chapters: [1, 2, 3, 4, 5].map(n => ({ chapterNumber: n, title: `第${n}章`, content: `第${n}章正文。`, wordCount: countDraftUnits(`第${n}章正文。`) })),
+    })
+
+    expect(NarrativeThreadRepository.list()[0]).toMatchObject({ id: overdue.id, status: 'planned', overdue: true })
+    expect(NarrativeThreadRepository.listRelevantActive({
+      chapterNumber: 6, title: '雨夜追兵', keyEvents: '主角甩开追兵，躲进旧书店。', characters: ['沈砚'],
+    }).map(thread => thread.id)).toEqual([overdue.id])
+  })
+
+  it('orders relevant threads by how long they are overdue, then due, then in window, then name matches', () => {
+    const plan = (title: string, targetStartChapter: number, targetEndChapter: number) => NarrativeThreadRepository.createPlan({
+      title, type: '伏笔', targetStartChapter, targetEndChapter, authorIntent: `${title}的作者意图。`,
+    })
+    const nameHit = plan('沈砚的旧伤', 9, 12)
+    const inWindow = plan('地宫入口', 5, 9)
+    const due = plan('雨夜来信', 4, 6)
+    const overdueShort = plan('失踪的船票', 3, 4)
+    const overdueLong = plan('青铜钥匙', 1, 2)
+    plan('北港货船', 9, 12)
+
+    expect(NarrativeThreadRepository.listRelevantActive({
+      chapterNumber: 6, title: '雨夜追兵', keyEvents: '主角甩开追兵。', characters: ['沈砚'],
+    }).map(thread => thread.id)).toEqual([overdueLong.id, overdueShort.id, due.id, inWindow.id, nameHit.id])
+  })
+
+  it('skips only the plan whose stored chapter range is unusable', () => {
+    const good = NarrativeThreadRepository.createPlan({
+      title: '青铜钥匙', type: '伏笔', targetStartChapter: 1, targetEndChapter: 2, authorIntent: '第二章揭示钥匙。',
+    })
+    getProjectDb()!.prepare(`
+      INSERT INTO narrative_thread_plans (title, type, target_start_chapter, target_end_chapter, author_intent)
+      VALUES ('坏区间', '伏笔', 1, 2.5, '导入时写坏的区间。')
+    `).run()
+
+    expect(NarrativeThreadRepository.list()).toHaveLength(2)
+    expect(NarrativeThreadRepository.listRelevantActive({
+      chapterNumber: 6, title: '雨夜追兵', keyEvents: '坏区间以外的事。', characters: [],
+    }).map(thread => thread.id)).toEqual([good.id])
+  })
+
   it('moves confirmations to the replacing final when their evidence is still there and leaves the rest on the replaced final', () => {
     const key = NarrativeThreadRepository.createPlan({
       title: '旧码头的钥匙', type: '伏笔', targetStartChapter: 1, targetEndChapter: 3, authorIntent: '第三章打开仓库。',
