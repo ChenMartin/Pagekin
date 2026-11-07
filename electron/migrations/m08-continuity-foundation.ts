@@ -14,7 +14,7 @@ const M08_STATE_COLUMNS = Object.freeze({
 export const M08_TABLES = Object.freeze([
   'character_continuity_events', 'blueprint_continuity_suggestions', 'narrative_thread_assignments',
 ] as const)
-export const M08_EXEMPTION_COLUMNS = Object.freeze(['chapter_number', 'created_at'] as const)
+export const M08_EXEMPTION_COLUMNS = Object.freeze(['exemption_id', 'chapter_number', 'created_at'] as const)
 
 const aspects = ['relation', ...Object.keys(M08_STATE_COLUMNS)].map(aspect => `'${aspect}'`).join(',')
 
@@ -42,8 +42,21 @@ CREATE INDEX idx_character_continuity_events_draft ON character_continuity_event
 CREATE TRIGGER character_continuity_events_append_only BEFORE UPDATE ON character_continuity_events
 BEGIN SELECT RAISE(ABORT, 'CHARACTER_CONTINUITY_EVENT_APPEND_ONLY'); END;
 
-ALTER TABLE consistency_exemptions ADD COLUMN chapter_number INTEGER CHECK(chapter_number IS NULL OR chapter_number > 0);
-ALTER TABLE consistency_exemptions ADD COLUMN created_at TEXT NOT NULL DEFAULT '';
+CREATE TABLE consistency_exemptions_m08 (
+  exemption_id INTEGER PRIMARY KEY,
+  stable_fact_key TEXT NOT NULL,
+  chapter_number INTEGER CHECK(chapter_number IS NULL OR chapter_number > 0),
+  reason TEXT NOT NULL,
+  revoked INTEGER NOT NULL DEFAULT 0 CHECK(revoked IN (0, 1)),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(stable_fact_key, chapter_number)
+);
+INSERT INTO consistency_exemptions_m08(stable_fact_key, chapter_number, reason, revoked, created_at)
+  SELECT stable_fact_key, NULL, reason, revoked, '' FROM consistency_exemptions ORDER BY stable_fact_key;
+DROP TABLE consistency_exemptions;
+ALTER TABLE consistency_exemptions_m08 RENAME TO consistency_exemptions;
+-- chapter_number 为空表示全书豁免。UNIQUE 里两个 NULL 互不冲突，全书豁免的唯一性另用部分索引守住。
+CREATE UNIQUE INDEX idx_consistency_exemptions_global ON consistency_exemptions(stable_fact_key) WHERE chapter_number IS NULL;
 
 CREATE TABLE blueprint_continuity_suggestions (
   suggestion_id TEXT PRIMARY KEY,
