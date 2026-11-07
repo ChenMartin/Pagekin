@@ -1,4 +1,3 @@
-// #279 A11 第一步实机场景：第 1–4 章已定稿，写第 5 章时，计划第 1–2 章的线索标「已逾期 3 章」、计划第 3–5 章的标「本章到期」，都进发给模型的提示。
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 

@@ -94,13 +94,11 @@ const SCHEDULE_RANK: Record<NarrativeThreadSchedule['kind'], number> = {
   overdue: 0, due: 1, 'in-window': 2, later: 3, terminal: 4,
 }
 
-/** 逾期最久的在前，再到期、区间内、区间外。 */
 export function compareNarrativeThreadSchedules(left: NarrativeThreadSchedule, right: NarrativeThreadSchedule): number {
   return SCHEDULE_RANK[left.kind] - SCHEDULE_RANK[right.kind]
     || (right.kind === 'overdue' ? right.chaptersOverdue : 0) - (left.kind === 'overdue' ? left.chaptersOverdue : 0)
 }
 
-/** 计划加已确认事件（按章升序）推出线索视图：状态取最后一个事件，逾期按最大定稿章算。 */
 export function narrativeThreadView(
   plan: NarrativeThreadPlanRecord,
   events: NarrativeThreadEvent[],
