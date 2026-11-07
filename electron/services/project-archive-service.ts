@@ -359,6 +359,11 @@ function object(value: unknown, keys: readonly string[]): Record<string, unknown
   return result
 }
 
+/** 旧版导出器把这些列清成了空串，从旧存档恢复的副本带着空串，原样保留。 */
+function preservedSafeId(value: unknown): string {
+  return value === '' ? '' : safeId(value)
+}
+
 function safeId(value: unknown): string {
   const encoded = typeof value === 'number' && Number.isSafeInteger(value) ? String(value) : value
   if (typeof encoded !== 'string' || !SAFE_ID.test(encoded) || /^[a-z]:/iu.test(encoded)) fail('PORTABLE_UNSAFE_PROJECTION')
@@ -803,7 +808,7 @@ function neutralValue(key: string, column: { type: string; notnull: number }, va
       || key === 'generation_attempts.usage_receipt_json'
       || key === 'import_run_receipts.effect_receipt_json' ? null : '{}'
   }
-  if (PRESERVED_SAFE_ID_FIELDS.has(key)) return safeId(value)
+  if (PRESERVED_SAFE_ID_FIELDS.has(key)) return preservedSafeId(value)
   if (!column.notnull) return null
   return /INT|REAL|NUM|DEC|BOOL/u.test(column.type.toUpperCase()) ? 0 : ''
 }
@@ -840,7 +845,7 @@ function projectionForRow(
     const policy = getPortableFieldPolicy(table, column.name)
     if (policy.disposition !== 'redacted-projection') continue
     if (REQUIRED_JSON_PROJECTORS.has(key)) projection[column.name] = requiredProjection(key, row[column.name])
-    else if (PRESERVED_SAFE_ID_FIELDS.has(key)) projection[column.name] = safeId(row[column.name])
+    else if (PRESERVED_SAFE_ID_FIELDS.has(key)) projection[column.name] = preservedSafeId(row[column.name])
     else excludedFields.push(column.name)
   }
   return { projection, excludedFields }

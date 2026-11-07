@@ -613,6 +613,29 @@ describe('portable project export service', { timeout: 20_000 }, () => {
     } finally { f.dispose() }
   })
 
+  it('re-exports a copy restored from an older archive whose import identifiers were already blanked', async () => {
+    const f = fixture()
+    seedProject(f)
+    const db = new Database(f.databasePath)
+    db.pragma('foreign_keys = ON')
+    try {
+      insertAuthorImportReceipts(db)
+      db.prepare("UPDATE import_runs SET effect_namespace=''").run()
+      db.prepare("UPDATE import_run_receipts SET effect_namespace='',effect_key='' WHERE stage='global'").run()
+    } finally { db.close() }
+    await exportPortableProject(input(f))
+    const unpacked = await extract(f)
+    const portable = new Database(path.join(unpacked.stagingPath, 'project.db'), { readonly: true })
+    try {
+      expect(portable.prepare('SELECT effect_namespace AS namespace,effect_key AS key FROM import_run_receipts ORDER BY stage').all())
+        .toEqual([
+          { namespace: `import:author-manuscript:${AUTHOR_IMPORT_RUN_ID}`, key: AUTHOR_IMPORT_EFFECTS[1].effectKey },
+          { namespace: '', key: '' },
+        ])
+      expect(portable.prepare('SELECT DISTINCT effect_namespace FROM import_runs').pluck().all()).toEqual([''])
+    } finally { portable.close() }
+  })
+
   it('refuses an import effect key that is not a domain-safe identifier, with a readable code and no archive', async () => {
     const f = fixture()
     seedProject(f)

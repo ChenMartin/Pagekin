@@ -20,6 +20,7 @@ import { exportPortableProject } from '../../electron/services/project-archive-s
 import { restorePortableProject } from '../../electron/services/project-restore-service'
 import { restorePortableKnowledgeSnapshot } from '../../electron/vector-store'
 import { createCanonicalProjectManifest } from '../../src/shared/project-format'
+import { IMPORT_RUN_EFFECT_RECEIPT_SCHEMA_VERSION } from '../../src/shared/import-run'
 import type { GenerationSourceBindingInput } from '../../electron/services/generation-source-binding'
 
 const require = createRequire(import.meta.url)
@@ -297,7 +298,7 @@ export function insertAuthorImportReceipts(database: Database.Database): void {
     const payload = JSON.stringify({ batchId: effect.batchId, runId: AUTHOR_IMPORT_RUN_ID })
     database.prepare(`INSERT INTO import_run_receipts(
       run_id,schema_version,effect_namespace,effect_key,stage,batch_id,kind,payload_json,payload_hash,state,effect_receipt_json
-    ) VALUES(?,2,?,?,?,?,?,?,?,'committed','{}')`).run(AUTHOR_IMPORT_RUN_ID, namespace, effect.effectKey,
+    ) VALUES(?,?,?,?,?,?,?,?,?,'committed','{}')`).run(AUTHOR_IMPORT_RUN_ID, IMPORT_RUN_EFFECT_RECEIPT_SCHEMA_VERSION, namespace, effect.effectKey,
       effect.stage, effect.batchId, effect.kind, payload, sha256(payload))
     database.prepare(`INSERT INTO import_effect_ledger(
       run_id,stage,batch_id,effect_namespace,effect_key,state,evidence_kind

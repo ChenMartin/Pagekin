@@ -20,9 +20,9 @@ function readImportLedger(projectRoot) {
   } finally { database.close() }
 }
 
-async function backupNotice(page) {
+async function backupNotice(page, previous = '正在读取云备份配置') {
   const notice = stage.root(page).locator('[data-testid="project-backup-panel"] p[role="status"], [data-testid="project-backup-panel"] p[role="alert"]')
-    .filter({ hasNotText: '正在读取云备份配置' }).last()
+    .filter({ hasNotText: '正在读取云备份配置' }).filter({ hasNotText: previous }).last()
   await notice.waitFor({ state: 'visible', timeout: 60_000 })
   return { role: await notice.getAttribute('role'), text: (await notice.innerText()).trim() }
 }
@@ -33,7 +33,9 @@ export const I607_SCENARIOS = {
     fake.replyReview(inferenceReply)
     const dialog = await openAuthorImport(app, page, EMPTY_BOOK, manuscript(roots, [[1, '匿名信'], [2, '茶馆'], [3, '河对岸']]))
     await confirmAndWait(page, dialog, 3)
-    const { projectPath } = await app.evaluate(() => globalThis.__driveOpened)
+    const opened = await app.evaluate(() => globalThis.__driveOpened)
+    assert.ok(opened?.projectPath, '记下了界面打开作品的会话')
+    const { projectPath } = opened
     const source = readImportLedger(projectPath)
     assert.ok(source.receipts.length >= 2, `原稿导入留下多条回执：${source.receipts.length}`)
 
@@ -43,7 +45,7 @@ export const I607_SCENARIOS = {
     await app.evaluate(({ dialog: electronDialog }, paths) => {
       const opens = [[paths.archive], [paths.restoreParent]]
       electronDialog.showSaveDialog = async () => ({ canceled: false, filePath: paths.archive })
-      electronDialog.showOpenDialog = async () => ({ canceled: false, filePaths: opens.shift() ?? [] })
+      electronDialog.showOpenDialog = async () => ({ canceled: false, filePaths: opens.shift() ?? (() => { throw new Error('I607_UNEXPECTED_OPEN_DIALOG') })() })
     }, { archive, restoreParent })
 
     await stage.openSettings(page)
@@ -56,11 +58,11 @@ export const I607_SCENARIOS = {
     assert.equal(fs.existsSync(archive), true, '存档文件写到了所选位置')
 
     await stage.root(page).getByRole('button', { name: '从本地存档恢复副本', exact: true }).click()
-    const restoredNotice = stage.root(page).locator('[data-testid="project-backup-panel"] p[role="status"]').filter({ hasText: '已恢复新副本' })
-    await restoredNotice.waitFor({ state: 'visible', timeout: 60_000 })
-    const restoredText = (await restoredNotice.innerText()).trim()
+    const restoredNotice = await backupNotice(page, '本地存档已导出')
     await shoot('i607-2-restore')
-    const restoredRoot = /：(.+)$/u.exec(restoredText)?.[1]
+    assert.equal(restoredNotice.role, 'status', `恢复成功：${restoredNotice.text}`)
+    const restoredText = restoredNotice.text
+    const [, restoredProjectId, restoredRoot] = /^已恢复新副本 (\S+)：(.+)$/u.exec(restoredText) ?? []
     assert.ok(restoredRoot && fs.existsSync(restoredRoot), `恢复副本路径存在：${restoredText}`)
 
     const restored = readImportLedger(restoredRoot)
@@ -68,6 +70,8 @@ export const I607_SCENARIOS = {
     assert.deepEqual(restored.ledger, source.ledger, '副本的导入账本与原作品一致')
     assert.deepEqual(restored.runs, source.runs, '副本的导入运行保留命名空间与终态')
     await openInUi(context, restoredRoot)
+    const reopened = await app.evaluate(() => globalThis.__driveOpened)
+    assert.equal(reopened?.projectId, restoredProjectId, '界面打开的是恢复副本')
     await shoot('i607-3-restored-open')
     return { exported, restoredText, receipts: source.receipts.length, runs: restored.runs }
   } },
