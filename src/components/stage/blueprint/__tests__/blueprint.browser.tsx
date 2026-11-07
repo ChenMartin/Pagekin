@@ -889,3 +889,32 @@ describe('蓝图页打开蓝图恢复稿时读取失败（#608）', () => {
     expect(useEditorStore.getState().tabs.filter(tab => tab.planningRecovery)).toEqual([])
   })
 })
+
+describe('蓝图页的恢复稿横幅跟着主进程的判定走（#608）', () => {
+  let current: unknown
+  beforeEach(() => {
+    current = { handle: { projectId: SESSION.projectId, epoch: SESSION.leaseId, rootActionId: '根', runId: '最新' },
+      blueprintRecovery: { writeState: 'ready', draft: '第 15–16 章蓝图', editRange: { from: 15, to: 16 } },
+      planningDraft: { requestedRange: { from: 15, to: 16 }, createdAtMs: 1, standing: 'open' } }
+    const fallback = invoke.getMockImplementation() as (channel: string, ...args: unknown[]) => Promise<unknown>
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => channel === 'generation:find-blueprint-recovery' ? current : fallback(channel, ...args))
+  })
+  const banner = () => [...document.querySelectorAll('.pi-notice-title')].find(title => title.textContent === '有一份蓝图恢复稿')
+
+  it('点「编辑恢复稿」时已经没有可给的恢复稿：不打开，横幅随之消失', async () => {
+    await renderPage()
+    await expect.element(page.getByRole('button', { name: '编辑恢复稿' })).toBeVisible()
+    current = null
+    await act(async () => page.getByRole('button', { name: '编辑恢复稿' }).click())
+    await vi.waitFor(() => expect(banner()).toBeUndefined())
+    expect(useEditorStore.getState().tabs.filter(tab => tab.planningRecovery)).toEqual([])
+  })
+
+  it('缺的章节在页面开着时都存了正式蓝图：横幅随蓝图刷新一起消失', async () => {
+    await renderPage()
+    await expect.element(page.getByRole('button', { name: '编辑恢复稿' })).toBeVisible()
+    current = null
+    await refreshBlueprints()
+    await vi.waitFor(() => expect(banner()).toBeUndefined())
+  })
+})

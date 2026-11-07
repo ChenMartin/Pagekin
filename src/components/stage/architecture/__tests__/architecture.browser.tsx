@@ -819,3 +819,24 @@ describe('架构页打开大纲恢复稿时读取失败（#608）', () => {
     expect(useEditorStore.getState().tabs.filter(tab => tab.planningRecovery)).toEqual([])
   })
 })
+
+describe('架构页的大纲恢复稿入口跟着主进程的判定走（#608）', () => {
+  it('点「编辑恢复稿」时这份恢复稿已不再给作者：不打开，大纲一节的恢复入口随之消失', async () => {
+    core = { ...core, synopsis: renderPlotOutlineSynopsis(outlineBody(1, 5), 5, OUTLINE_SOURCE) }
+    const handle = { projectId: session.projectId, epoch: session.leaseId, rootActionId: '大纲动作', runId: '第二批' }
+    const draft = outlineBody(6, 7)
+    partial = { synopsis_result: draft, synopsis_incomplete: true, synopsis_generation_handle: handle }
+    const context = (standing: string) => ({ handle, plotOutline: { range: { from: 6, to: 10 }, cursor: { kind: 'request', chapterNumber: 8, attempt: 'normal' } },
+      plotOutlineRecovery: { draft, completeChapters: [6, 7], writeState: { kind: 'ready' }, saved: null },
+      planningDraft: { requestedRange: { from: 6, to: 10 }, createdAtMs: 1, standing } })
+    recoveryContext = context('open')
+    filledSpine(['premise', 'synopsis'])
+    await render()
+    const outlineEdit = () => [...host!.querySelector('[data-section="synopsis"]')!.querySelectorAll('button')].find(item => item.textContent === '编辑恢复稿')
+    expect(outlineEdit()).toBeTruthy()
+    recoveryContext = context('dismissed')
+    await act(async () => outlineEdit()!.click())
+    await vi.waitFor(() => expect(outlineEdit()).toBeUndefined())
+    expect(useEditorStore.getState().tabs.filter(tab => tab.planningRecovery)).toEqual([])
+  })
+})
