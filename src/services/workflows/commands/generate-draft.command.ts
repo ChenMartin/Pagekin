@@ -596,8 +596,8 @@ export class GenerateDraftCommand extends BaseWorkflowCommand {
     }
     const threadsAtStart = this.resumeHandle ? undefined : await this.listRelevantNarrativeThreads(expectedProjectPath, projectSession)
     if (threadsAtStart === null) callbacks.log(uiText(
-      '  伏笔线索没能读取：本章不列线索硬任务，正文照常写；线索恢复读取后可重写本章补上。',
-      '  Narrative threads could not be read: this chapter has no thread tasks and is written as usual. Rewrite it once threads load to add them.',
+      '  伏笔线索没能读取：本章不列线索硬任务，正文照常写；可到「剧情与伏笔」查看线索。',
+      '  Narrative threads could not be read: this chapter has no thread tasks and is written as usual. Check them under Plot & threads.',
     ))
     const threadTaskSelection = this.resumeHandle
       ? { tasks: (earlyRecovery ? recordedThreadTasks(earlyRecovery.authorInputs) : parseChapterThreadTasks(this.chapterInfo.threadTasks ?? [])) ?? [], leftOut: 0 }
