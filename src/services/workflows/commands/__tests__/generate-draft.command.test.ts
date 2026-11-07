@@ -3662,13 +3662,13 @@ ${headingPrefix}第3章：潮门
       expect(continuationPrompts[0]).toContain('- 本章推进或回收：青铜钥匙（本章到期；作者意图：青铜钥匙要有交代。）')
     })
 
-    it('恢复时线索块不再发出冻结任务的当前计划，其他相关线索照常列出', async () => {
+    it('恢复时线索块与开写时一样列出冻结任务的线索，续写提示不因冻结而变形', async () => {
       const { f, expected, continuationPrompts } = resumeFixture([frozenTask],
-        [threadView(1, '青铜钥匙改名', 1, 3), threadView(2, '雨夜来信', 1, 1)])
+        [threadView(1, '青铜钥匙', 1, 1), threadView(2, '雨夜来信', 1, 1)])
       await expect(f.command.execute({ step: {}, context: f.context, callbacks: f.callbacks })).resolves.toBe(expected)
       expect(continuationPrompts).toHaveLength(1)
       expect(continuationPrompts[0]).toContain('- 本章推进或回收：青铜钥匙（本章到期；作者意图：青铜钥匙要有交代。）')
-      expect(continuationPrompts[0]).not.toContain('青铜钥匙改名')
+      expect(promptLine(continuationPrompts[0]!, '青铜钥匙')).not.toBe('')
       expect(promptLine(continuationPrompts[0]!, '雨夜来信')).not.toBe('')
     })
 
