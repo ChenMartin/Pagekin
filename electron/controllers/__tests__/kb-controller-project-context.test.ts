@@ -68,7 +68,7 @@ vi.mock('../../i18n', () => ({
   mainText: vi.fn((_locale: string, zh: string) => zh),
 }))
 
-import { getEmbeddingConfig, registerKBController } from '../kb-controller'
+import { getEmbeddingConfig, getRerankConfig, registerKBController } from '../kb-controller'
 
 function rawHandler(channel: string): IpcHandler {
   const registered = mocks.handlers.get(channel)
@@ -580,5 +580,52 @@ describe('embedding config fallback by protocol', () => {
   it('never falls back to an Anthropic-protocol profile, which has no embedding endpoint', () => {
     withModel({ ...generationModel, protocol: 'anthropic' })
     expect(getEmbeddingConfig()).toBeNull()
+  })
+})
+
+describe('rerank config from the saved global config', () => {
+  const embeddingProfile = {
+    id: 'embedding', name: 'Embedding', provider: 'siliconflow', protocol: 'openai', modelName: 'BAAI/bge-m3',
+    apiKey: 'sk-fake-embedding', baseUrl: 'https://api.siliconflow.cn/v1', temperature: 0.7, maxTokens: 0, purposes: ['embedding'],
+  }
+  const rerankProfile = {
+    id: 'rerank', name: 'Rerank', provider: 'custom', protocol: 'openai', modelName: 'my-reranker',
+    apiKey: 'sk-fake-rerank', baseUrl: 'https://rerank.example/v1', temperature: 0.7, maxTokens: 0, purposes: ['rerank'],
+  }
+  const saved = (config: Record<string, unknown>, models: Record<string, unknown>[]) =>
+    mocks.readJsonFile.mockImplementation((file: string, fallback: unknown) =>
+      file === 'global.json' ? config : file === 'models.json' ? models : fallback)
+
+  it('does not rerank for a legacy config whose retrieval model is not SiliconFlow', () => {
+    saved({ defaultModelId: null, defaultEmbeddingModelId: 'embedding' },
+      [{ ...embeddingProfile, provider: 'openai', baseUrl: 'https://api.openai.com/v1' }])
+    expect(getRerankConfig()).toEqual({ kind: 'none', reason: 'embedding-not-siliconflow' })
+  })
+
+  it('does not rerank when neither retrieval nor rerank is configured', () => {
+    saved({ defaultModelId: null }, [])
+    expect(getRerankConfig()).toEqual({ kind: 'none', reason: 'not-configured' })
+  })
+
+  it('reuses exactly the SiliconFlow retrieval endpoint and key', () => {
+    saved({ defaultModelId: null, defaultEmbeddingModelId: 'embedding' }, [embeddingProfile])
+    expect(getRerankConfig()).toEqual({
+      kind: 'reuse-embedding',
+      endpoint: { baseUrl: 'https://api.siliconflow.cn/v1', apiKey: 'sk-fake-embedding', modelName: 'BAAI/bge-reranker-v2-m3' },
+    })
+  })
+
+  it('refuses reuse when a SiliconFlow profile points at another host', () => {
+    saved({ defaultModelId: null, defaultEmbeddingModelId: 'embedding' }, [{ ...embeddingProfile, baseUrl: 'https://proxy.example/v1' }])
+    expect(getRerankConfig()).toEqual({ kind: 'none', reason: 'embedding-not-siliconflow' })
+  })
+
+  it('sends only the explicit rerank profile endpoint and key', () => {
+    saved({ defaultModelId: null, defaultEmbeddingModelId: 'embedding', defaultRerankModelId: 'rerank' }, [embeddingProfile, rerankProfile])
+    expect(getRerankConfig()).toEqual({
+      kind: 'explicit',
+      profileId: 'rerank',
+      endpoint: { baseUrl: 'https://rerank.example/v1', apiKey: 'sk-fake-rerank', modelName: 'my-reranker' },
+    })
   })
 })

@@ -86,6 +86,31 @@ describe('llm model deletion consistency', () => {
     ])
   })
 
+  it('clears the default rerank reference before deleting that profile', async () => {
+    const { tryReadJsonFile } = await import('../../utils/config-utils')
+    const models = [{ id: 'generation', name: 'Generation' }, { id: 'rerank', name: 'Rerank', purposes: ['rerank'] }]
+    vi.mocked(tryReadJsonFile)
+      .mockReturnValueOnce({ status: 'ok', value: models })
+      .mockReturnValueOnce({ status: 'ok', value: { ...mocks.config, defaultRerankModelId: 'rerank' } })
+    const writes: Array<{ path: string; value: unknown }> = []
+    mocks.writeJsonFile.mockImplementation((path: string, value: unknown) => {
+      writes.push({ path, value })
+    })
+
+    await expect(deleteHandler()({}, 'rerank')).resolves.toMatchObject({ success: true, defaultRerankModelId: null })
+    expect(writes.map(write => write.path)).toEqual(['config.json', 'models.json'])
+    expect(writes[0]?.value).toMatchObject({ defaultModelId: 'generation', defaultRerankModelId: null })
+  })
+
+  it('keeps the rerank reference when another profile is deleted', async () => {
+    const { tryReadJsonFile } = await import('../../utils/config-utils')
+    vi.mocked(tryReadJsonFile)
+      .mockReturnValueOnce({ status: 'ok', value: mocks.models })
+      .mockReturnValueOnce({ status: 'ok', value: { ...mocks.config, defaultRerankModelId: 'embedding' } })
+
+    await expect(deleteHandler()({}, 'generation')).resolves.toMatchObject({ success: true, defaultRerankModelId: 'embedding' })
+  })
+
   it('rolls back cleared defaults when the model file cannot be replaced', async () => {
     const writes: Array<{ path: string; value: unknown }> = []
     mocks.writeJsonFile.mockImplementation((path: string, value: unknown) => {

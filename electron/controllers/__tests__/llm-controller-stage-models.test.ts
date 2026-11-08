@@ -107,7 +107,7 @@ describe('deleting a model that a stage uses', () => {
   it('clears the stage in the same config write that runs before the model is removed', async () => {
     mocks.files.set('config.json', { defaultModelId: 'writer', stageModelIds: { review: 'reviewer', planning: 'writer' } })
     await expect(handler('llm:delete-model')({}, 'reviewer')).resolves.toEqual({
-      success: true, defaultModelId: 'writer', defaultEmbeddingModelId: null, stageModelIds: { planning: 'writer' },
+      success: true, defaultModelId: 'writer', defaultEmbeddingModelId: null, defaultRerankModelId: null, stageModelIds: { planning: 'writer' },
     })
     expect(writes.map(write => write.path)).toEqual(['config.json', 'models.json'])
     expect(writes[0]?.value).toEqual({ defaultModelId: 'writer', stageModelIds: { planning: 'writer' } })
