@@ -37,6 +37,14 @@ describe('routeStageModel', () => {
       .toEqual({ stage: 'review', modelId: 'writer', source: 'default', staleAssignmentId: 'embedder' })
   })
 
+  it('never routes generation to a rerank-only model, as a stage or as the default', () => {
+    const reranker = { id: 'reranker', purposes: ['rerank'] }
+    expect(routeStageModel('review', state({ models: [writer, reranker], stageModelIds: { review: 'reranker' } })))
+      .toEqual({ stage: 'review', modelId: 'writer', source: 'default', staleAssignmentId: 'reranker' })
+    expect(routeStageModel('review', state({ models: [reranker], defaultModelId: 'reranker' })))
+      .toMatchObject({ modelId: null, source: 'none' })
+  })
+
   it('returns no model instead of picking the first one when the default is unusable too', () => {
     expect(routeStageModel('planning', state({ defaultModelId: 'gone', stageModelIds: { planning: 'embedder' } })))
       .toEqual({ stage: 'planning', modelId: null, source: 'none', staleAssignmentId: 'embedder' })
