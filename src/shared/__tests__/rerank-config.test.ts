@@ -38,6 +38,21 @@ describe('resolveRerankConfig', () => {
     }
   })
 
+  it.each([
+    'http://api.siliconflow.cn/v1',
+    'https://api.siliconflow.cn:8443/v1',
+    'https://api.siliconflow.com:80/v1',
+  ])('never hands the retrieval key to the SiliconFlow host over a non-registered scheme or port: %s', (baseUrl) => {
+    expect(resolveRerankConfig({ defaultRerankModelId: null, models: [], embedding: { ...siliconflowEmbedding, baseUrl } }))
+      .toEqual({ kind: 'none', reason: 'embedding-not-siliconflow' })
+  })
+
+  it('still reuses the registered endpoint when the default port is written out', () => {
+    const baseUrl = 'https://api.siliconflow.cn:443/v1'
+    expect(resolveRerankConfig({ defaultRerankModelId: null, models: [], embedding: { ...siliconflowEmbedding, baseUrl } }))
+      .toEqual({ kind: 'reuse-embedding', endpoint: { baseUrl, apiKey: 'sk-fake-embedding', modelName: 'BAAI/bge-reranker-v2-m3' } })
+  })
+
   it('does not reuse a SiliconFlow host saved under another provider', () => {
     expect(resolveRerankConfig({ defaultRerankModelId: null, models: [], embedding: { ...siliconflowEmbedding, provider: 'custom' } }))
       .toEqual({ kind: 'none', reason: 'embedding-not-siliconflow' })
