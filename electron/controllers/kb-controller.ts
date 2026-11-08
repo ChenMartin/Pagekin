@@ -220,7 +220,6 @@ export function getRerankConfig(): RerankConfig {
   })
 }
 
-/** 会重排就召回 40 段，再按重排结果切到调用方要的条数；没配重排时照旧只取调用方要的条数。 */
 async function searchRanked<Unavailable>(query: string, topK: number | undefined,
   search: (recall: number) => Promise<Array<{ text: string; score: number; fileName: string }> | Unavailable>) {
   const limit = topK ?? 5

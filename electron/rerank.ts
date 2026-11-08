@@ -51,12 +51,10 @@ async function requestOrder(query: string, documents: string[], endpoint: Rerank
   return parseOrder(body, documents.length, topN)
 }
 
-/** 召回多少段：会重排就召回 40 段；不重排或调用方要的比 40 多，照旧只取调用方要的条数。 */
 export function rerankRecallCount(config: RerankConfig, limit: number): number {
   return config.kind !== 'none' && limit <= RERANK_CANDIDATE_COUNT ? RERANK_CANDIDATE_COUNT : limit
 }
 
-/** 按重排结果取前 limit 段；没配、超过 40 段或请求失败时按原顺序取。 */
 export async function rankPassages<T extends { text: string }>(query: string, candidates: readonly T[], config: RerankConfig, limit: number):
   Promise<{ items: T[]; ranking: KnowledgeRanking }> {
   const original = (reason: KnowledgeRankingFallback) =>
