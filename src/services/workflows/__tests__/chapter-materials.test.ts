@@ -11,18 +11,25 @@ import {
   selectReviewRevisionMaterials,
   type ReviewRevisionMaterial,
 } from '../chapter-materials'
-import { MATERIAL_DECISION_MAX_INPUT_UNITS, type MaterialDecisionDraft } from '../../../shared/generation-owner-contract'
+import { MATERIAL_BYTES_PER_TOKEN, MATERIAL_DECISION_MAX_INPUT_UNITS, estimateMaterialTokens, materialBudgetFrom, type MaterialAdmission, type MaterialDecisionDraft } from '../../../shared/generation-owner-contract'
 import type { ReviewMaterialIdentity } from '../../../shared/review-revision-generation'
 
+const ROOMY_INPUT_TOKENS = 1_000_000
+/** 只看选材：把整个额度都给材料，不计提示词其余部分。 */
+const fit = (inputTokens: number) => ({
+  admission: { kind: 'budget', budget: materialBudgetFrom({ contextWindowTokens: inputTokens, contextWindowSource: 'manual', reservedOutputTokens: 0, safetyMarginTokens: 0 }) } as MaterialAdmission,
+  nonMaterialUnits: 0,
+})
+
 /** S10B-1a：该接缝现在需要项目身份并额外返回差异清单，测试里用固定身份。 */
-const assemble = (input: Omit<Parameters<typeof assembleChapterMaterials>[0], 'identity'>) =>
-  assembleChapterMaterials({ identity: { projectId: '项目', epoch: '会话' }, ...input })
+const assemble = (input: Omit<Parameters<typeof assembleChapterMaterials>[0], 'identity' | 'admission' | 'nonMaterialUnits'> & Partial<ReturnType<typeof fit>>) =>
+  assembleChapterMaterials({ identity: { projectId: '项目', epoch: '会话' }, ...fit(ROOMY_INPUT_TOKENS), ...input })
 
 describe('chapter materials', () => {
   it.each(['finalized', 'candidate'] as const)('admits the full %s predecessor at the receipt limit and refuses one byte more', async source => {
     const run = (content: string) => assemble({
       writingLanguage: 'en-US', authorProjectFacts: [], characterProfiles: '', futurePlans: '',
-      references: [], relevanceTerms: [], budgetChars: 400,
+      references: [], relevanceTerms: [], ...fit(400),
       finalized: source === 'finalized' ? [{ chapterNumber: 1, draftId: 11, title: '', content, evidence: [], includeEnding: true }] : [],
       candidates: source === 'candidate' ? [{ chapterNumber: 1, draftId: 11, version: 1, content, required: true }] : [],
     })
@@ -43,10 +50,10 @@ describe('chapter materials', () => {
     const reference = { text: evidence, rendered: `alpha beta gamma ${'z'.repeat(1500)}`, deduplicateAgainstFinalized: true }
     const input = { writingLanguage: 'en-US' as const, authorProjectFacts: [], characterProfiles: '', futurePlans: '',
       references: [reference], finalized: [low, medium], candidates: [], relevanceTerms: ['alpha', 'beta', 'gamma'] }
-    const roomy = await assemble({ ...input, budgetChars: 8000 })
+    const roomy = await assemble({ ...input, ...fit(8000) })
     const required = roomy.decision.included.filter(item => item.required).reduce((sum, item) => sum + item.units, 0)
     const lowBytes = new TextEncoder().encode(`[Finalized manuscript · Chapter 1 · draft 11]\n${low.content}`).byteLength
-    const bundle = await assemble({ ...input, budgetChars: required + new TextEncoder().encode(reference.rendered).byteLength + lowBytes + 50 })
+    const bundle = await assemble({ ...input, ...fit(Math.ceil((required + new TextEncoder().encode(reference.rendered).byteLength + lowBytes + 600) / MATERIAL_BYTES_PER_TOKEN)) })
     expect(bundle.text).toContain(evidence)
     expect(bundle.decision.omitted).not.toContainEqual(expect.objectContaining({ sourceId: 'reference:0', reason: 'deduplicated-against-finalized' }))
   })
@@ -132,7 +139,7 @@ describe('chapter materials', () => {
       }],
       candidates: [],
       relevanceTerms: ['林岚'],
-      budgetChars: 400,
+      ...fit(400),
     })
 
     expect(bundle.text).toContain('AUTHOR_REQUIRED_SENTINEL')
@@ -160,7 +167,7 @@ describe('chapter materials', () => {
       }],
       candidates: [],
       relevanceTerms: ['林岚'],
-      budgetChars: 400,
+      ...fit(400),
     })
 
     expect(bundle.includedFinalizedFacts).toBe(0)
@@ -191,7 +198,7 @@ describe('chapter materials', () => {
       finalized: [source],
       candidates: [],
       relevanceTerms: ['林岚'],
-      budgetChars: 400,
+      ...fit(400),
     })
 
     expect(bundle.text).toContain(previousChapterEnding(source.content))
@@ -299,7 +306,7 @@ describe('chapter materials', () => {
     const withAuthorFacts = (authorFactChars: number, references: Parameters<typeof assemble>[0]['references'] = []) => assemble({
       writingLanguage: 'zh-CN', authorProjectFacts: [authorFactChars > 0 ? '设'.repeat(authorFactChars) : ''],
       characterProfiles: '', futurePlans: '（无）', references, finalized: [predecessor], candidates: [],
-      relevanceTerms: ['林岚'], budgetChars: 8_000,
+      relevanceTerms: ['林岚'], ...fit(8_000),
     })
     /** 必需材料块的字节数随作者资料字数线性增长（每个「设」3 字节），据此算出各档的剩余容量。 */
     const remainingOptionalRoom = async (authorFactChars: number) => {
@@ -404,13 +411,13 @@ describe('chapter materials', () => {
       const source = previousFinalized(scenario.content, { evidence: scenario.evidence, includeEnding: true })
       const base = {
         writingLanguage: scenario.writingLanguage, authorProjectFacts: [], characterProfiles: '', futurePlans: '（无）',
-        finalized: [source], candidates: [], relevanceTerms: [scenario.term], budgetChars: 8_000,
+        finalized: [source], candidates: [], relevanceTerms: [scenario.term], ...fit(8_000),
       }
       const roomy = await assemble({ ...base, references: [] })
       const fullBlock = `${scenario.header}\n${scenario.content}`
       expect(finalizedBlock(roomy, 11)).toBe(fullBlock)
       const authorUnits = roomy.decision.included.find(item => item.sourceId === 'author:required')!.units
-      const capacity = base.budgetChars * (scenario.writingLanguage === 'zh-CN' ? 3 : 1)
+      const capacity = 8_000 * MATERIAL_BYTES_PER_TOKEN
       const fillerCount = Math.floor((capacity - authorUnits - Math.floor(bytes(fullBlock) / 2) - bytes(scenario.term)) / bytes(scenario.filler))
       const reference = { text: scenario.term, rendered: `${scenario.term}${scenario.filler.repeat(fillerCount)}` }
       expect(authorUnits + bytes(reference.rendered)).toBeLessThanOrEqual(capacity)
@@ -446,7 +453,7 @@ describe('chapter materials', () => {
       }
       const run = (authorFactChars: number) => assemble({
         writingLanguage: 'zh-CN', authorProjectFacts: ['设'.repeat(authorFactChars)], characterProfiles: '', futurePlans: '（无）',
-        references: [], finalized: [...earlier, source], candidates: [], relevanceTerms: ['林岚', '钥匙'], budgetChars: 8_000,
+        references: [], finalized: [...earlier, source], candidates: [], relevanceTerms: ['林岚', '钥匙'], ...fit(8_000),
       })
       let beyondOptionalTarget = 0
       for (let authorFactChars = 300; authorFactChars <= 7_500; authorFactChars += 150) {
@@ -476,7 +483,7 @@ describe('chapter materials', () => {
     it('leaves a predecessor candidate in charge: the finalized block of that chapter stays optional', async () => {
       const bundle = await assemble({
         writingLanguage: 'zh-CN', authorProjectFacts: ['设'.repeat(5_600)], characterProfiles: '', futurePlans: '（无）',
-        references: [], finalized: [predecessor], relevanceTerms: ['林岚'], budgetChars: 8_000,
+        references: [], finalized: [predecessor], relevanceTerms: ['林岚'], ...fit(8_000),
         candidates: [{ chapterNumber: 1, draftId: 31, version: 2, content: '批内上一章候选结尾。' }],
       })
 
@@ -652,7 +659,7 @@ describe('chapter materials', () => {
       relevanceTerms: [],
       // 预算只够必需材料：定稿块整体被省略，因此它的段落没有进入提示词，
       // 参考材料族的子串规则也就没有理由跳过这条参考。
-      budgetChars: 400,
+      ...fit(400),
     })
 
     expect(finalizedOverBudget.text).toContain('[KB保留] 铜钥匙')
@@ -738,7 +745,7 @@ describe('chapter materials', () => {
         content: 'CANDIDATE_FIRST\n\nCANDIDATE_SECOND',
       }],
       relevanceTerms: [],
-      budgetChars: 2_000,
+      ...fit(2_000),
     })
 
     expect(bundle.consumedFinalizedSources.map(source => source.chapterNumber)).toEqual([3, 4])
@@ -824,11 +831,11 @@ describe('chapter materials', () => {
     const unrelated = await assemble({ ...input, relevanceTerms: ['无关词'] })
     expect(unrelated.selection.included.find(item => item.ref.sourceId === 'candidate:101')?.text)
       .toBe(expected)
-    const budgetChars = 400
-    await expect(assemble({ ...input, relevanceTerms: ['无关词'], budgetChars })).resolves.toBeDefined()
-    const beyondOptionalTarget = await assemble({ ...input, budgetChars })
+    const inputTokens = 400
+    await expect(assemble({ ...input, relevanceTerms: ['无关词'], ...fit(inputTokens) })).resolves.toBeDefined()
+    const beyondOptionalTarget = await assemble({ ...input, ...fit(inputTokens) })
     expect(beyondOptionalTarget.text).toContain(expected)
-    expect(beyondOptionalTarget.decision.capacity.admittedUnits).toBeGreaterThan(budgetChars * 3)
+    expect(estimateMaterialTokens(beyondOptionalTarget.decision.capacity.admittedUnits)).toBeGreaterThan(inputTokens)
   })
 
   it('does not duplicate a required ending already contained in relevant predecessor prose', async () => {
@@ -878,11 +885,11 @@ describe('chapter materials', () => {
     const lastTwoTerms = ['第二窗口', '第三窗口']
     const lastTwo = await assemble({ ...requiredOnly, relevanceTerms: lastTwoTerms })
     expect(lastTwo.text).toContain(content)
-    const budgetChars = 400
-    await expect(assemble({ ...requiredOnly, relevanceTerms: lastTwoTerms, budgetChars })).resolves.toBeDefined()
-    const beyondOptionalTarget = await assemble({ ...requiredOnly, budgetChars })
+    const inputTokens = 400
+    await expect(assemble({ ...requiredOnly, relevanceTerms: lastTwoTerms, ...fit(inputTokens) })).resolves.toBeDefined()
+    const beyondOptionalTarget = await assemble({ ...requiredOnly, ...fit(inputTokens) })
     for (const text of [early, middle, late, ending]) expect(beyondOptionalTarget.text).toContain(text)
-    expect(beyondOptionalTarget.decision.capacity.admittedUnits).toBeGreaterThan(budgetChars * 3)
+    expect(estimateMaterialTokens(beyondOptionalTarget.decision.capacity.admittedUnits)).toBeGreaterThan(inputTokens)
   })
 
   it('fails closed when multiple predecessor candidates have no unique explicit required item', async () => {
@@ -899,7 +906,7 @@ describe('chapter materials', () => {
   it('keeps the explicit predecessor required while an optional candidate may lose the budget', async () => {
     const bundle = await assemble({
       writingLanguage: 'zh-CN', authorProjectFacts: [], characterProfiles: '', futurePlans: '（无）',
-      references: [], finalized: [], relevanceTerms: ['可选候选'], budgetChars: 600,
+      references: [], finalized: [], relevanceTerms: ['可选候选'], ...fit(600),
       candidates: [
         { chapterNumber: 1, draftId: 101, version: 1, content: '必需前驱。', required: true },
         { chapterNumber: 1, draftId: 102, version: 2, content: '可选候选。'.repeat(2_000) },
@@ -920,7 +927,7 @@ describe('chapter materials', () => {
     try {
       await assemble({
         writingLanguage: 'zh-CN', authorProjectFacts: [], characterProfiles: '', futurePlans: '（无）',
-        references: [], finalized: [], relevanceTerms: ['必需前驱'], budgetChars: 600,
+        references: [], finalized: [], relevanceTerms: ['必需前驱'], ...fit(600),
         candidates: [
           { chapterNumber: 1, draftId: 101, version: 1, content: '必需前驱。'.repeat(Math.ceil(MATERIAL_DECISION_MAX_INPUT_UNITS / 15)), required: true },
           { chapterNumber: 1, draftId: 102, version: 2, content: '可选候选。' },
@@ -948,9 +955,8 @@ describe('审稿/修稿入口的共享准入（selectReviewRevisionMaterials）'
   const material = (sourceId: string, contentHash: string, text: string,
     over: Partial<ReviewRevisionMaterial> = {}): ReviewRevisionMaterial =>
     ({ identity: identity(sourceId, contentHash), category: 'finalized-history', required: false, text, ...over })
-  const select = (materials: readonly ReviewRevisionMaterial[], budgetChars?: number) =>
-    selectReviewRevisionMaterials({ current: CURRENT, writingLanguage: 'zh-CN', relevanceTerms: [],
-      materials, ...(budgetChars === undefined ? {} : { budgetChars }) })
+  const select = (materials: readonly ReviewRevisionMaterial[], inputTokens = ROOMY_INPUT_TOKENS) =>
+    selectReviewRevisionMaterials({ current: CURRENT, writingLanguage: 'zh-CN', relevanceTerms: [], materials, ...fit(inputTokens) })
 
   it('admits in the caller order so each entry point keeps its own rendering', () => {
     // 合同的 included 顺序是「必需优先 + 相关度 + 规范全序」，那是写稿路径的渲染顺序。
@@ -1000,7 +1006,7 @@ describe('审稿/修稿入口的共享准入（selectReviewRevisionMaterials）'
     const admission = select([
       material('finalized:1', hash('b'), '可选'.repeat(7_000)),
       material('finalized:2', hash('a'), '前一章定稿', { required: true }),
-    ])
+    ], 6_000)
     expect(admission.admitted.map(item => item.identity.sourceId)).toEqual(['finalized:2'])
     expect(admission.selection.omissions).toEqual([
       { sourceId: 'finalized:1', revision: 1, contentHash: hash('b'), reason: 'budget', category: 'finalized-history', required: false },
@@ -1137,6 +1143,7 @@ describe('材料准入的脱敏收据（MaterialDecisionReceipt）', () => {
       ...receiptFixture(),
       // 超预算的可选参考材料被**整条**省略，不是截断。
       references: [{ text: '参', rendered: '参'.repeat(7_000) }],
+      ...fit(6_000),
     })
     expect(bundle.decision.omitted).toEqual([
       { sourceId: 'reference:0', revision: 1, contentHash: await hashAuthorText('参'.repeat(7_000)), reason: 'budget', category: 'reference', required: false },
@@ -1217,12 +1224,14 @@ describe('材料准入的脱敏收据（MaterialDecisionReceipt）', () => {
       writingLanguage: 'zh-CN',
       materials: [],
       relevanceTerms: [],
+      ...fit(ROOMY_INPUT_TOKENS),
     })
 
     expect(admission.decision).toEqual({
       version: 1,
       verdict: 'admitted',
       capacity: { maxInputUnits: MATERIAL_DECISION_MAX_INPUT_UNITS, methodVersion: 'utf8-bytes-v1', admittedUnits: 0 },
+      budget: expect.objectContaining({ inputTokens: ROOMY_INPUT_TOKENS }),
       coverage: { required: 0, included: 0, complete: true },
       included: [],
       omitted: [],

@@ -82,7 +82,7 @@ it('reopen evidence requires the original full draft task only after prose start
 
 it('startup preparation consumes captured sources through production material and outline helpers', async () => {
   const previousWindow = globalThis.window
-  const prepared = { preparationId: 'prepared-native-context', knowledgeSnapshot: { items: [
+  const prepared = { preparationId: 'prepared-native-context', materialBudget: { inputTokens: 1_000_000 }, knowledgeSnapshot: { items: [
     { documentId: 'knowledge-native-id', fileName: '灯塔.md', score: 1, text: '灯塔在北岸。' },
   ] }, selectedDrafts: [{ draftId: 7, chapterNumber: 1, version: 3, content: '林岚走到北岸。', contentHash: hash('林岚走到北岸。') }] }
   globalThis.window = { aiNovelAPI: { invoke: async channel => {

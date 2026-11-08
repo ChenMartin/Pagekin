@@ -20,6 +20,10 @@ export interface MaterialCandidate {
   staleLocator?: boolean
   /** 从同一可读来源回读到的不可变原文；stale 定位的唯一合法替代。 */
   recoveredProse?: readonly string[]
+  /** 提示词里出现几份，额度按全部份数算；默认 1。 */
+  renderedCopies?: number
+  /** 知识库片段在快照里的最终排名，从 1 起；升级前冻结的快照没有。 */
+  knowledgeRank?: number
   /** 未定稿候选材料；只有通过准入的白名单项才可能入选。 */
   candidate?: { source: CandidateSource; admission: CandidateAdmission }
 }
@@ -67,12 +71,16 @@ export type SourceSelection =
   | { decision: 'capacity-conflict'; blockingSourceId: string; blockingReason: SourceOmissionReason
       omissions: readonly SourceOmission[]; coverage: RequiredCoverage }
 
+/** 可选材料的准入规则，必需材料不受它约束。ceiling 比的是已纳入总量（含必需）加本条。 */
+export type OptionalMaterialRule =
+  | { kind: 'ceiling'; maxUnits: number }
+  | { kind: 'frozen'; contentHashes: ReadonlySet<string> }
+
 export interface SourceSelectionInput {
   current: ProjectEpoch
   candidates: readonly MaterialCandidate[]
   capacity: { maxInputUnits: number; methodVersion: string }
-  /** Optional material may enter only while total included units stay below this local ceiling. */
-  optionalMaterialCeiling?: number
+  optionalMaterial?: OptionalMaterialRule
   relevanceTerms: readonly string[]
 }
 
@@ -109,11 +117,20 @@ function canonicalCandidate(candidate: MaterialCandidate): string {
     draft ? [draft.source.artifactId, draft.source.revision, draft.source.state, draft.source.saved,
       draft.source.batchLineage, draft.admission.selectedCurrentDraftId ?? null,
       draft.admission.directPredecessorId ?? null] : null,
+    candidate.knowledgeRank ?? null,
   ])
 }
 
 const compareCandidate = (left: MaterialCandidate, right: MaterialCandidate): number =>
   compareCodeUnit(canonicalCandidate(left), canonicalCandidate(right))
+
+/** 字面命中只决定知识库片段和其他材料怎么穿插；片段彼此的先后归快照排名。 */
+function keepKnowledgeRank(sorted: readonly MaterialCandidate[]): MaterialCandidate[] {
+  const ranked = sorted.filter(item => item.knowledgeRank !== undefined)
+    .sort((left, right) => left.knowledgeRank! - right.knowledgeRank!)
+  let next = 0
+  return sorted.map(item => item.knowledgeRank === undefined ? item : ranked[next++]!)
+}
 
 /**
  * 不可变源身份。同一条源修订被引用两次属于矛盾输入（同一份内容不可能既是
@@ -179,7 +196,7 @@ export function selectChapterSources(input: SourceSelectionInput): SourceSelecti
     admissible.push(candidate)
   }
 
-  const requiredFirst = [...admissible].sort((left, right) => {
+  const relevanceFirst = [...admissible].sort((left, right) => {
     if (left.required !== right.required) return Number(right.required) - Number(left.required)
     // 先必需后可选；可选材料之间按本章相关词命中数排序，再按稳定全序收口。
     if (!left.required) {
@@ -188,9 +205,12 @@ export function selectChapterSources(input: SourceSelectionInput): SourceSelecti
     }
     return compareCandidate(left, right)
   })
+  // 旧收据当初没按排名放；恢复时材料顺序一变，提示词哈希就对不上。
+  const requiredFirst = input.optionalMaterial?.kind === 'frozen' ? relevanceFirst : keepKnowledgeRank(relevanceFirst)
   const included: SelectedMaterial[] = []
   const coveredContent = new Set<string>()
   let remaining = input.capacity.maxInputUnits
+  let repeatedUnits = 0
 
   for (const candidate of requiredFirst) {
     // 同一份不可变内容已由别的来源贡献：只记一次重复省略就够，
@@ -212,12 +232,16 @@ export function selectChapterSources(input: SourceSelectionInput): SourceSelecti
       continue
     }
     const cost = blocks.reduce((sum, piece) => sum + unitOf(piece.text), 0)
-    if (cost > remaining || !candidate.required && input.optionalMaterialCeiling !== undefined
-      && input.capacity.maxInputUnits - remaining + cost > input.optionalMaterialCeiling) {
+    const rule = candidate.required ? undefined : input.optionalMaterial
+    const repeatedCost = cost * ((candidate.renderedCopies ?? 1) - 1)
+    if (cost > remaining || rule && (rule.kind === 'frozen'
+      ? !rule.contentHashes.has(candidate.ref.contentHash)
+      : input.capacity.maxInputUnits - remaining + repeatedUnits + cost + repeatedCost > rule.maxUnits)) {
       block(candidate, 'budget')
       continue
     }
     remaining -= cost
+    repeatedUnits += repeatedCost
     for (const piece of blocks) {
       included.push({ ref: candidate.ref, category: candidate.category, text: piece.text,
         required: candidate.required, reason: piece.reason })

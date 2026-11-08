@@ -21,6 +21,9 @@ export interface RefineDraftParams extends ReviewRevisionCommandSource {
 
 export { reviewHistoryMaterials as refineHistoryMaterials } from './review-revision-materials'
 
+/** 下面的 render 把历史同时填进 global_summary 和 short_summary。 */
+const HISTORY_RENDERED_COPIES = 2
+
 export class RefineDraftCommand extends ReviewRevisionCommand {
   constructor(params: RefineDraftParams, dependencies?: WorkflowGenerationRuntimeDependencies) {
     super('refine-draft', params, [
@@ -47,9 +50,28 @@ export class RefineDraftCommand extends ReviewRevisionCommand {
       `[Additional author revision guidance — highest priority]\n${userPrompt}`) : ''
     // 与写稿/审稿路径同一套准入：定稿历史按身份整段纳入或整段省略，绝不无预算地整段拼接。
     const current = { projectId: projectSession.projectId, epoch: projectSession.leaseId }
+    const render = (admitted: ReviewRevisionMaterialAdmission['admitted']) => {
+      // Render only admitted materials; the frozen source text is never truncated.
+      const historySummary = admitted.filter(material => material.category === 'finalized-history').map(material => material.text).join('\n\n')
+      const builder = new ChapterPromptBuilder(template, language)
+        .withDraftContent(frozen.source.content)
+        .withChapterInfo({ projectPath: params.context.projectPath, chapterNumber: frozen.source.chapterNumber,
+          title: blueprint?.title ?? '', role: blueprint?.role ?? '', purpose: blueprint?.purpose ?? '',
+          characters: blueprint?.characters ?? [], keyEvents: blueprint?.keyEvents ?? '' })
+        .withGlobalGuidance(guidance)
+        .withGlobalSummary(historySummary)
+        .withShortSummary(historySummary)
+        .withWordNumber(frozen.config.wordsPerChapter)
+        .withWritingStyle(frozen.config.writingStyle || '')
+        .withUserRefinePrompt(userPromptBlock)
+      return { systemRole: builder.getSystemRole(),
+        prompt: [builder.build(), ...admitted.filter(material => material.category !== 'finalized-history').map(material => material.text)].join('\n\n') }
+    }
+    const bare = render([])
     let admission: ReviewRevisionMaterialAdmission
     try {
-      admission = await selectFrozenReviewRevisionMaterials(frozen, current)
+      admission = await selectFrozenReviewRevisionMaterials(frozen, current, await this.materialAdmission(params),
+        this.nonMaterialUnits(params, bare.prompt, bare.systemRole), HISTORY_RENDERED_COPIES)
     } catch (error) {
       if (!(error instanceof ChapterMaterialCapacityError)) throw error
       const blocked = error.decision.decision === 'capacity-conflict'
@@ -62,21 +84,8 @@ export class RefineDraftCommand extends ReviewRevisionCommand {
         '本章修稿的必需材料超出上下文容量，已停止修稿。请精简相关作者材料或前驱后重试。',
         'The required material for this revision exceeds the context capacity, so the revision stopped. Trim the required author material or predecessor and try again.'))
     }
-    // Render only admitted materials; the frozen source text is never truncated.
-    const historySummary = admission.admitted.filter(material => material.category === 'finalized-history').map(material => material.text).join('\n\n')
-    const builder = new ChapterPromptBuilder(template, language)
-      .withDraftContent(frozen.source.content)
-      .withChapterInfo({ projectPath: params.context.projectPath, chapterNumber: frozen.source.chapterNumber,
-        title: blueprint?.title ?? '', role: blueprint?.role ?? '', purpose: blueprint?.purpose ?? '',
-        characters: blueprint?.characters ?? [], keyEvents: blueprint?.keyEvents ?? '' })
-      .withGlobalGuidance(guidance)
-      .withGlobalSummary(historySummary)
-      .withShortSummary(historySummary)
-      .withWordNumber(frozen.config.wordsPerChapter)
-      .withWritingStyle(frozen.config.writingStyle || '')
-      .withUserRefinePrompt(userPromptBlock)
-    const prompt = [builder.build(), ...admission.admitted.filter(material => material.category !== 'finalized-history').map(material => material.text)].join('\n\n')
+    const { prompt, systemRole } = render(admission.admitted)
     await this.bindMaterialDecision(params, admission.decision, prompt)
-    return this.generateRevision(prepared, params, prompt, builder.getSystemRole())
+    return this.generateRevision(prepared, params, prompt, systemRole)
   }
 }

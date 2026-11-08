@@ -8,7 +8,8 @@ import type { LLMGenerateOptions } from '../llm/provider.interface'
 import type { CreativeStrategy, GenerationReasoningStage } from '../../src/shared/reasoning-types'
 import { CREATIVE_STRATEGIES } from '../../src/shared/reasoning-types'
 import { isDeepStrictEqual } from 'node:util'
-import type { ArchitecturePlanningIntent, BeginGenerationRequest, PlanningGenerationScope } from '../../src/shared/generation-owner-contract'
+import { DEFAULT_CONTEXT_WINDOW_TOKENS, materialBudgetFrom, type ArchitecturePlanningIntent, type BeginGenerationRequest, type MaterialBudget, type PlanningGenerationScope } from '../../src/shared/generation-owner-contract'
+import { modelCapabilitySource } from '../../src/shared/model-profile-draft'
 import { planBlueprintGenerationCost } from '../../src/services/workflows/blueprint-batch-policy'
 import { PLOT_OUTLINE_CONTENT, PLOT_OUTLINE_PROTOCOL, assertPlanningActionRange, parsePlanningTargetUnits, DEFAULT_PLANNING_ACTION_CHAPTERS } from '../../src/shared/plot-outline-contract'
 
@@ -258,7 +259,26 @@ function resolvePhysicalLiability(model: ModelProfile, creativeStrategy: Creativ
   const effectiveContext = Math.min(modelContext ?? Infinity, capability.userContextWindowTokens ?? Infinity)
   const reservationCeiling = totalBounded ? TOTAL_LIABILITY_UPPER_BOUND_TOKENS : Number.isFinite(effectiveContext)
     ? effectiveContext : MAIN_GENERATION_POLICY.budget.maxTokenLiability
-  return { capability, parameters, usagePolicy, reservationCeiling, modelOutput, openai, gemini, totalBounded, canBound, separateReasoning }
+  return { capability, parameters, usagePolicy, reservationCeiling, openai, gemini, totalBounded, canBound, separateReasoning }
+}
+
+/** ADR-0023 决定 2：发给服务商的输出上限只取预设、作者设置与根账单次上限的最小值。 */
+function requestedOutputLimit(capability: ReturnType<typeof resolveGenerationCapabilityConstraints>, maxOutputPerRequest: number): number {
+  return Math.min(capability.modelMaxOutputTokens ?? Infinity, capability.userMaxOutputTokens ?? Infinity, maxOutputPerRequest)
+}
+
+/** 窗口按「手填 > 拉取 > 预设 > 默认」取：手填与拉取都落在模型档案的同一字段上。 */
+export function resolveMaterialBudget(model: ModelProfile, maxOutputPerRequest: number): MaterialBudget {
+  const capability = resolveGenerationCapabilityConstraints(model)
+  const profileWindow = capability.userContextWindowTokens, presetWindow = capability.modelContextWindowTokens
+  const profileSource = modelCapabilitySource(model, 'contextWindowTokens')
+  return materialBudgetFrom({
+    contextWindowTokens: profileWindow ?? presetWindow ?? DEFAULT_CONTEXT_WINDOW_TOKENS,
+    contextWindowSource: profileWindow !== null ? (profileSource === 'unknown' ? 'manual' : profileSource)
+      : presetWindow !== null ? 'preset' : 'default',
+    reservedOutputTokens: requestedOutputLimit(capability, maxOutputPerRequest),
+    safetyMarginTokens: MAIN_GENERATION_POLICY.safetyMarginTokens,
+  })
 }
 
 export function buildMainGenerationPlan(model: ModelProfile, receipt: Pick<ModelExecutionLeaseReceipt, 'capabilityEvidence'>,
@@ -266,7 +286,7 @@ export function buildMainGenerationPlan(model: ModelProfile, receipt: Pick<Model
   assertSemanticGenerationTask(task)
   const inputUpperBoundTokens = task.messages.reduce((sum, message) =>
     sum + Buffer.byteLength(message.content, 'utf8') + Buffer.byteLength(message.role) + 32, 32)
-  const { capability, parameters, usagePolicy, modelOutput, openai, gemini, totalBounded, canBound, separateReasoning }
+  const { capability, parameters, usagePolicy, openai, gemini, totalBounded, canBound, separateReasoning }
     = resolvePhysicalLiability(model, creativeStrategy, task.reasoningStage ?? (task.output === 'visible-text' ? 'drafting' : 'planning'))
   const evidence = receipt.capabilityEvidence, safety = MAIN_GENERATION_POLICY.safetyMarginTokens
   const options = (maxTokens: number): LLMGenerateOptions => ({ ...parameters, maxTokens,
@@ -295,8 +315,7 @@ export function buildMainGenerationPlan(model: ModelProfile, receipt: Pick<Model
       reasoningUpperBoundTokens: decision.reasoningUpperBoundTokens, requestedOutputTokens: decision.reservedOutputTokens,
     }
   }
-  const requestedOutputTokens = Math.min(modelOutput ?? Infinity, capability.userMaxOutputTokens ?? Infinity,
-    budget.policy.maxOutputPerRequest)
+  const requestedOutputTokens = requestedOutputLimit(capability, budget.policy.maxOutputPerRequest)
   // SiliconFlow max_tokens excludes reasoning, and thinking_budget is not a hard
   // stop for every model. Reserve the separately selected envelope instead.
   // This is a reservation, never a claim that the model consumed that many tokens.

@@ -1012,7 +1012,7 @@ describe('写稿时冻结的线索任务跟着便携副本走（#623 后续）',
   const MACHINE_PATH = 'C:\\Users\\writer\\密钥.txt'
   const task = { planId: 8, title: '旧信', authorIntent: '交代旧信的寄信人。', schedule: { kind: 'overdue', chaptersOverdue: 2 } }
 
-  function seedWrittenDraft(f: Fixture, draftId: number, chapterNumber: number, threadTasks: unknown): void {
+  function seedWrittenDraft(f: Fixture, draftId: number, chapterNumber: number, threadTasks: unknown, manifestExtras: Record<string, unknown> = {}): void {
     const db = new Database(f.databasePath)
     db.pragma('foreign_keys = ON')
     try {
@@ -1028,7 +1028,7 @@ describe('写稿时冻结的线索任务跟着便携副本走（#623 后续）',
         JSON.stringify({ maxPhysicalRequests: 2, maxTokenLiability: 1000, maxOutputPerRequest: 500, maxActiveElapsedMs: 1000 }))
       db.prepare('INSERT INTO generation_runs VALUES(?,?,?,?,?,?)').run(run, root, JSON.stringify({
         projectId: f.projectId, epoch: 'epoch-1', fingerprint: {}, contextSnapshotId: 'context-1',
-        sourceManifest: { operation: 'chapter-draft', chapterNumber, secretRef: SECRET, endpoint: ENDPOINT, authorInputs: [
+        sourceManifest: { ...manifestExtras, operation: 'chapter-draft', chapterNumber, secretRef: SECRET, endpoint: ENDPOINT, authorInputs: [
           { id: 'draft:chapter-info', text: JSON.stringify({ chapterNumber, title: '雨夜', keyEvents: MACHINE_PATH, threadTasks }) },
           { id: 'draft:target-units', text: '900' }] }, sourceRefs: [] }), 'completed', 1, `open-${run}`)
       db.prepare('INSERT INTO generation_attempts VALUES(?,?,?,?,?,?,?)').run(attempt, `reservation-${attempt}`, run, root,
@@ -1082,6 +1082,20 @@ describe('写稿时冻结的线索任务跟着便携副本走（#623 后续）',
       expect(JSON.parse(db.prepare("SELECT binding_json FROM generation_runs WHERE run_id='run-draft-5'").pluck().get() as string))
         .toEqual({ sourceManifest: { authorInputs: [{ id: 'draft:chapter-info', text: JSON.stringify({ threadTasks: [task] }) }] } })
     } finally { db.close() }
+  })
+
+  it('写稿收据里的材料额度不进副本，恢复后这份稿按没有收据的旧稿读', async () => {
+    const f = fixture()
+    seedWrittenDraft(f, 5, 1, [task], { materialDecision: { version: 1, verdict: 'admitted', included: [], omitted: [],
+      budget: { inputTokens: 27_680, contextWindowTokens: 32_768, contextWindowSource: 'default', reservedOutputTokens: 4_576, safetyMarginTokens: 512 } } })
+    const before = reviewGoals(f.databasePath, 5)
+    const restored = await roundtrip(f, 'restored-material-budget')
+    const db = new Database(restored, { readonly: true })
+    try {
+      expect(JSON.parse(db.prepare("SELECT binding_json FROM generation_runs WHERE run_id='run-draft-5'").pluck().get() as string).sourceManifest)
+        .not.toHaveProperty('materialDecision')
+    } finally { db.close() }
+    expect(reviewGoals(restored, 5)).toEqual(before)
   })
 
   it('恢复出的副本再导出一次，线索任务仍在', async () => {

@@ -91,7 +91,7 @@ export async function prepare(page, context, chapterNumber, selectedDraftIds = [
   const materials = await assembleChapterMaterials({ identity: { projectId: context.projectId, epoch: context.leaseId },
     writingLanguage: 'zh-CN', authorProjectFacts: authorInputs.map(input => input.text), characterProfiles: '', futurePlans: '',
     references: prepared.knowledgeSnapshot.items.map(item => ({ text: item.text, rendered: `[${item.fileName}]\n${item.text}` })),
-    finalized: [], candidates: prepared.selectedDrafts, relevanceTerms: ['灯塔', '沿岸调查'], budgetChars: 8_000 })
+    finalized: [], candidates: prepared.selectedDrafts, relevanceTerms: ['灯塔', '沿岸调查'], admission: { kind: 'budget', budget: prepared.materialBudget }, nonMaterialUnits: 0 })
   const sourcePrompt = `依据以下材料撰写第 ${chapterNumber} 章合成中文正文。\n\n${materials.text}`
   const outlineTask = { purpose: DRAFT_SHORT_OUTLINE_PURPOSE, output: 'visible-text', reasoningStage: 'planning',
     messages: [{ role: 'user', content: draftShortOutlinePrompt('zh-CN', sourcePrompt) }] }
