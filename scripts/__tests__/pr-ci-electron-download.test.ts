@@ -103,9 +103,7 @@ describe('PR CI Electron download', () => {
     expect(run.attempts).toBe(5)
     for (const attempt of [1, 2, 3, 4, 5]) expect(run.output).toContain(`attempt ${attempt}/5 failed`)
     expect(run.output.match(/Response code 504/g)).toHaveLength(5)
-    expect(run.sleeps).toHaveLength(4)
-    expect(run.sleeps).toEqual([...run.sleeps].sort((a, b) => a - b))
-    expect(run.sleeps.reduce((sum, seconds) => sum + seconds, 0)).toBeLessThan(300)
+    expect(run.sleeps).toEqual([10, 20, 40, 80])
     expect(run.output).not.toContain(LEAK_SENTINEL)
   })
 
