@@ -276,7 +276,7 @@ describe('review/revision consumers using the main contract (synthetic transport
 
     const sent = f.provider.mock.calls[0]![0].map(message => message.content).join('')
     expect(estimateMaterialTokens(new TextEncoder().encode(sent).length)).toBeLessThanOrEqual(materialBudget.inputTokens)
-    expect(f.fixture.materialDecisions[0]?.included.some(item => item.sourceId.startsWith('finalized:'))).toBe(true)
+    expect(f.fixture.materialDecisions[0]?.included.filter(item => item.sourceId.startsWith('finalized:'))).toHaveLength(2)
   })
 
   it.each(['review-chapter', 'refine-draft', 'refine-from-review'] as const)('passes the complete required set beyond 24k to the actual %s request', async operation => {

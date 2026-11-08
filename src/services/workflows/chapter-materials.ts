@@ -254,6 +254,7 @@ export interface ReviewRevisionMaterial {
   required: boolean
   /** 该材料在本入口提示词里的文本（块头按各入口原有措辞由调用方给出）。 */
   text: string
+  renderedCopies?: number
 }
 
 export interface ReviewRevisionMaterialAdmission {
@@ -304,6 +305,7 @@ export function selectReviewRevisionMaterials(input: {
     provenance: material.identity.provenance,
     required: material.required,
     text: material.text,
+    ...(material.renderedCopies === undefined ? {} : { renderedCopies: material.renderedCopies }),
   }))
   // The receipt limit is already in UTF-8 units; it is not a model window or a character allowance.
   const capacity = {

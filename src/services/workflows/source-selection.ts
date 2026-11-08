@@ -20,6 +20,8 @@ export interface MaterialCandidate {
   staleLocator?: boolean
   /** 从同一可读来源回读到的不可变原文；stale 定位的唯一合法替代。 */
   recoveredProse?: readonly string[]
+  /** 提示词里出现几份，额度按全部份数算；默认 1。 */
+  renderedCopies?: number
   /** 知识库片段在快照里的最终排名，从 1 起；升级前冻结的快照没有。 */
   knowledgeRank?: number
   /** 未定稿候选材料；只有通过准入的白名单项才可能入选。 */
@@ -207,6 +209,7 @@ export function selectChapterSources(input: SourceSelectionInput): SourceSelecti
   const included: SelectedMaterial[] = []
   const coveredContent = new Set<string>()
   let remaining = input.capacity.maxInputUnits
+  let repeatedUnits = 0
 
   for (const candidate of requiredFirst) {
     // 同一份不可变内容已由别的来源贡献：只记一次重复省略就够，
@@ -229,13 +232,15 @@ export function selectChapterSources(input: SourceSelectionInput): SourceSelecti
     }
     const cost = blocks.reduce((sum, piece) => sum + unitOf(piece.text), 0)
     const rule = candidate.required ? undefined : input.optionalMaterial
+    const repeatedCost = cost * ((candidate.renderedCopies ?? 1) - 1)
     if (cost > remaining || rule && (rule.kind === 'frozen'
       ? !rule.contentHashes.has(candidate.ref.contentHash)
-      : input.capacity.maxInputUnits - remaining + cost > rule.maxUnits)) {
+      : input.capacity.maxInputUnits - remaining + repeatedUnits + cost + repeatedCost > rule.maxUnits)) {
       block(candidate, 'budget')
       continue
     }
     remaining -= cost
+    repeatedUnits += repeatedCost
     for (const piece of blocks) {
       included.push({ ref: candidate.ref, category: candidate.category, text: piece.text,
         required: candidate.required, reason: piece.reason })

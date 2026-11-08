@@ -22,12 +22,13 @@ export function reviewHistoryMaterials(frozen: ReviewRevisionContext, current: C
 }
 
 export async function selectFrozenReviewRevisionMaterials(frozen: ReviewRevisionContext, current: ChapterMaterialIdentity,
-  admission: MaterialAdmission, nonMaterialUnits: number) {
+  admission: MaterialAdmission, nonMaterialUnits: number, historyRenderedCopies = 1) {
   const author = reviewRevisionAuthorMaterial(frozen)
   const ai = reviewRevisionAiBrief(frozen)
   const materials: ReviewRevisionMaterial[] = [{ identity: { projectId: current.projectId,
     sourceId: 'author:required', revision: 1, contentHash: await hashAuthorText(author), provenance: 'author' },
-  category: 'author', required: true, text: author }, ...reviewHistoryMaterials(frozen, current)]
+  category: 'author', required: true, text: author },
+  ...reviewHistoryMaterials(frozen, current).map(material => ({ ...material, renderedCopies: historyRenderedCopies }))]
   if (ai) materials.push({ identity: { projectId: current.projectId,
     sourceId: `review:confirmed:${frozen.confirmation!.reviewSourceId}`, revision: frozen.confirmation!.reviewSourceId,
     contentHash: await hashAuthorText(ai), provenance: 'derived' }, category: 'future-plan', required: true, text: ai })
