@@ -646,6 +646,23 @@ describe('explicit planning recovery with real SQLite', () => {
     expect(f.owner.listRecovery().planning).toEqual([])
     expect(f.owner.findBlueprintRecovery()).toBeNull()
   })
+  it.each([['蓝图', 'blueprint'], ['大纲', 'plot-outline']] as const)('作者保存%s恢复稿时，运行上已记的放弃与大纲已提交都不丢（#608）', async (_label, kind) => {
+    const raw = '{"blueprints":[{"chapterNumber":1,"title":"未完'
+    const dispatch = vi.fn<GenerationRunServiceDependencies['dispatch']>(async (_request, options) => { options.onVisible({ kind: 'delta', text: raw }); return { finishReason: 'length', usage: null } })
+    const f = fixture(dispatch), run = f.owner.begin(kind === 'blueprint' ? directorySelection(f) : outlineSelection(f, 3))
+    if (kind === 'blueprint') await f.owner.execute({ handle: run.handle, invocationNonce: 'failed', task: { ...task, purpose: 'chapter-blueprint-directory', output: 'structured-data' } })
+    const repository = new GenerationRunRepository(() => f.db), context = f.owner.readContext(run.handle)
+    repository.recordPlanningDismissal(run.handle.runId)
+    f.db.transaction(() => repository.recordPlotOutlineCommitWithinTransaction(run.handle.runId)).immediate()
+    f.db.transaction(() => kind === 'blueprint'
+      ? f.owner.commitBlueprintAuthorEdit({ mode: 'replace-range', operationId: 'author-blueprint', startChapter: 1, endChapter: 1,
+        blueprints: parseTextBlueprintsStrict(JSON.stringify([blueprint(1)]), 1, 1, 'zh-CN', 'author'),
+        authorRecovery: { sourceHandle: run.handle, leaseEpoch: context.blueprintRecovery!.leaseEpoch } })
+      : f.owner.commitPlotOutlineAuthorEdit({ synopsis: renderPlotOutlineSynopsis(outlineEntry(1), 1, context.plotOutline!.sourceExpected), expected: context.plotOutline!.sourceExpected,
+        authorRecovery: { sourceHandle: run.handle, leaseEpoch: context.plotOutlineRecovery!.leaseEpoch, operationId: 'author-outline', committedRange: { from: 1, to: 1 } } })).immediate()
+    expect(repository.planningDismissed(run.handle.runId)).toBe(true)
+    expect(repository.plotOutlineCommitted(run.handle.runId)).toBe(true)
+  })
   it('较新的章节蓝图运行读不出时，跳过它找到较早的恢复稿（#536）', async () => {
     const raw = '{"blueprints":[{"chapterNumber":1,"title":"未完'
     const dispatch = vi.fn<GenerationRunServiceDependencies['dispatch']>(async (_request, options) => { options.onVisible({ kind: 'delta', text: raw }); return { finishReason: 'length', usage: null } })
