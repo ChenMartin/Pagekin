@@ -202,6 +202,17 @@ describe('single global generation cutover using synthetic roots only', () => {
       expect(runGlobalDataMigration(roots)).toMatchObject({ state: 'ready', globalGeneration: migrated.globalGeneration })
     }
   })
+  it('starts with a stale or malformed rerank model id because rerank resolves to none at read time', () => {
+    for (const defaultRerankModelId of ['deleted-model', 42, 'model-a']) {
+      const roots = fixture(); populate(roots.legacySource)
+      put(roots.legacySource, 'config.json', { defaultModelId: 'model-a', defaultRerankModelId })
+      const migrated = runGlobalDataMigration(roots)
+      expect(migrated.state).toBe('ready')
+      if (migrated.state !== 'ready') continue
+      put(migrated.dataRoot, 'config.json', { defaultModelId: 'model-a', defaultRerankModelId })
+      expect(runGlobalDataMigration(roots)).toMatchObject({ state: 'ready', globalGeneration: migrated.globalGeneration })
+    }
+  })
   it('blocks same-ID differing credentials with no credential, ID, or digest in result', () => {
     const roots = fixture(); populate(roots.legacySource); populate(roots.canonicalTarget)
     put(roots.canonicalTarget, 'models.json', [{ id: 'model-a', apiKey: 'other-fixture-secret' }])

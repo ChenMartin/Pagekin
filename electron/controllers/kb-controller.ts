@@ -7,6 +7,7 @@ import { GlobalConfig, ModelProfile } from '../../src/shared/ipc-channels'
 import { isProjectSessionContext } from '../../src/shared/project-session-context'
 import { hasRequiredApiKey } from '../../src/shared/provider-presets'
 import type { EmbeddingModel } from '../../src/shared/embedding-options'
+import { resolveRerankConfig, type RerankConfig } from '../../src/shared/rerank-config'
 import type { ImportRunExecutionAuthority } from '../../src/shared/import-run'
 import { knowledgeBaseLoader } from '../services/knowledge-base-loader'
 import { mainText } from '../i18n'
@@ -206,6 +207,16 @@ export function getEmbeddingConfig(): { protocol: 'openai' | 'gemini'; model: Em
     // models.json 只经过宽松的迁移校验，旧档案可能缺这几个字段。
     model: { provider: model.provider ?? '', baseUrl: model.baseUrl ?? '', apiKey: model.apiKey ?? '', modelName: model.modelName, embeddingOptions: model.embeddingOptions },
   }
+}
+
+export function getRerankConfig(): RerankConfig {
+  const config = readJsonFile<Record<string, unknown>>(GLOBAL_CONFIG_PATH, {})
+  const models = readJsonFile<ModelProfile[]>(MODELS_CONFIG_PATH, [])
+  return resolveRerankConfig({
+    defaultRerankModelId: config.defaultRerankModelId,
+    models: Array.isArray(models) ? models : [],
+    embedding: getEmbeddingConfig()?.model ?? null,
+  })
 }
 
 function hasUsableEmbeddingConfig(
