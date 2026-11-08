@@ -52,7 +52,7 @@ describe('writing knowledge snapshot ranking', () => {
     snapshot.items.forEach((item, index) => expect(item).toMatchObject(expected[index]!))
   })
 
-  // R2 参考评估两组都没过判定规则，正式评估证明对写作质量有提升前，硅基流动作者写稿不自动重排。
+  // 默认关闭自动复用的原因见 src/shared/rerank-config.ts 的 AUTO_REUSE_EMBEDDING（#632）。
   it('keeps the same five passages without a rerank request when only a SiliconFlow retrieval profile is saved', async () => {
     const expected = await masterTopFive()
     const config = resolveRerankConfig({ defaultRerankModelId: undefined, models: [], embedding: { ...MODEL, apiKey: 'sk-fake-embedding' } })

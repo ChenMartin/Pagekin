@@ -607,7 +607,7 @@ describe('rerank config from the saved global config', () => {
     expect(getRerankConfig()).toEqual({ kind: 'none', reason: 'not-configured' })
   })
 
-  // R2 参考评估两组都没过判定规则，正式评估证明对写作质量有提升前，不自动借硅基流动检索档案重排。
+  // 默认关闭自动复用的原因见 src/shared/rerank-config.ts 的 AUTO_REUSE_EMBEDDING（#632）。
   it('does not yet reuse the SiliconFlow retrieval endpoint and key for rerank', () => {
     saved({ defaultModelId: null, defaultEmbeddingModelId: 'embedding' }, [embeddingProfile])
     expect(getRerankConfig()).toEqual({ kind: 'none', reason: 'auto-reuse-not-enabled' })
@@ -687,7 +687,7 @@ describe('kb:search reranking', () => {
     expect(JSON.parse(String(init.body))).toMatchObject({ documents: candidates.map(item => item.text), top_n: 3 })
   })
 
-  // R2 参考评估两组都没过判定规则，正式评估证明对写作质量有提升前，硅基流动检索档案不自动带上重排。
+  // 默认关闭自动复用的原因见 src/shared/rerank-config.ts 的 AUTO_REUSE_EMBEDDING（#632）。
   it.each([
     ['kb:search', []],
     ['kb:search-writing-context', ['reference']],

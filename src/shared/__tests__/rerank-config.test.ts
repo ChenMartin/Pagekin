@@ -20,7 +20,7 @@ describe('resolveRerankConfig', () => {
       .toEqual({ kind: 'none', reason: 'embedding-not-siliconflow' })
   })
 
-  // R2 参考评估两组都没过开跑前定的判定规则，正式评估证明对写作质量有提升前，硅基流动作者不自动重排。
+  // 默认关闭自动复用的原因见 src/shared/rerank-config.ts 的 AUTO_REUSE_EMBEDDING（#632）。
   it('does not yet reuse the SiliconFlow retrieval profile for rerank by default', () => {
     expect(resolveRerankConfig({ defaultRerankModelId: null, models: [], embedding: siliconflowEmbedding }))
       .toEqual({ kind: 'none', reason: 'auto-reuse-not-enabled' })

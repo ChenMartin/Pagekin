@@ -39,7 +39,7 @@ export interface RerankConfigInput {
   autoReuseEmbedding?: boolean
 }
 
-// R2 参考评估两组都没过开跑前定的判定规则（#632）。R4 正式评估证明对写作质量有提升后再打开。
+// 参考评估没证明重排能提升写作质量（#632），暂不自动借检索档案重排；正式评估通过后再改为 true。
 const AUTO_REUSE_EMBEDDING = false
 
 const SILICONFLOW = BUILTIN_PRESETS.find(preset => preset.provider === 'siliconflow')!

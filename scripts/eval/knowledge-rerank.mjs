@@ -28,7 +28,7 @@ const RERANKERS = {
   identity: { model: null, rank: async (_query, candidates) => candidates.slice(0, FINAL) },
   "bge-reranker-v2-m3": {
     model: "BAAI/bge-reranker-v2-m3",
-    // 走生产的配置解析与请求。生产暂不自动复用检索档案，评估显式打开，复用同一端点和 Key。
+    // 评估显式打开自动复用，借检索档案的同一端点和 Key；生产默认关闭。
     rank: async (query, candidates, production) => {
       const config = production.resolveRerankConfig({ defaultRerankModelId: undefined, models: [], embedding: embeddingModel(GROUPS.vector), autoReuseEmbedding: true })
       const { items, ranking } = await production.rankPassages(query, candidates, config, FINAL)
