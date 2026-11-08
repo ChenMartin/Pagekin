@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3'
 import { isDeepStrictEqual } from 'node:util'
 import type { ApproveCharacterProposalRequest, CancelCharacterProposalRequest, CharacterIdentitySnapshot, CharacterProposalBatch, CharacterProposalItem, CharacterProposalSource, CharacterStaticFields, PendingFinalizedCharacterProposalSummary } from '../../src/shared/character-proposal'
+import { directoryProposalChapter } from '../../src/shared/character-proposal'
 import { resolveScopedCharacterIdentity, type CharacterStaticProvenance } from '../../src/shared/character-identity'
 import { CHARACTER_ROLES } from '../../src/shared/character-role'
 import { CharacterRosterRepository, commitCharacterIdentities, refreshCharacterIdentityProjection, type CharacterIdentityCommitRequest } from '../repositories/character-roster-repository'
@@ -277,7 +278,8 @@ export class CharacterProposalService {
           || !byKey.get(from.selectionKey)!.relationships.some(item => item.relation === relation.relation
             && (item.targetSelectionKey ? item.targetSelectionKey === relation.targetSelectionKey : Boolean(item.targetName)))) throw new Error('CHARACTER_RELATIONSHIP_PROPOSAL_INVALID')
         identityRequest.relationships.push({ ...(from.action === 'create' ? { sourceSelectionKey: from.selectionKey } : { sourceCharacterId: from.characterId }),
-          ...(to ? to.action === 'create' ? { targetSelectionKey: to.selectionKey } : { targetCharacterId: to.characterId } : { targetCharacterId: relation.targetCharacterId }), relation: relation.relation })
+          ...(to ? to.action === 'create' ? { targetSelectionKey: to.selectionKey } : { targetCharacterId: to.characterId } : { targetCharacterId: relation.targetCharacterId }), relation: relation.relation,
+          ...(batch.source.kind === 'directory' ? { effectiveChapter: directoryProposalChapter(from.selectionKey) } : {}) })
       }
       const frozenRequest = JSON.stringify(identityRequest)
       const receipt = commitCharacterIdentities(this.db, identityRequest, candidate => JSON.stringify(candidate) === frozenRequest)

@@ -1,7 +1,9 @@
 import { createRequire } from 'node:module'
 import { describe, it, expect, vi } from 'vitest'
 import { initializeLegacyBaselineSchema } from '../../migrations/baseline-schema'
-import { applyM02CharacterIdentity } from '../../migrations/m02-character-identity'
+import { getDesktopMigrationRegistry, CURRENT_DESKTOP_SCHEMA_VERSION } from '../../migrations/desktop-registry'
+import { SqliteSchemaAdapter } from '../../migrations/sqlite-schema-adapter'
+import { migrateSchema } from '../../migrations/runner'
 import { commitCharacterIdentities, readCharacterIdentitySnapshot, type CharacterIdentityCommitRequest } from '../character-roster-repository'
 import { CharacterRepository } from '../character-repository'
 const state = vi.hoisted(() => ({ db: null as import('better-sqlite3').Database | null }))
@@ -9,7 +11,8 @@ vi.mock('../../database', () => ({ getProjectDb: () => state.db }))
 const Database = createRequire(import.meta.url)('better-sqlite3') as typeof import('better-sqlite3')
 function fixture() {
   const db = new Database(':memory:'); state.db = db; db.pragma('foreign_keys=ON')
-  db.transaction(() => { initializeLegacyBaselineSchema(db); db.exec("INSERT INTO characters(name,notes,cs_provenance) VALUES('甲','作者笔记','{\"location\":{\"kind\":\"legacy\"}}'),('乙','乙笔记','{}')"); db.prepare('UPDATE characters SET relationships=? WHERE name=?').run(JSON.stringify([{target:'乙',relation:'旧同伴'}]),'甲'); applyM02CharacterIdentity(db) })()
+  db.transaction(() => { initializeLegacyBaselineSchema(db); db.exec("INSERT INTO characters(name,notes,cs_provenance) VALUES('甲','作者笔记','{\"location\":{\"kind\":\"legacy\"}}'),('乙','乙笔记','{}')"); db.prepare('UPDATE characters SET relationships=? WHERE name=?').run(JSON.stringify([{target:'乙',relation:'旧同伴'}]),'甲') })()
+  migrateSchema(new SqliteSchemaAdapter(db), getDesktopMigrationRegistry(), CURRENT_DESKTOP_SCHEMA_VERSION)
   const rows = db.prepare('SELECT character_id,name FROM characters ORDER BY rowid').all() as { character_id: string; name: string }[]
   const request: CharacterIdentityCommitRequest = { approval: { operationId: 'approval-1', expectedRevision: 0, action: 'author-edit', source: { kind: 'author', source: { projectId: 'p', epoch: 'e', sourceId: 'author-edit', revision: 1, contentHash: 'a'.repeat(64) } } }, changes: [], creations: [], retireIds: [], relationships: [], resolutions: [] }
   return { db, rows, request }
