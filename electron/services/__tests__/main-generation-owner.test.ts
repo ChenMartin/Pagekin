@@ -1276,7 +1276,7 @@ describe('S07 durable task budget diagnostics', () => {
     f.model.baseUrl = 'https://relay.example/v1'
     const run = f.owner.begin(f.begin)
     const saved = await f.owner.execute({ handle: run.handle, invocationNonce: 'relay-output-field', task })
-    expect(saved.outcome).toMatchObject({ status: 'complete', finishReason: 'stop' })
+    expect(saved.outcome).toMatchObject({ status: 'completed', finishReason: 'stop' })
     expect(fetch).toHaveBeenCalledTimes(2)
     expect(saved.run.ledger).toMatchObject({ physicalRequests: 1 })
     expect(f.db.prepare('SELECT COUNT(*) FROM generation_attempts').pluck().get()).toBe(1)

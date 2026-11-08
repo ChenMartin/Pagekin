@@ -205,9 +205,8 @@ describe('中转站拒收当前输出上限字段时换字段重发一次', () =
     expect(second.url).toBe('/v1/chat/completions')
     expect(second.url).toBe(first.url)
     expect(first.headers.authorization).toBe('Bearer sk-relay-key')
-    const { 'content-length': _firstLength, ...firstHeaders } = first.headers
-    const { 'content-length': _secondLength, ...secondHeaders } = second.headers
-    expect(secondHeaders).toEqual(firstHeaders)
+    const exceptBodyLength = (headers: IncomingHttpHeaders) => Object.entries(headers).filter(([name]) => name !== 'content-length')
+    expect(exceptBodyLength(second.headers)).toEqual(exceptBodyLength(first.headers))
   })
 
   it('opencode Go 的会话标识在重发时不变', async () => {
@@ -227,7 +226,7 @@ describe('其他失败不重发，错误与原来相同', () => {
   const error = (fields: Record<string, unknown>) => JSON.stringify({ error: { type: 'invalid_request_error', param: null, code: null, ...fields } })
   const rejected400s: Array<[string, string]> = [
     ['模型名错误', error({ message: 'The model `gpt-6.1` does not exist', param: 'model', code: 'model_not_found' })],
-    ['Key 错误', error({ message: 'Incorrect API key provided' , code: 'invalid_api_key' })],
+    ['Key 错误', error({ message: 'Incorrect API key provided', code: 'invalid_api_key' })],
     ['内容过长', JSON.stringify(samples.deepseek)],
     ['其他参数不支持', error({ message: "Unsupported parameter: 'temperature' is not supported with this model.", param: 'temperature', code: 'unsupported_parameter' })],
     ['字段值过大', error({ message: 'max_tokens is too large: 100000. This model\'s maximum value is 4096.', param: 'max_tokens' })],
@@ -282,7 +281,7 @@ describe('接受当前字段的端点，请求次数和请求体不变', () => {
   })
 
   it('官方 api.openai.com：一次请求，字段和请求体逐字节不变', async () => {
-    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => new Response(JSON.stringify({ choices: [{ message: { content: '正文' }, finish_reason: 'stop' }] }), { status: 200 }))
+    const fetchMock = vi.fn<(url: string, init: RequestInit) => Promise<Response>>(async () => new Response(JSON.stringify({ choices: [{ message: { content: '正文' }, finish_reason: 'stop' }] }), { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
     await new OpenAIProvider().generate({ ...relayModel('https://api.openai.com/v1', 'o3'), provider: 'openai' }, messages,
       options({ outputTokenParameter: 'max_completion_tokens' }))

@@ -26,6 +26,24 @@ function isOpencodeGoBaseUrl(baseUrl: string): boolean {
 // degrades to a per-request id so one-off operations never share session
 // affinity with creative runs.
 
+type OutputTokenField = 'max_tokens' | 'max_completion_tokens'
+
+/** 中转站不暴露模型接受哪个字段，只能从明确的拒收里学到；键是端点加模型名，只存内存。 */
+const acceptedOutputTokenFields = new Map<string, OutputTokenField>()
+
+// 值太大、超范围时 param 同样指向该字段，但换字段救不了，错误要原样交给作者。
+const OUTPUT_TOKEN_VALUE_ERROR = /integer|too large|maximum|minimum|range|must be/iu
+
+function upstreamRejectsOutputTokenField(responseBody: string, sent: OutputTokenField): boolean {
+  let error: { param?: unknown; code?: unknown; message?: unknown } | undefined
+  try { error = JSON.parse(responseBody).error } catch { return false }
+  const message = typeof error?.message === 'string' ? error.message : ''
+  if (OUTPUT_TOKEN_VALUE_ERROR.test(message)) return false
+  // 拒收文案常把两个字段都写上（Use 'x' instead），排在前面的才是被拒的那个。
+  return error?.param === sent
+    || error?.code === 'unsupported_parameter' && /max_(?:completion_)?tokens/u.exec(message)?.[0] === sent
+}
+
 export class OpenAIProvider implements ILLMProvider {
   private normalizeFinishReason(reason: string | null | undefined): LLMFinishReason {
     if (reason === 'stop') return 'stop'
@@ -50,12 +68,13 @@ export class OpenAIProvider implements ILLMProvider {
     messages: Array<{ role: string; content: string }>,
     opts: LLMGenerateOptions,
     stream: boolean,
+    outputTokenField: OutputTokenField = opts.outputTokenParameter ?? 'max_tokens',
   ): Record<string, unknown> {
     const isNovelAI = model.provider === 'novelai'
     const body: Record<string, unknown> = {
       model: model.modelName,
       messages,
-      [opts.outputTokenParameter ?? 'max_tokens']: opts.maxTokens ?? model.maxTokens,
+      [outputTokenField]: opts.maxTokens ?? model.maxTokens,
       stream,
     }
 
@@ -116,17 +135,40 @@ export class OpenAIProvider implements ILLMProvider {
     return headers
   }
 
+  private async postChatCompletion(
+    model: ModelProfile,
+    messages: Array<{ role: string; content: string }>,
+    opts: LLMGenerateOptions,
+    stream: boolean,
+  ): Promise<Response> {
+    const url = resolveOpenAIChatCompletionsUrl(model.baseUrl, model.provider)
+    const headers = this.buildRequestHeaders(model, opts.conversationId)
+    const post = (outputTokenField: OutputTokenField) => fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(this.buildRequestBody(model, messages, opts, stream, outputTokenField)),
+      signal: opts.signal,
+    })
+
+    const endpointModel = `${url} ${model.modelName}`
+    const sent = acceptedOutputTokenFields.get(endpointModel) ?? opts.outputTokenParameter ?? 'max_tokens'
+    const response = await post(sent)
+    if (response.status !== 400) return response
+
+    let responseBody: string
+    try { responseBody = await response.text() } catch { return response }
+    if (!upstreamRejectsOutputTokenField(responseBody, sent)) return new Response(responseBody, { status: 400 })
+
+    opts.signal?.throwIfAborted()
+    const otherField = sent === 'max_tokens' ? 'max_completion_tokens' : 'max_tokens'
+    const retried = await post(otherField)
+    if (retried.ok) acceptedOutputTokenFields.set(endpointModel, otherField)
+    return retried
+  }
+
   async generate(model: ModelProfile, messages: Array<{ role: string; content: string }>, opts: LLMGenerateOptions): Promise<LLMResponse> {
     try {
-      const url = resolveOpenAIChatCompletionsUrl(model.baseUrl, model.provider)
-      const body = this.buildRequestBody(model, messages, opts, false)
-
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: this.buildRequestHeaders(model, opts.conversationId),
-        body: JSON.stringify(body),
-        signal: opts.signal,
-      })
+      const res = await this.postChatCompletion(model, messages, opts, false)
 
       if (!res.ok) {
         const text = await res.text()
@@ -185,15 +227,7 @@ export class OpenAIProvider implements ILLMProvider {
     }
 
     try {
-      const url = resolveOpenAIChatCompletionsUrl(model.baseUrl, model.provider)
-      const body = this.buildRequestBody(model, messages, opts, true)
-
-      const res = await transport.response(fetch(url, {
-        method: 'POST',
-        headers: this.buildRequestHeaders(model, opts.conversationId),
-        body: JSON.stringify(body),
-        signal: opts.signal,
-      }))
+      const res = await transport.response(this.postChatCompletion(model, messages, opts, true))
 
       if (!res.ok) {
         transport.fail('HTTP_ERROR')
