@@ -477,7 +477,7 @@ function samePersistedBlueprint(left: BlueprintData, right: BlueprintData): bool
         && left.notesUpdatedAt === right.notesUpdatedAt
 }
 
-/** 章节要点由定稿写入，不算规划内容；口径同 planningBlueprintText。 */
+/** 这两列由定稿写入，不是规划内容。 */
 function planningContent(blueprint: BlueprintData): BlueprintData {
     return { ...blueprint, notes: '', notesUpdatedAt: '' }
 }
