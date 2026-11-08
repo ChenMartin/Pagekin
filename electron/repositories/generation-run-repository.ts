@@ -124,8 +124,8 @@ export class GenerationRunRepository {
         } | undefined;
         if (!row)
             fail('GENERATION_RUN_MISSING');
-        const { $runEffects, $blueprintRetirement, $planningDismissal, ...frozen } = JSON.parse(row.binding_json) as RunBinding & { $runEffects?: unknown; $blueprintRetirement?: unknown; $planningDismissal?: unknown };
-        void $runEffects; void $blueprintRetirement; void $planningDismissal;
+        const { $runEffects, $blueprintRetirement, $planningDismissal, $plotOutlineCommitted, ...frozen } = JSON.parse(row.binding_json) as RunBinding & { $runEffects?: unknown; $blueprintRetirement?: unknown; $planningDismissal?: unknown; $plotOutlineCommitted?: unknown };
+        void $runEffects; void $blueprintRetirement; void $planningDismissal; void $plotOutlineCommitted;
         return { runId: row.run_id, rootActionId: row.root_action_id, binding: frozen, status: row.status };
     }
     private authorEditedRoot(rootId: string): boolean {
@@ -616,6 +616,13 @@ export class GenerationRunRepository {
     recordPlanningDismissal(runId: string): void {
         if (this.portableFrozenRoot(this.get(runId).rootActionId)) fail('GENERATION_PLANNING_HISTORY_READ_ONLY');
         this.db().prepare(`UPDATE generation_runs SET binding_json=json_set(binding_json,'$."$planningDismissal"','dismissed') WHERE run_id=?`).run(runId);
+    }
+    plotOutlineCommitted(runId: string): boolean {
+        return this.db().prepare(`SELECT json_type(binding_json,'$."$plotOutlineCommitted"') FROM generation_runs WHERE run_id=?`).pluck().get(runId) != null;
+    }
+    recordPlotOutlineCommitWithinTransaction(runId: string): void {
+        if (!this.db().inTransaction) fail('GENERATION_PLOT_OUTLINE_TRANSACTION_REQUIRED');
+        this.db().prepare(`UPDATE generation_runs SET binding_json=json_set(binding_json,'$."$plotOutlineCommitted"','committed') WHERE run_id=?`).run(runId);
     }
     retireBlueprintRecoveryWithinTransaction(): void {
         if (!this.db().inTransaction) fail('GENERATION_DIRECTORY_TRANSACTION_REQUIRED');

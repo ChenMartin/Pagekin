@@ -55,7 +55,7 @@ import { readPortableRuntimeFreeze } from './portable-runtime-freeze'
 import { readLegacyRosterSource, adoptLegacyCards } from './legacy-roster-source'
 import { buildLegacyRosterJsonRepairTask, buildLegacyRosterReplacementTask, parseLegacyRosterJson } from '../../src/shared/legacy-roster-generation-pure'
 import { validateGraphGenerationInput, readGraphGenerationContext } from './graph-generation-source'
-import { planningTargetInstruction, parsePlanningTargetUnits, plotOutlineChapterEntry, renderPlotOutlineRange, plotOutlineRecoveryDraft, plotOutlineSourceInvalid, validPlotOutlineAuthorPrefix, type PlotOutlineSource, type PlotOutlineProgress, type PlotOutlineRecovery, type PlotOutlineAuthorEditReceipt } from '../../src/shared/plot-outline-contract'
+import { planningTargetInstruction, parsePlanningTargetUnits, renderPlotOutlineRange, plotOutlineRecoveryDraft, plotOutlineSourceInvalid, validPlotOutlineAuthorPrefix, type PlotOutlineSource, type PlotOutlineProgress, type PlotOutlineRecovery, type PlotOutlineAuthorEditReceipt } from '../../src/shared/plot-outline-contract'
 import { ProjectCoreRepository, type ProjectCoreSynopsisExpected, type ProjectCoreSynopsisCommitRequest } from '../repositories/project-core-repository'
 // 尝试 id 都由 randomUUID 生成；recoverFrom 还拼进 nonce，只收 UUID，免得拼出别的尝试的 nonce。
 const ATTEMPT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu
@@ -810,23 +810,21 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
     if (outline && !saved && (outline.composition?.chapters?.length || outline.cursor.kind === 'accept')) return { ...base, state: 'save-prefix' }
     return { ...base, state: 'ready' }
   }
+  const plotOutlineBatchInFormalOutline = (outline: PlotOutlineProgress): boolean => {
+    const batch = outline.cursor.kind === 'complete' ? outline.composition?.text.trim() : undefined
+    return !!batch && (ProjectCoreRepository.get(deps.database)?.synopsis ?? '').includes(batch)
+  }
   const planningRunInFlight = (runId: string) => [...pending.keys()].some(key => (JSON.parse(key) as [string])[0] === runId) || !!deps.database.prepare(
     "SELECT 1 FROM generation_attempts WHERE run_id=? AND json_extract(attempt_json,'$.status') IN ('reserved','dispatch-marked') LIMIT 1").get(runId)
   /**
    * 拿不准就列出：多列的一份作者能自己放弃，误藏的一份作者根本不知道还在。
    * 导入原稿的 fill-empty 提交会把原有行原样记账，所以还要求这一章开跑以后确实变过。
-   * 大纲没有提交记录，只能比内容。
+   * 大纲只认这次运行的正式写入；升级前写入的没有这一笔，退而看这一批原文是否还在正式大纲里。
    */
   const planningSuperseded = (run: DurableGenerationRun, outline: PlotOutlineProgress | null, remaining: PlanningContinuation['remainingRange']): boolean => {
     if (!remaining) return true
+    if (outline) return repository.plotOutlineCommitted(run.runId) || plotOutlineBatchInFormalOutline(outline)
     const chapters = Array.from({ length: remaining.to - remaining.from + 1 }, (_, index) => remaining.from + index)
-    if (outline) {
-      const synopsis = ProjectCoreRepository.get(deps.database)?.synopsis ?? ''
-      return chapters.every(chapter => {
-        const now = plotOutlineChapterEntry(synopsis, chapter)
-        return now !== null && now !== plotOutlineChapterEntry(outline.sourceExpected.synopsis, chapter)
-      })
-    }
     const startedAtMs = repository.createdAtMs(run.runId)
     return chapters.every(chapter => BlueprintRepository.matchesCommitAfter(chapter, startedAtMs, deps.database)
       && planningBlueprintSourceHash(deps.database, chapter) !== run.binding.sourceRefs.find(ref => ref.sourceId === `blueprint:${chapter}`)?.contentHash)
@@ -871,9 +869,7 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
         writeState = projectGenerationInFlight() ? { kind: 'blocked', reason: 'in-flight' } : { kind: 'ready' }
       }
     } catch { /* Frozen proposals remain readable when current sources are unavailable. */ }
-    const batch = outline.cursor.kind === 'complete' ? outline.composition?.text.trim() : undefined
-    const inFormalOutline = !!batch && (ProjectCoreRepository.get(deps.database)?.synopsis ?? '').includes(batch)
-    return { sourceHandle: handleOf(run), leaseEpoch: deps.epoch, draft, inFormalOutline,
+    return { sourceHandle: handleOf(run), leaseEpoch: deps.epoch, draft, inFormalOutline: plotOutlineBatchInFormalOutline(outline),
       completeChapters: [...(outline.composition?.chapters?.map(chapter => chapter.chapterNumber) ?? []),
         ...(outline.cursor.kind === 'accept' ? [outline.cursor.chapterNumber] : [])],
       writeState, saved }
@@ -1601,6 +1597,7 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
       }).immediate()
     },
     assertSynopsisCommit, commitPlotOutlineAuthorEdit, commitBlueprintAuthorEdit,
+    recordPlotOutlineCommit: (handle: MainGenerationRunHandle) => repository.recordPlotOutlineCommitWithinTransaction(requireRun(handle).runId),
     withAgentChildEffect: <T>(handle: MainGenerationRunHandle, effect: () => T): T => { requireRun(handle); return agents.withChildEffect(handle, effect) },
     read: (handle: MainGenerationRunHandle) => viewOf(requireRun(handle)),
     listDirectoryProgress: () => {

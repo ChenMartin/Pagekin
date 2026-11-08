@@ -3791,8 +3791,10 @@ describe('规划恢复稿是否还列为可恢复（#608）', () => {
     }
     const progress = f.owner.readContext(run.handle).plotOutline!
     const synopsis = renderPlotOutlineRange(progress.composition!.text, progress.range, progress.sourceExpected)
-    f.db.transaction(() => f.owner.assertSynopsisCommit(run.handle, synopsis, progress.sourceExpected)
-      || ProjectCoreRepository.commitSynopsis({ synopsis, expected: progress.sourceExpected, generationRunHandle: run.handle }, f.db)).immediate()
+    f.db.transaction(() => {
+      if (f.owner.assertSynopsisCommit(run.handle, synopsis, progress.sourceExpected)
+        || ProjectCoreRepository.commitSynopsis({ synopsis, expected: progress.sourceExpected, generationRunHandle: run.handle }, f.db)) f.owner.recordPlotOutlineCommit(run.handle)
+    }).immediate()
     expect(f.owner.listRecovery().planning).toEqual([])
     f.db.prepare('UPDATE project_core SET synopsis=?').run(synopsis.replace('林岚确认第1份证词', '作者改写了第 1 章'))
     expect(f.owner.listRecovery().planning).toEqual([])

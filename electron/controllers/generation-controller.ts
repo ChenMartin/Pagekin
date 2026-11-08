@@ -50,6 +50,11 @@ export function assertGenerationSynopsisCommit(handle: MainGenerationRunHandle, 
   if (!entry || !database?.inTransaction) throw new Error('GENERATION_OWNER_REQUIRED')
   return entry.owner.assertSynopsisCommit(handle, synopsis, expected)
 }
+export function recordGenerationPlotOutlineCommit(handle: MainGenerationRunHandle): void {
+  const database = getProjectDb(), entry = database && owners.get(database)
+  if (!entry || !database?.inTransaction) throw new Error('GENERATION_OWNER_REQUIRED')
+  entry.owner.recordPlotOutlineCommit(handle)
+}
 export function commitGenerationPlotOutlineAuthorEdit(request: import('../repositories/project-core-repository').ProjectCoreSynopsisCommitRequest) {
   const database = getProjectDb(), entry = database && owners.get(database)
   if (!entry || !database?.inTransaction) throw new Error('GENERATION_OWNER_REQUIRED')
