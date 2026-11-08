@@ -196,7 +196,7 @@ describe('剧情与伏笔', () => {
     expect(reviewCard()!.querySelector('blockquote')?.textContent).toBe('信封上是母亲的笔迹')
     expect(reviewCard()!.textContent).toContain('理由：母亲寄信的真相揭开了。')
     expect(document.body.textContent).toContain('确认后才记入线索')
-    expect(called('generation:open')).toHaveLength(0)
+    expect(called('graph-generation:begin')).toHaveLength(0)
     expect(called('db:narrative-thread-event-confirm')).toHaveLength(0)
   })
 
@@ -226,6 +226,15 @@ describe('剧情与伏笔', () => {
     expect(reviewCard()!.textContent).toContain('Chapter 2 review')
     expect(reviewCard()!.textContent).toContain('Why: 母亲寄信的真相揭开了。')
     expect(button('Confirm resolved')).toBeTruthy()
+  })
+
+  it.each([
+    ['zh-CN', '在线索的「更多」里选「记录定稿里的变化」。'],
+    ['en-US', 'Choose “Record a change from a final” in a thread’s menu.'],
+  ] as const)('记录变化的指引不写线索列表在哪一边（%s）', async (locale, hint) => {
+    useLocaleStore.setState({ locale })
+    await render('plans')
+    await vi.waitFor(() => expect(document.body.textContent).toContain(hint))
   })
 
   it('没有候选时不显示审稿回收的说明', async () => {
