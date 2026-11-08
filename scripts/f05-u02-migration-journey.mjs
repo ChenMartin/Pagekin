@@ -8,6 +8,7 @@ import { createRequire } from 'node:module'
 import { _electron as electron } from 'playwright'
 import * as stage from './redesign/pages/stage.mjs'
 import { resolveWindowsExecutable } from './product-identity.mjs'
+import { CURRENT_PROJECT_SCHEMA_VERSION } from './lib/current-project-schema.mjs'
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const arg = name => process.argv.find(value => value.startsWith(`--${name}=`))?.slice(name.length + 3)
@@ -206,13 +207,13 @@ async function currentProjectState(name, roots, session, source) {
     assert.equal(manifest.storageFormat, 'ai-novel')
     const db = new Database(path.join(targetRoot, '.ai-novel', 'project.db'), { readonly: true, fileMustExist: true })
     try {
-      assert.equal(db.pragma('user_version', { simple: true }), 8)
+      assert.equal(db.pragma('user_version', { simple: true }), CURRENT_PROJECT_SCHEMA_VERSION)
       assert.deepEqual(db.prepare('SELECT id,project_name FROM project_core').get(), { id: 'main', project_name: source.sourceName })
     } finally { db.close() }
     assert.equal(dbBody(targetRoot), initialBody)
     assert.equal(modelCallCount(targetRoot), 0)
     assert.deepEqual(sourceFiles(source.sourceRoot), source.before)
-    pass(`${name}-schema7-import`, 'U02.A07', 'The library 导入旧项目副本 imported the schema0 project into schema8 with exact title, draft body and new copy identity; old source bytes stayed unchanged',
+    pass(`${name}-schema7-import`, 'U02.A07', `The library 导入旧项目副本 imported the schema0 project into schema${CURRENT_PROJECT_SCHEMA_VERSION} with exact title, draft body and new copy identity; old source bytes stayed unchanged`,
       'legacy-appearance-with-project-state-to-stage')
     let body = await stage.openChapter(page, 1)
     assert.equal(await stage.proseBody(body), initialBody)
@@ -227,7 +228,7 @@ async function currentProjectState(name, roots, session, source) {
     assert.equal(dbBody(targetRoot), savedBody)
     assert.equal(modelCallCount(targetRoot), 0)
     assert.deepEqual(sourceFiles(source.sourceRoot), source.before)
-    pass(`${name}-schema7-save`, 'U02.A07', 'Ctrl S in the stage chapter editor saved the exact edited body in the imported schema8 copy without changing the old source',
+    pass(`${name}-schema7-save`, 'U02.A07', `Ctrl S in the stage chapter editor saved the exact edited body in the imported schema${CURRENT_PROJECT_SCHEMA_VERSION} copy without changing the old source`,
       'legacy-appearance-with-project-state-to-stage')
     await session.app.close()
     session = await launch(roots)
@@ -259,7 +260,7 @@ async function main() {
   fs.writeFileSync(path.join(scratchRoot, '.vibe-owner.json'), JSON.stringify({ owner: 'codex/f05-u02-a07',
     sourceProject: repository, createdAt: new Date().toISOString(), ttlHours: 72,
     cleanupCommand: `Remove-Item -LiteralPath '${scratchRoot}' -Recurse -Force`,
-    retainReason: 'Synthetic appearance migration and schema0-to-schema7 stage import evidence' }, null, 2))
+    retainReason: `Synthetic appearance migration and schema0-to-schema${CURRENT_PROJECT_SCHEMA_VERSION} stage import evidence` }, null, 2))
   const receipt = { outcome: 'FAIL', qualification: 'F05_U02_DEFAULT_A02_A07_CURRENT', evidenceLevel: 'electron',
     shell: 'stage', testedSha, executionHead: git('rev-parse', 'HEAD'),
     driverSha256, artifactHashes: { executable: expectedExeSha, asar: expectedAsarSha }, packageRoot: packageDir,
@@ -397,5 +398,5 @@ async function main() {
   }
 }
 
-if (process.argv.includes('--help')) process.stdout.write('Pass --package-dir, --package-source-sha, --exe-sha256 and --asar-sha256 for the fixed package: fresh, pre-RD-10 galaxy/paper and legacy v1/v2 appearance migrations, then schema0-to-schema7 import in the stage.\n')
+if (process.argv.includes('--help')) process.stdout.write('Pass --package-dir, --package-source-sha, --exe-sha256 and --asar-sha256 for the fixed package: fresh, pre-RD-10 galaxy/paper and legacy v1/v2 appearance migrations, then schema0-to-current-schema import in the stage.\n')
 else main().catch(error => { console.error(error); process.exitCode = 1 })

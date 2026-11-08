@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { closeProjectDatabase } from '../../database'
+import { closeProjectDatabase, getProjectDb } from '../../database'
 import { openCanonicalProjectFixture as initProjectDatabase } from '../../../test/helpers/canonical-project-fixture'
 import { ConsistencyExemptionRepository } from '../consistency-exemption-repository'
 
@@ -45,5 +45,17 @@ describe('ConsistencyExemptionRepository', () => {
     expect(ConsistencyExemptionRepository.list()).toEqual([{
       stableFactKey: 'open-thread:1:key', reason: '新的原因', revoked: false,
     }])
+  })
+
+  it('treats a per-chapter exemption of the same fact as separate from the global one', () => {
+    const chapterRow = () => getProjectDb()!.prepare(
+      "SELECT reason, revoked FROM consistency_exemptions WHERE stable_fact_key = 'death:老周' AND chapter_number = 3").get()
+    getProjectDb()!.prepare("INSERT INTO consistency_exemptions(stable_fact_key, chapter_number, reason) VALUES('death:老周', 3, '第 3 章是回忆')").run()
+    expect(ConsistencyExemptionRepository.list()).toEqual([])
+
+    ConsistencyExemptionRepository.save('death:老周', '全书都按假死处理')
+    ConsistencyExemptionRepository.revoke('death:老周')
+    expect(ConsistencyExemptionRepository.list()).toEqual([{ stableFactKey: 'death:老周', reason: '全书都按假死处理', revoked: true }])
+    expect(chapterRow()).toEqual({ reason: '第 3 章是回忆', revoked: 0 })
   })
 })

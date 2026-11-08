@@ -175,13 +175,13 @@ describe('real SQLite schema probe and WAL staging backup', () => {
     expect(target.prepare('SELECT COUNT(*) FROM character_roster_meta').pluck().get()).toBe(0)
   })
 
-  it('imports the exact early v1.1.0 schema0 rows through schema8 without touching the source', async () => {
+  it('imports the exact early v1.1.0 schema0 rows through schema9 without touching the source', async () => {
     const f = earlyV110Fixture(), before = bytes(f.root)
     expect(probeProjectSqlite({ databasePath: f.source })).toMatchObject({
       schemaVersion: 0, fingerprint: '2504dde08865f758f654d38ae3d972420c28fa60d1f747e92898390455272de6',
     })
     const result = await backupProjectSqlite({ sourceDatabasePath: f.source, targetDatabasePath: f.target })
-    expect(result.schemaVersion).toBe(8)
+    expect(result.schemaVersion).toBe(9)
     expect(verifyProjectSqlite({ databasePath: f.target })).toEqual(result)
     const target = new Database(f.target, { readonly: true, fileMustExist: true }); handles.push(target)
     expect(target.prepare('SELECT rowid,project_name,genre,global_guidance,characters_arch FROM project_core').get())
@@ -216,10 +216,10 @@ describe('real SQLite schema probe and WAL staging backup', () => {
     })
     expect(bytes(f.root)).toEqual(before)
   })
-  it('copies qualified v1.0.0 old columns, rowids, and sequence into schema8 staging', async () => {
+  it('copies qualified v1.0.0 old columns, rowids, and sequence into schema9 staging', async () => {
     const f = legacyV100Fixture(), before = bytes(f.root)
     const result = await backupProjectSqlite({ sourceDatabasePath: f.source, targetDatabasePath: f.target })
-    expect(result.schemaVersion).toBe(8)
+    expect(result.schemaVersion).toBe(9)
     expect(verifyProjectSqlite({ databasePath: f.target })).toEqual(result)
     const target = new Database(f.target, { readonly: true, fileMustExist: true }); handles.push(target)
     expect(target.prepare('SELECT rowid FROM project_core WHERE id=?').pluck().get('main')).toBe(7)
@@ -256,7 +256,7 @@ describe('real SQLite schema probe and WAL staging backup', () => {
       schemaVersion: 0, fingerprint: 'c536a35e30f51f681843a2a07a48592cc80e9840abeb7898fcd463297128ccf8',
     })
     const result = await backupProjectSqlite({ sourceDatabasePath: f.source, targetDatabasePath: f.target })
-    expect(result.schemaVersion).toBe(8)
+    expect(result.schemaVersion).toBe(9)
     expect(verifyProjectSqlite({ databasePath: f.target })).toEqual(result)
     const target = new Database(f.target, { fileMustExist: true }); handles.push(target)
     expect(target.prepare('SELECT rowid,core_outline,world_setting,protagonist_profile FROM project_core').get())
@@ -302,7 +302,7 @@ describe('real SQLite schema probe and WAL staging backup', () => {
     const before = bytes(f.root)
     expect(probeProjectSqlite({ databasePath: f.source })).toMatchObject({ schemaVersion: 0, fingerprint })
     const result = await backupProjectSqlite({ sourceDatabasePath: f.source, targetDatabasePath: f.target })
-    expect(result.schemaVersion).toBe(8)
+    expect(result.schemaVersion).toBe(9)
     expect(verifyProjectSqlite({ databasePath: f.target })).toEqual(result)
     const target = new Database(f.target, { readonly: true, fileMustExist: true }); handles.push(target)
     for (const [index, table] of preservedTables.entries()) {
@@ -342,10 +342,10 @@ describe('real SQLite schema probe and WAL staging backup', () => {
     })
     expect(bytes(f.root)).toEqual(before)
   })
-  it('copies qualified v1.1.0 rows and sequence through canonical staging to schema8 without writing the source', async () => {
+  it('copies qualified v1.1.0 rows and sequence through canonical staging to schema9 without writing the source', async () => {
     const f = legacyV110Fixture(), before = bytes(f.root)
     const result = await backupProjectSqlite({ sourceDatabasePath: f.source, targetDatabasePath: f.target })
-    expect(result.schemaVersion).toBe(8)
+    expect(result.schemaVersion).toBe(9)
     expect(verifyProjectSqlite({ databasePath: f.target })).toEqual(result)
     const target = new Database(f.target, { readonly: true, fileMustExist: true }); handles.push(target)
     expect(target.prepare('SELECT rowid FROM project_core WHERE id=?').pluck().get('main')).toBe(7)
@@ -412,14 +412,28 @@ describe('real SQLite schema probe and WAL staging backup', () => {
   })
 })
 
-it('upgrades a qualified schema 6 file to schema 8 without changing author content', async () => {
+it('upgrades a qualified schema 6 file to schema 9 without changing author content', async () => {
  const f=fixture()
  const before=await backupProjectSqlite({sourceDatabasePath:f.source,targetDatabasePath:f.target,targetVersion:6})
  expect(before.schemaVersion).toBe(6)
  const upgraded=upgradeProjectSqlite({databasePath:f.target})
- expect(upgraded.schemaVersion).toBe(8)
+ expect(upgraded.schemaVersion).toBe(9)
  expect(upgraded.preRecycleDomain).toEqual(before.domain)
  expect(verifyProjectSqlite({databasePath:f.target})).toEqual(upgraded)
+})
+it.each([[6, 'preRecycleDomain'], [8, 'preContinuityDomain']] as const)(
+ 'upgrades a schema %i file with character state to schema 9; only the M08 baseline and columns are new', async (version, field) => {
+ const f=fixture()
+ await backupProjectSqlite({sourceDatabasePath:f.source,targetDatabasePath:f.target,targetVersion:version})
+ const db=new Database(f.target)
+ try {
+  db.prepare("INSERT INTO characters(character_id,name,cs_location) VALUES('c1','林澈','北门')").run()
+  db.prepare("INSERT INTO consistency_exemptions(stable_fact_key,reason) VALUES('k','作者安排')").run()
+ } finally { db.close() }
+ const before=verifyProjectSqlite({databasePath:f.target,targetVersion:version})
+ const upgraded=upgradeProjectSqlite({databasePath:f.target})
+ expect(upgraded[field]).toEqual(before.domain)
+ expect(upgraded.domain.tableCounts.character_continuity_events).toBe(1)
 })
 it('resolves a trusted system scratch junction before validating its private snapshot', () => {
  const f=fixture(), physical=path.join(f.root,'scratch'), link=path.join(f.root,'scratch-link')

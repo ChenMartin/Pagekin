@@ -6,9 +6,9 @@ import { SqliteSchemaAdapter } from '../migrations/sqlite-schema-adapter'
 import fieldPolicyDocument from './portable-project-field-policy.json'
 
 export const PORTABLE_PROJECT_FORMAT_VERSION = 1 as const
-export const PORTABLE_SOURCE_SCHEMA_VERSION = 8 as const
-/** 能恢复的包：v1.2.0-Preview 到 v1.4.0 导出的是 7（M07 之前），恢复时先迁到 8（#564）。 */
-export const PORTABLE_READABLE_SOURCE_SCHEMA_VERSIONS = Object.freeze([7, PORTABLE_SOURCE_SCHEMA_VERSION] as const)
+export const PORTABLE_SOURCE_SCHEMA_VERSION = 9 as const
+/** 可恢复的旧包版本：v1.2.0-Preview 到 v1.4.0 导出的是 7，之后到 M08 之前是 8。 */
+export const PORTABLE_READABLE_SOURCE_SCHEMA_VERSIONS = Object.freeze([7, 8, PORTABLE_SOURCE_SCHEMA_VERSION] as const)
 export type PortableSourceSchemaVersion = typeof PORTABLE_READABLE_SOURCE_SCHEMA_VERSIONS[number]
 
 export type PortableFieldDisposition = 'preserve-domain' | 'historical-nonreplayable'
@@ -19,7 +19,7 @@ export interface PortableFieldPolicy {
   disposition: PortableFieldDisposition
   validator: string
   consumer: string
-  origin: 'signed-s01' | 'm01-m05-delta' | 'm06-delta' | 'm07-delta' | 'registered-donor'
+  origin: 'signed-s01' | 'm01-m05-delta' | 'm06-delta' | 'm07-delta' | 'm08-delta' | 'registered-donor'
   signedDisposition: string | null
 }
 
@@ -33,6 +33,7 @@ const tables = fieldPolicyDocument.tables as Record<string, Record<string, Polic
 const deltaTables = new Set<string>(fieldPolicyDocument.deltaTables)
 const m06Tables = new Set<string>(fieldPolicyDocument.m06Tables)
 const m07Fields = new Set<string>(fieldPolicyDocument.m07Fields)
+const m08Fields = new Set<string>(fieldPolicyDocument.m08Fields)
 const deltaCharacterFields = new Set<string>(fieldPolicyDocument.deltaCharacterFields)
 const optionalFields = new Set<string>(fieldPolicyDocument.optionalFields)
 const signedOverrides = fieldPolicyDocument.signedOverrides as Record<string, string>
@@ -51,7 +52,7 @@ function loadFieldPolicy(): ReadonlyMap<string, PortableFieldPolicy> {
     for (const [field, code] of Object.entries(fields)) {
       const rule = rules[code]
       const key = `${table}.${field}`
-      const delta = optionalFields.has(key) || deltaTables.has(table) || m06Tables.has(table) || m07Fields.has(key)
+      const delta = optionalFields.has(key) || deltaTables.has(table) || m06Tables.has(table) || m07Fields.has(key) || m08Fields.has(key)
         || table === 'characters' && deltaCharacterFields.has(field)
       const signedDisposition = delta ? null : signedOverrides[key] ?? signedDefaults[code]
       if (!field || !rule || rule.length !== 3 || !PORTABLE_FIELD_DISPOSITIONS.has(rule[0])
@@ -61,7 +62,7 @@ function loadFieldPolicy(): ReadonlyMap<string, PortableFieldPolicy> {
       }
       result.set(key, Object.freeze({ disposition: rule[0], validator: rule[1], consumer: rule[2],
         origin: optionalFields.has(key) ? 'registered-donor'
-          : m06Tables.has(table) ? 'm06-delta' : m07Fields.has(key) ? 'm07-delta' : delta ? 'm01-m05-delta' : 'signed-s01', signedDisposition }))
+          : m06Tables.has(table) ? 'm06-delta' : m07Fields.has(key) ? 'm07-delta' : m08Fields.has(key) ? 'm08-delta' : delta ? 'm01-m05-delta' : 'signed-s01', signedDisposition }))
     }
   }
   if (Object.keys(signedOverrides).some(key => result.get(key)?.origin !== 'signed-s01')) {
@@ -84,12 +85,17 @@ export function listPortableFieldPolicyKeys(): readonly string[] {
 function quoteIdentifier(value: string): string { return `"${value.replaceAll('"', '""')}"` }
 
 const liveRowViews = new Set<string>(LIVE_ROW_VIEWS.map(item => item.view))
+const fieldsAddedAfter: Readonly<Record<PortableSourceSchemaVersion, ReadonlySet<string>>> = {
+  7: new Set([...m07Fields, ...m08Fields]),
+  8: m08Fields,
+  9: new Set(),
+}
 
 /**
  * Read-only bidirectional schema gate. sqlite_* implementation objects are deliberately outside the portable contract.
  * Views carry no data; only M07's live views are admitted, and verifySchema's fingerprint pins their exact SQL.
  * A schema-7 source predates M07: no views, the managed tables under their original names, and none of M07's drafts columns.
- * The field policy names managed tables by their original names (drafts, not drafts_all) on both versions.
+ * 字段策略在所有版本里都按原名登记受管表（drafts，不是 drafts_all）。
  */
 export function assertPortableSourceSchema(database: Database.Database,
   version: PortableSourceSchemaVersion = PORTABLE_SOURCE_SCHEMA_VERSION): { tables: number; fields: number } {
@@ -97,16 +103,15 @@ export function assertPortableSourceSchema(database: Database.Database,
     database.pragma('foreign_keys = ON')
     verifySchema(new SqliteSchemaAdapter(database), getDesktopMigrationRegistry(), version)
   } catch { formatError('PORTABLE_SCHEMA_UNSUPPORTED') }
-  const expected = version === PORTABLE_SOURCE_SCHEMA_VERSION ? fieldPolicy
-    : new Map([...fieldPolicy].filter(([key]) => !m07Fields.has(key)))
-  const admittedViews = version === PORTABLE_SOURCE_SCHEMA_VERSION ? liveRowViews : new Set<string>()
+  const expected = new Map([...fieldPolicy].filter(([key]) => !fieldsAddedAfter[version].has(key)))
+  const admittedViews = version >= 8 ? liveRowViews : new Set<string>()
   const actual = new Set<string>()
   const objects = database.prepare("SELECT name,type FROM pragma_table_list WHERE schema='main' AND name NOT LIKE 'sqlite_%' ORDER BY name")
     .all() as Array<{ name: string; type: string }>
   if (objects.some(object => object.type === 'view' && !admittedViews.has(object.name))) formatError('PORTABLE_SCHEMA_UNSUPPORTED')
   const tableObjects = objects.filter(object => object.type !== 'view')
   for (const object of tableObjects) {
-    const table = version === PORTABLE_SOURCE_SCHEMA_VERSION ? logicalTableName(object.name) : object.name
+    const table = version >= 8 ? logicalTableName(object.name) : object.name
     if (object.type !== 'table' || !(table in tables)) formatError('PORTABLE_SCHEMA_UNSUPPORTED')
     for (const row of database.prepare(`PRAGMA table_info(${quoteIdentifier(object.name)})`).all() as Array<{ name: string }>) {
       const key = `${table}.${row.name}`
