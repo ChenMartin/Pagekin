@@ -117,6 +117,7 @@ function canonicalCandidate(candidate: MaterialCandidate): string {
     draft ? [draft.source.artifactId, draft.source.revision, draft.source.state, draft.source.saved,
       draft.source.batchLineage, draft.admission.selectedCurrentDraftId ?? null,
       draft.admission.directPredecessorId ?? null] : null,
+    candidate.knowledgeRank ?? null,
   ])
 }
 
