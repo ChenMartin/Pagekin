@@ -12,7 +12,7 @@ import type { PendingFinalizedCharacterStateCandidate } from '../../../../shared
 import type { ProjectData } from '../../../../shared/ipc-channels'
 import { setActiveProjectSessionContext } from '../../../../shared/project-session-context'
 import { EMPTY_CARD, useCharacterStore, type CharacterCard } from '../../../../stores/character-store'
-import { useEditorStore } from '../../../../stores/editor-store'
+import { saveDirtyEditorChangesForExit, useEditorStore } from '../../../../stores/editor-store'
 import { useLLMStore } from '../../../../stores/llm-store'
 import { useLocaleStore } from '../../../../stores/locale-store'
 import { useStageStore } from '../../../../stores/navigation/stage-store'
@@ -672,5 +672,124 @@ describe('角色时间线', () => {
     await click('保存角色')
     await vi.waitFor(() => expect(commit).toHaveBeenCalled())
     expect((commit.mock.calls[0] as unknown[])[0]).not.toHaveProperty('stateEffectiveChapter')
+  })
+
+  describe('显示的生效章就是保存的生效章', () => {
+    const stubCommit = (gate?: Promise<void>) => {
+      useCharacterStore.setState({ saveAll: realSaveAll } as never)
+      const commit = vi.fn(async (request: { entries: unknown[]; stateEffectiveChapter?: number }) => {
+        await gate
+        return { success: true, receipt: { revision: 2, created: [], snapshot: { entries: request.entries, identityRevision: 2 } } }
+      })
+      const passthrough = invoke.getMockImplementation()!
+      invoke.mockImplementation(async (channel, ...args) => channel === 'db:character-roster-commit'
+        ? commit(args[0] as { entries: unknown[] }) : passthrough(channel, ...args))
+      timeline = { nodes: [], chapterRange: { next: 8, last: 20 } }
+      return commit
+    }
+    const chapterInput = () => host!.querySelector<HTMLInputElement>('.cast-state-chapter input')!
+    const chooseChapter12 = async () => {
+      await click('改章号')
+      await userEvent.fill(chapterInput(), '12')
+    }
+    const savedChapter = (commit: ReturnType<typeof stubCommit>, call: number) => commit.mock.calls[call][0].stateEffectiveChapter
+
+    it('选了章号又放弃改动，再改状态时显示和保存都是默认章', async () => {
+      const commit = stubCommit()
+      await openState()
+      await typeLocation()
+      await chooseChapter12()
+      await act(async () => useCharacterStore.getState().discardDraft(session.projectPath, session))
+      expect(note()).toBeNull()
+      await typeLocation()
+      expect(note()!.textContent).toContain('手改的状态从第 8 章起生效')
+      await click('保存角色')
+      await vi.waitFor(() => expect(commit).toHaveBeenCalled())
+      expect(savedChapter(commit, 0)).toBeUndefined()
+    })
+
+    it('选了章号又切走视图，回来时显示和保存都是默认章', async () => {
+      const commit = stubCommit()
+      await openState()
+      await typeLocation()
+      await chooseChapter12()
+      await click('基础设定')
+      await click('当前状态')
+      expect(note()!.textContent).toContain('手改的状态从第 8 章起生效')
+      await click('保存角色')
+      await vi.waitFor(() => expect(commit).toHaveBeenCalled())
+      expect(savedChapter(commit, 0)).toBeUndefined()
+    })
+
+    it('保存进行中章号输入框不能改', async () => {
+      stubCommit()
+      await openState()
+      await typeLocation()
+      await chooseChapter12()
+      expect(chapterInput().disabled).toBe(false)
+      await act(async () => useCharacterStore.setState({ saving: true }))
+      expect(chapterInput().disabled).toBe(true)
+    })
+
+    it('保存途中又改了状态：保存后说明条还写着所选章，下一次保存也按它', async () => {
+      let release = () => {}
+      const commit = stubCommit(new Promise<void>(resolve => { release = resolve }))
+      await openState()
+      await typeLocation()
+      await chooseChapter12()
+      await click('保存角色')
+      await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(1))
+      await userEvent.fill(host!.querySelector<HTMLTextAreaElement>('.cast-grid textarea')!, '保存途中改的地点')
+      await act(async () => release())
+      await vi.waitFor(() => expect(useCharacterStore.getState().saving).toBe(false))
+      expect(note()!.textContent).toContain('手改的状态从第 12 章起生效')
+      await click('保存角色')
+      await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(2))
+      expect(savedChapter(commit, 1)).toBe(12)
+    })
+
+    it('保存成功后说明条消失，之后再改状态回到默认章', async () => {
+      const commit = stubCommit()
+      await openState()
+      await typeLocation()
+      await chooseChapter12()
+      await click('保存角色')
+      await vi.waitFor(() => expect(note()).toBeNull())
+      expect(savedChapter(commit, 0)).toBe(12)
+      await userEvent.fill(host!.querySelector<HTMLTextAreaElement>('.cast-grid textarea')!, '再改一次')
+      expect(note()!.textContent).toContain('手改的状态从第 8 章起生效')
+      await click('保存角色')
+      await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(2))
+      expect(savedChapter(commit, 1)).toBeUndefined()
+    })
+
+    it('只改名字不出现生效章说明，改了状态才出现', async () => {
+      stubCommit()
+      await render()
+      await userEvent.fill(host!.querySelector<HTMLInputElement>('.cast-row-fields input')!, '林舟改名')
+      await click('当前状态')
+      expect(note()).toBeNull()
+      await typeLocation()
+      expect(note()!.textContent).toContain('手改的状态从第 8 章起生效')
+    })
+
+    it('退出前保存按说明条上的章号写入', async () => {
+      const commit = stubCommit()
+      await openState()
+      await typeLocation()
+      await chooseChapter12()
+      await act(async () => saveDirtyEditorChangesForExit(session.projectPath))
+      expect(savedChapter(commit, 0)).toBe(12)
+    })
+
+    it('选了章号后离开角色页，退出前保存仍按所选章号写入', async () => {
+      const commit = stubCommit()
+      await openState()
+      await typeLocation()
+      await chooseChapter12()
+      await act(async () => root!.render(<div />))
+      await act(async () => saveDirtyEditorChangesForExit(session.projectPath))
+      expect(savedChapter(commit, 0)).toBe(12)
+    })
   })
 })
