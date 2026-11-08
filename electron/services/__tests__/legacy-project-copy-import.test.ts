@@ -717,6 +717,32 @@ it('源资料变化、未知旧资产均在发布前拒绝，旧项目保留', a
   expect(fs.existsSync(path.join(f.legacy, 'unmapped-author-notes.txt'))).toBe(true)
 })
 
+function plainFolder(files: string[]) {
+  const base = path.resolve('.runtime/.cache/novel-quality-modernization/a11-copy-import')
+  fs.mkdirSync(base, { recursive: true })
+  const root = fs.mkdtempSync(path.join(base, 'plain-')); roots.push(root)
+  const source = path.join(root, 'manuscript'), target = path.join(root, 'new')
+  fs.mkdirSync(source)
+  for (const name of files) fs.writeFileSync(path.join(source, name), `# ${name}\n\n正文\n`)
+  return { root, source, target }
+}
+
+it('只含 md 的文件夹不是旧项目：报 NOT_LEGACY_PROJECT，不归成读写失败，文件夹不动、不留半成品', async () => {
+  const f = plainFolder(['第1章.md', '第2章.md'])
+  const before = Object.fromEntries(fs.readdirSync(f.source).map(name => [name, hash(path.join(f.source, name))]))
+  expect(await importLegacyProjectCopy({ sourceRoot: f.source, targetRoot: f.target, preflightOptions }))
+    .toEqual({ state: 'blocked', code: 'LEGACY_IMPORT_NOT_LEGACY_PROJECT' })
+  expect(Object.fromEntries(fs.readdirSync(f.source).map(name => [name, hash(path.join(f.source, name))]))).toEqual(before)
+  expect(fs.readdirSync(f.root)).toEqual(['manuscript'])
+})
+
+it('所选文件夹在选择后消失仍是读写失败，不说成「不是旧项目」', async () => {
+  const f = plainFolder([])
+  fs.rmdirSync(f.source)
+  expect(await importLegacyProjectCopy({ sourceRoot: f.source, targetRoot: f.target, preflightOptions }))
+    .toEqual({ state: 'blocked', code: 'LEGACY_IMPORT_IO_FAILED' })
+})
+
 it('缺失必需旧库或目标发布前中断均不留下半成品', async () => {
   const missing = fixture('v110')
   fs.unlinkSync(path.join(missing.legacy, 'vela.db'))

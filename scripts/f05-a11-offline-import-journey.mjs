@@ -646,7 +646,7 @@ async function verify(source) {
     const target = path.join(targetParent, 's-新版副本')
     if (legacyV025) {
       const code = 'LEGACY_IMPORT_ROSTER_UNAVAILABLE'
-      await session.page.locator('[role="status"]').filter({ hasText: code })
+      await session.page.locator('[role="status"]').filter({ hasText: '导入时出了问题' })
         .waitFor({ state: 'visible', timeout: 30_000 })
       const requests = await requestCounts()
       const stages = fs.readdirSync(targetParent).filter(name => name.startsWith(`.${path.basename(target)}.legacy-import-`))
