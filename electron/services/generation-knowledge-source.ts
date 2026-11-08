@@ -178,17 +178,22 @@ export async function recallGenerationKnowledgeCandidates(input: KnowledgeSearch
     candidates: (await searchHits(reader, input, topK)).map(hit => ({ chunkId: string(hit.row.id), text: string(hit.row.text), score: hit.score })),
   }))
 }
-/** 按选中的 id 冻结快照；召回之后知识库变过就返回 null，由调用方重新取材。 */
+/** 按选中的 id 冻结快照；召回之后知识库变过（含作者保存了选中文档的副本）就返回 null，由调用方重新取材。 */
 export async function freezeGenerationKnowledge(input: {
   projectStorageRoot: string; query: string; topK: number; recalled: GenerationKnowledgeCandidates; picks: readonly { chunkId: string; score: number }[]
 }): Promise<GenerationKnowledgeSnapshot | null> {
   return readStable(input.projectStorageRoot, async reader => {
     if (reader.canonicalRevision !== input.recalled.canonicalRevision || reader.documentsRevision !== input.recalled.documentsRevision) return null
     const snapshot = emptySnapshot(reader, input.query, input.topK)
-    for (const pick of input.picks) {
-      const rows = await reader.chunks!.query().where(`id = ${quote(pick.chunkId)}`).toArray()
-      if (rows.length !== 1) fail('SOURCE_STALE')
-      snapshot.items.push(await sourceItem(reader, rows[0], pick.score))
+    try {
+      for (const pick of input.picks) {
+        const rows = await reader.chunks!.query().where(`id = ${quote(pick.chunkId)}`).toArray()
+        if (rows.length !== 1) fail('SOURCE_STALE')
+        snapshot.items.push(await sourceItem(reader, rows[0], pick.score))
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message === 'GENERATION_KNOWLEDGE_SOURCE_STALE') return null
+      throw error
     }
     snapshot.state = snapshot.items.length ? 'stored' : 'empty'
     return snapshot
