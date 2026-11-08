@@ -9,6 +9,7 @@ export interface RerankEndpoint {
 export type RerankUnavailableReason =
   | 'not-configured'
   | 'embedding-not-siliconflow'
+  | 'auto-reuse-not-enabled'
   | 'profile-missing'
   | 'profile-not-rerank'
 
@@ -35,7 +36,11 @@ export interface RerankConfigInput {
   defaultRerankModelId: unknown
   models: readonly StoredProfile[]
   embedding: EmbeddingEndpoint | null
+  autoReuseEmbedding?: boolean
 }
+
+// R2 参考评估两组都没过开跑前定的判定规则（#632）。R4 正式评估证明对写作质量有提升后再打开。
+const AUTO_REUSE_EMBEDDING = false
 
 const SILICONFLOW = BUILTIN_PRESETS.find(preset => preset.provider === 'siliconflow')!
 const SILICONFLOW_HOSTS = new Set([SILICONFLOW.baseUrl, ...(SILICONFLOW.budgetCapabilityBaseUrls ?? [])].map(url => new URL(url).hostname))
@@ -59,7 +64,7 @@ function isSiliconflowEndpoint(embedding: EmbeddingEndpoint): boolean {
 }
 
 /** 显式选了重排档案就只用它；否则只有硅基流动检索档案可以把同一端点和 Key 借给重排。 */
-export function resolveRerankConfig({ defaultRerankModelId, models, embedding }: RerankConfigInput): RerankConfig {
+export function resolveRerankConfig({ defaultRerankModelId, models, embedding, autoReuseEmbedding = AUTO_REUSE_EMBEDDING }: RerankConfigInput): RerankConfig {
   if (typeof defaultRerankModelId === 'string' && defaultRerankModelId) {
     const profile = models.find(model => model.id === defaultRerankModelId)
     if (!profile) return { kind: 'none', reason: 'profile-missing' }
@@ -72,6 +77,7 @@ export function resolveRerankConfig({ defaultRerankModelId, models, embedding }:
   }
   if (!embedding) return { kind: 'none', reason: 'not-configured' }
   if (!isSiliconflowEndpoint(embedding)) return { kind: 'none', reason: 'embedding-not-siliconflow' }
+  if (!autoReuseEmbedding) return { kind: 'none', reason: 'auto-reuse-not-enabled' }
   return {
     kind: 'reuse-embedding',
     endpoint: { baseUrl: embedding.baseUrl, apiKey: embedding.apiKey, modelName: SILICONFLOW.rerankModels![0]! },
