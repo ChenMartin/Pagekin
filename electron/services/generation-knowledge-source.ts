@@ -160,14 +160,16 @@ export async function verifyGenerationKnowledge(input: { projectStorageRoot: str
   const expected = input.snapshot
   if (expected.version !== 1 || !Array.isArray(expected.items) || typeof expected.query !== 'string'
     || !Number.isSafeInteger(expected.topK) || expected.topK < 1 || expected.topK > 100
-    || expected.items.length > expected.topK || expected.state !== (expected.items.length ? 'stored' : 'empty')) fail('INVALID_SNAPSHOT')
+    || expected.items.length > expected.topK || expected.state !== (expected.items.length ? 'stored' : 'empty')
+    || expected.items.some((item, index) => item.rank !== undefined && item.rank !== index + 1)) fail('INVALID_SNAPSHOT')
   await readStable(input.projectStorageRoot, async reader => {
     if (reader.state !== expected.storageState || reader.canonicalRevision !== expected.canonicalRevision || reader.documentsRevision !== expected.documentsRevision) fail('SOURCE_STALE')
     if (new Set(expected.items.map(item => item.chunkId)).size !== expected.items.length) fail('INVALID_SNAPSHOT')
     for (const item of expected.items) {
       if (!reader.chunks) fail('SOURCE_STALE')
       const rows = await reader.chunks!.query().where(`id = ${quote(string(item.chunkId))}`).toArray()
-      if (rows.length !== 1 || !isDeepStrictEqual(await sourceItem(reader, rows[0], item.score), item)) fail('SOURCE_STALE')
+      const current = rows.length === 1 ? await sourceItem(reader, rows[0], item.score) : undefined
+      if (!current || !isDeepStrictEqual(item.rank === undefined ? current : { ...current, rank: item.rank }, item)) fail('SOURCE_STALE')
     }
   })
 }

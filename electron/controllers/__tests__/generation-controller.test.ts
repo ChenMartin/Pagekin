@@ -17,7 +17,7 @@ type Handler = (event: unknown, ...args: unknown[]) => Promise<unknown>
 const mocks = vi.hoisted(() => ({ handlers: new Map<string, Handler>(), globalRoot: '' }))
 vi.mock('electron', () => ({ ipcMain: { handle: (channel: string, handler: Handler) => mocks.handlers.set(channel, handler) } }))
 vi.mock('../../services/app-data-locator', () => ({ getGlobalDataRoot: () => mocks.globalRoot }))
-vi.mock('../kb-controller', () => ({ getEmbeddingConfig: () => null }))
+vi.mock('../kb-controller', () => ({ getEmbeddingConfig: () => null, getRerankConfig: () => ({ kind: 'none', reason: 'not-configured' }) }))
 import { generationIpcErrorCode, registerGenerationController } from '../generation-controller'
 import { registerDatabaseController } from '../db-controller'
 import { ProjectCoreRepository } from '../../repositories/project-core-repository'
