@@ -1124,6 +1124,23 @@ describe('写稿时冻结的线索任务跟着便携副本走（#623 后续）',
       expect(warn.mock.calls.filter(([message]) => String(message).startsWith('[portable-export]'))).toHaveLength(1)
     } finally { warn.mockRestore() }
   })
+
+  it('收据里的草稿编号不是整数时不带走任务，也不改写成别的草稿编号', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const f = fixture()
+      seedWrittenDraft(f, 5, 1, [task])
+      const db = new Database(f.databasePath)
+      try { db.exec("UPDATE generation_attempts SET usage_receipt_json=json_set(usage_receipt_json,'$.draftCommit.id',json('true'))") }
+      finally { db.close() }
+      const restored = await roundtrip(f, 'restored-boolean-draft-id')
+      const portable = new Database(restored, { readonly: true })
+      try {
+        expect(portable.prepare("SELECT usage_receipt_json FROM generation_attempts WHERE attempt_id='attempt-draft-5'").pluck().get()).toBeNull()
+      } finally { portable.close() }
+      expect(warn.mock.calls.filter(([message]) => String(message).startsWith('[portable-export]'))).toHaveLength(1)
+    } finally { warn.mockRestore() }
+  })
 })
 
 describe('portable redaction registry', () => {

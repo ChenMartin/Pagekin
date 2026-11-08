@@ -217,4 +217,15 @@ describe('写稿时冻结的线索任务进本章审稿目标', () => {
       expect(warn).toHaveBeenCalledTimes(1)
     } finally { warn.mockRestore() }
   })
+
+  it('写稿记录里有本章信息这一项但内容不是文本，按写坏处理并记一行日志', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const f = fixture()
+      writtenBy(f.db, { chapterNumber: 2, title: '第二章', threadTasks: [task] })
+      f.db.exec("UPDATE generation_runs SET binding_json=json_set(binding_json,'$.sourceManifest.authorInputs[0].text',5)")
+      expect(f.capture().frozenGoals.items).toEqual([])
+      expect(warn).toHaveBeenCalledTimes(1)
+    } finally { warn.mockRestore() }
+  })
 })
