@@ -110,8 +110,12 @@ const COVERED_PREFIXES = [
   'IMPORT_INSPECTION_',
   'IMPORT_CHAPTER_',
   'IMPORT_RESOURCE_',
+  // 导入旧项目副本的拒绝原因（#626）：书房提示按码说明，不露码。
+  'LEGACY_IMPORT_',
 ] as const
 const UNREGISTERED: Record<string, readonly string[]> = {
+  // 副本已建好，只是最近项目写失败：主进程放在 warning 字段，界面不显示。
+  legacyImportWarning: ['LEGACY_IMPORT_RECENT_LIST_FAILED'],
   // 请求形状、句柄、事务、收据、哈希与谱系的完整性校验：只有我们自己的代码缺陷、被篡改的 IPC
   // 或被外部改坏的作品库才会触发。界面给不出作者能照做的建议，原码留给反馈定位。
   contractViolation: [
