@@ -52,7 +52,7 @@ async function requestOrder(query: string, documents: string[], endpoint: Rerank
 }
 
 export function rerankRecallCount(config: RerankConfig, limit: number): number {
-  return config.kind !== 'none' && limit <= RERANK_CANDIDATE_COUNT ? RERANK_CANDIDATE_COUNT : limit
+  return config.kind !== 'none' && limit >= 1 && limit <= RERANK_CANDIDATE_COUNT ? RERANK_CANDIDATE_COUNT : limit
 }
 
 export async function rankPassages<T extends { text: string }>(query: string, candidates: readonly T[], config: RerankConfig, limit: number):
@@ -61,7 +61,7 @@ export async function rankPassages<T extends { text: string }>(query: string, ca
     ({ items: candidates.slice(0, limit), ranking: { method: 'original', candidateCount: candidates.length, reason } as const })
   if (config.kind === 'none') return original(config.reason)
   if (limit > RERANK_CANDIDATE_COUNT) return original('top-k-exceeds-candidates')
-  if (!candidates.length) return original('no-candidates')
+  if (!candidates.length || limit < 1) return original('no-candidates')
   try {
     const order = await requestOrder(query, candidates.map(item => item.text), config.endpoint, Math.min(limit, candidates.length))
     return { items: order.map(index => candidates[index]!), ranking: { method: 'rerank', candidateCount: candidates.length } }
