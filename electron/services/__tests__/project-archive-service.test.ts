@@ -22,7 +22,8 @@ import { logicalTableName } from '../../migrations/m07-chapter-recycle'
 import { restorePortableProject } from '../project-restore-service'
 import { readPortableRuntimeFreeze } from '../portable-runtime-freeze'
 import { ReviewRevisionGeneration } from '../review-revision-generation'
-import { GenerationRunRepository } from '../../repositories/generation-run-repository'
+import { GenerationRunRepository, textHash } from '../../repositories/generation-run-repository'
+import { captureReviewRevisionContext } from '../review-revision-context'
 import {
   exportPortableProject,
   PORTABLE_CLEARED_TABLES,
@@ -1002,6 +1003,68 @@ describe('portable project export service', { timeout: 20_000 }, () => {
     await expect(exportPortableProject(input(f, provider(), {
       targetArchivePath: path.join(f.root, 'forbidden.ainovel'),
     }))).rejects.toThrow('PORTABLE_TARGET_INSIDE_SOURCE')
+  })
+})
+
+describe('写稿时冻结的线索任务跟着便携副本走（#623 后续）', { timeout: 30_000 }, () => {
+  const SECRET = 'sk-写稿凭据-绝不外带'
+  const ENDPOINT = 'https://私有端点.example/v1'
+  const MACHINE_PATH = 'C:\\Users\\writer\\密钥.txt'
+  const task = { planId: 8, title: '旧信', authorIntent: '交代旧信的寄信人。', schedule: { kind: 'overdue', chaptersOverdue: 2 } }
+
+  function seedWrittenDraft(f: Fixture, draftId: number, chapterNumber: number, threadTasks: unknown): void {
+    const db = new Database(f.databasePath)
+    db.pragma('foreign_keys = ON')
+    try {
+      const body = `第${chapterNumber}章正文，写完未审。`
+      db.prepare("INSERT OR IGNORE INTO project_core(id,project_name,writing_language) VALUES('main','铜钥匙','zh-CN')").run()
+      db.prepare('INSERT INTO contents(id,body) VALUES(?,?)').run(draftId, body)
+      db.prepare("INSERT INTO drafts_all(id,chapter_number,version,status,source,content_id,word_count) VALUES(?,?,1,'draft','write',?,?)")
+        .run(draftId, chapterNumber, draftId, body.length)
+      const root = `root-draft-${draftId}`, run = `run-draft-${draftId}`, attempt = `attempt-draft-${draftId}`
+      db.prepare('INSERT INTO generation_roots(root_action_id,idempotency_key,action_json,budget_json) VALUES(?,?,?,?)')
+        .run(root, `key-${root}`, JSON.stringify({ projectId: f.projectId, epoch: 'epoch-1', operation: 'chapter-draft',
+          uiActionNonce: 'nonce', frozenInputHash: hash('input'), rootActionId: root, status: 'sealed', secretRef: SECRET }),
+        JSON.stringify({ maxPhysicalRequests: 2, maxTokenLiability: 1000, maxOutputPerRequest: 500, maxActiveElapsedMs: 1000 }))
+      db.prepare('INSERT INTO generation_runs VALUES(?,?,?,?,?,?)').run(run, root, JSON.stringify({
+        projectId: f.projectId, epoch: 'epoch-1', fingerprint: {}, contextSnapshotId: 'context-1',
+        sourceManifest: { operation: 'chapter-draft', chapterNumber, secretRef: SECRET, endpoint: ENDPOINT, authorInputs: [
+          { id: 'draft:chapter-info', text: JSON.stringify({ chapterNumber, title: '雨夜', keyEvents: MACHINE_PATH, threadTasks }) },
+          { id: 'draft:target-units', text: '900' }] }, sourceRefs: [] }), 'completed', 1, `open-${run}`)
+      db.prepare('INSERT INTO generation_attempts VALUES(?,?,?,?,?,?,?)').run(attempt, `reservation-${attempt}`, run, root,
+        JSON.stringify({ attemptId: attempt, reservationId: `reservation-${attempt}`, rootActionId: root, status: 'settled',
+          reservedTokens: 500, requestedOutputTokens: 400 }),
+        JSON.stringify({ purpose: 'chapter-draft', apiKey: SECRET, endpoint: ENDPOINT, path: MACHINE_PATH,
+          draftCommit: { success: true, id: draftId, version: 1, content: body, contentHash: hash(body), chapterNumber,
+            handle: { projectId: f.projectId, epoch: 'epoch-1', runId: run } } }), `invocation-${attempt}`)
+    } finally { db.close() }
+  }
+
+  function reviewGoals(databasePath: string, draftId: number): ReturnType<typeof captureReviewRevisionContext>['frozenGoals'] {
+    const db = new Database(databasePath)
+    try {
+      const draft = db.prepare('SELECT d.chapter_number AS chapterNumber,d.version,d.status,c.body FROM drafts d JOIN contents c ON c.id=d.content_id WHERE d.id=?')
+        .get(draftId) as { chapterNumber: number; version: number; status: 'draft'; body: string }
+      return captureReviewRevisionContext(db, { operation: 'review-chapter', draftId, authorInputs: [], uiLocale: 'zh-CN',
+        expectedDraft: { chapterNumber: draft.chapterNumber, version: draft.version, status: draft.status, contentHash: textHash(draft.body) } },
+      'project').frozenGoals
+    } finally { db.close() }
+  }
+
+  async function roundtrip(f: Fixture, name: string): Promise<string> {
+    await exportPortableProject(input(f))
+    const targetRoot = path.join(f.base, name)
+    await restorePortableProject({ archivePath: f.target, targetProjectRoot: targetRoot })
+    return path.join(targetRoot, '.ai-novel', 'project.db')
+  }
+
+  it('导出再恢复后，未审稿件的审稿目标仍含写稿时冻结的线索任务', async () => {
+    const f = fixture()
+    seedWrittenDraft(f, 5, 1, [task])
+    const before = reviewGoals(f.databasePath, 5)
+    expect(before.items.map(item => item.id)).toEqual(['ch1:thread:8'])
+    const restored = await roundtrip(f, 'restored-thread-tasks')
+    expect(reviewGoals(restored, 5)).toEqual(before)
   })
 })
 
