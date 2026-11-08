@@ -477,6 +477,11 @@ function samePersistedBlueprint(left: BlueprintData, right: BlueprintData): bool
         && left.notesUpdatedAt === right.notesUpdatedAt
 }
 
+/** 章节要点由定稿写入，不算规划内容；口径同 planningBlueprintText。 */
+function planningContent(blueprint: BlueprintData): BlueprintData {
+    return { ...blueprint, notes: '', notesUpdatedAt: '' }
+}
+
 export class BlueprintRepository {
     /** 获取所有蓝图（按章节号排序） */
     static getAll(db = requireProjectDb()): BlueprintData[] {
@@ -488,7 +493,7 @@ export class BlueprintRepository {
         return rows.map(rowToData)
     }
 
-    /** 返回判定函数：这一章现在的蓝图是否就是 afterMs 之后某次正式提交写进去的那份。committed_at 只到秒，同一秒不算。 */
+    /** 返回判定函数：这一章现在的规划内容是否就是 afterMs 之后某次正式提交写进去的那份。committed_at 只到秒，同一秒不算。 */
     static commitMatcherAfter(range: { from: number; to: number }, afterMs: number, db = requireProjectDb()): (chapterNumber: number) => boolean {
         const operations = db.prepare(`
           SELECT start_chapter, end_chapter, character_sync_input FROM blueprint_commit_operations
@@ -508,7 +513,7 @@ export class BlueprintRepository {
             const current = rowToData(row)
             return commits.some(({ from, to, written }) => {
                 const item = from <= chapterNumber && chapterNumber <= to ? written.get(chapterNumber) : undefined
-                return !!item && samePersistedBlueprint(current, item)
+                return !!item && samePersistedBlueprint(planningContent(current), planningContent(item))
             })
         }
     }
