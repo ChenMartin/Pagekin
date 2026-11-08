@@ -52,7 +52,7 @@ export default function CharacterProfile({ projectKey }: { projectKey: string })
   const name = card?.name || text('未命名', 'Untitled')
   const chapterNoteShown = view === 'state' && profile.stateDirty && timeline.status === 'ready'
   const { setStateEffectiveChapter } = profile
-  // 说明条不显示时清掉所选章，否则保存会写到界面上看不到的章。卸载时不清：离开角色页后退出前保存还要用它。
+  // 说明条不显示时清掉所选章，否则保存会写到界面上看不到的章。
   useEffect(() => {
     if (!chapterNoteShown) setStateEffectiveChapter(undefined)
   }, [chapterNoteShown, setStateEffectiveChapter])
