@@ -7,13 +7,9 @@ import { CURRENT_PROJECT_SCHEMA_VERSION } from '../lib/current-project-schema.mj
 
 const scriptsRoot = path.resolve(import.meta.dirname, '..')
 
-const literalSchemaAssertions = [
-  /user_version[^\n]*,\s*\d+\s*\)/u,
-  /schemaVersion\(.*\)\s*,\s*\d+\s*\)/u,
-  /schema\.version\s*,\s*\d+\s*\)/u,
-  /sourceSchemaVersion\s*,\s*\d+\s*\)/u,
-  /\bschema[- ]?\d+/iu,
-]
+const projectSchemaRead = /user_version|schemaVersion\(|schema\.version|sourceSchemaVersion/u
+const literalLastArgument = /,\s*\d+\s*,?\s*\)$/u
+const schemaNumberInText = /\bschema[- ]?\d+/iu
 
 const legacySchemaAllowlist = [
   { file: 'f05-u02-migration-journey.mjs', pattern: /pragma\('user_version', \{ simple: true \}\), 0\)/u,
@@ -37,9 +33,29 @@ function sources() {
     ({ file: path.relative(scriptsRoot, file).replaceAll('\\', '/'), text: readFileSync(file, 'utf8') }))
 }
 
+function assertCalls(source: string) {
+  return [...source.matchAll(/\bassert(?:\.\w+)?\(/gu)].map(match => {
+    let depth = 0
+    let end = match.index + match[0].length - 1
+    do {
+      if (source[end] === '(') depth += 1
+      else if (source[end] === ')') depth -= 1
+      end += 1
+    } while (depth > 0 && end < source.length)
+    return { index: match.index, text: source.slice(match.index, end) }
+  })
+}
+
 function hardCodedSchemaVersions(file: string, source: string) {
-  return source.split('\n').flatMap((text, index) =>
-    literalSchemaAssertions.some(pattern => pattern.test(stripAllowed(file, text))) ? [`${file}:${index + 1}: ${text.trim().slice(0, 120)}`] : [])
+  const lineOf = (index: number) => source.slice(0, index).split('\n').length
+  const report = (line: number, text: string) => `${file}:${line}: ${text.replace(/\s+/gu, ' ').trim().slice(0, 120)}`
+  const assertions = assertCalls(source).filter(call => {
+    const rest = stripAllowed(file, call.text)
+    return projectSchemaRead.test(rest) && literalLastArgument.test(rest)
+  }).map(call => report(lineOf(call.index), call.text))
+  const texts = source.split('\n').flatMap((text, index) =>
+    schemaNumberInText.test(stripAllowed(file, text)) ? [report(index + 1, text)] : [])
+  return [...assertions, ...texts]
 }
 
 function stripAllowed(file: string, text: string) {
