@@ -32,9 +32,14 @@ function journeyScripts(dir: string): string[] {
   })
 }
 
-function lines() {
-  return journeyScripts(scriptsRoot).flatMap(file => readFileSync(file, 'utf8').split('\n').map((text, index) =>
-    ({ file: path.relative(scriptsRoot, file).replaceAll('\\', '/'), line: index + 1, text })))
+function sources() {
+  return journeyScripts(scriptsRoot).map(file =>
+    ({ file: path.relative(scriptsRoot, file).replaceAll('\\', '/'), text: readFileSync(file, 'utf8') }))
+}
+
+function hardCodedSchemaVersions(file: string, source: string) {
+  return source.split('\n').flatMap((text, index) =>
+    literalSchemaAssertions.some(pattern => pattern.test(stripAllowed(file, text))) ? [`${file}:${index + 1}: ${text.trim().slice(0, 120)}`] : [])
 }
 
 function stripAllowed(file: string, text: string) {
@@ -48,15 +53,25 @@ describe('journey scripts take the project schema version from one source', () =
     expect(PORTABLE_SOURCE_SCHEMA_VERSION).toBe(CURRENT_DESKTOP_SCHEMA_VERSION)
   })
 
+  it('flags a literal version in an assertion written across several lines', () => {
+    const source = [
+      'assert.equal(',
+      "  schemaVersion(path.join(copy, 'project.db')),",
+      '  9,',
+      ')',
+      'assert.equal(',
+      "  db.pragma('user_version', { simple: true }),",
+      '  9)',
+    ].join('\n')
+    expect(hardCodedSchemaVersions('example.mjs', source)).toHaveLength(2)
+  })
+
   it('has no hard-coded project schema version outside the allowlist', () => {
-    const offenders = lines().filter(({ file, text }) =>
-      literalSchemaAssertions.some(pattern => pattern.test(stripAllowed(file, text))))
-      .map(({ file, line, text }) => `${file}:${line}: ${text.trim().slice(0, 120)}`)
-    expect(offenders).toEqual([])
+    expect(sources().flatMap(({ file, text }) => hardCodedSchemaVersions(file, text))).toEqual([])
   })
 
   it('keeps every allowlist entry pointing at a real line', () => {
-    const all = lines()
+    const all = sources()
     const stale = legacySchemaAllowlist.filter(entry => !all.some(({ file, text }) => file === entry.file && entry.pattern.test(text)))
     expect(stale).toEqual([])
   })
