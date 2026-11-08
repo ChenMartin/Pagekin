@@ -825,8 +825,8 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
     if (!remaining) return true
     if (outline) return repository.plotOutlineCommitted(run.runId) || plotOutlineBatchInFormalOutline(outline)
     const chapters = Array.from({ length: remaining.to - remaining.from + 1 }, (_, index) => remaining.from + index)
-    const startedAtMs = repository.createdAtMs(run.runId)
-    return chapters.every(chapter => BlueprintRepository.matchesCommitAfter(chapter, startedAtMs, deps.database)
+    const matchesCommit = BlueprintRepository.commitMatcherAfter(remaining, repository.createdAtMs(run.runId), deps.database)
+    return chapters.every(chapter => matchesCommit(chapter)
       && planningBlueprintSourceHash(deps.database, chapter) !== run.binding.sourceRefs.find(ref => ref.sourceId === `blueprint:${chapter}`)?.contentHash)
   }
   const planningDraft = (run: DurableGenerationRun, outline: PlotOutlineProgress | null, continuation: PlanningContinuation | undefined): PlanningDraftStanding | undefined => {

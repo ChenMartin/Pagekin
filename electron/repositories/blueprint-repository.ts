@@ -488,21 +488,32 @@ export class BlueprintRepository {
         return rows.map(rowToData)
     }
 
-    /** 这一章现在的蓝图是否就是 afterMs 之后某次正式提交写进去的那份。committed_at 只到秒，同一秒不算。 */
-    static matchesCommitAfter(chapterNumber: number, afterMs: number, db = requireProjectDb()): boolean {
-        const row = db.prepare('SELECT * FROM blueprints WHERE chapter_number = ?').get(chapterNumber) as BlueprintRow | undefined
-        if (!row) return false
-        const current = rowToData(row)
+    /**
+     * 覆盖 range 的、afterMs 之后的正式提交只读一次；返回的判定：这一章现在的蓝图是否就是其中某次提交写进去的那份。
+     * committed_at 只到秒，同一秒不算。
+     */
+    static commitMatcherAfter(range: { from: number; to: number }, afterMs: number, db = requireProjectDb()): (chapterNumber: number) => boolean {
         const operations = db.prepare(`
-          SELECT character_sync_input FROM blueprint_commit_operations
+          SELECT start_chapter, end_chapter, character_sync_input FROM blueprint_commit_operations
           WHERE start_chapter <= ? AND end_chapter >= ? AND CAST(strftime('%s', committed_at) AS INTEGER) * 1000 > ?
-        `).all(chapterNumber, chapterNumber, afterMs) as BlueprintCommitOperationRow[]
-        return operations.some(operation => {
+        `).all(range.to, range.from, afterMs) as BlueprintCommitOperationRow[]
+        const commits = operations.flatMap(operation => {
             let committed: BlueprintData[]
-            try { committed = readCharacterSyncInput(operation) } catch { return false }
-            const written = committed.find(item => item?.chapterNumber === chapterNumber)
-            return !!written && samePersistedBlueprint(current, written)
+            try { committed = readCharacterSyncInput(operation) } catch { return [] }
+            const written = new Map<unknown, BlueprintData>()
+            for (const item of committed) if (!written.has(item?.chapterNumber)) written.set(item?.chapterNumber, item)
+            return [{ from: operation.start_chapter, to: operation.end_chapter, written }]
         })
+        const read = db.prepare('SELECT * FROM blueprints WHERE chapter_number = ?')
+        return chapterNumber => {
+            const row = read.get(chapterNumber) as BlueprintRow | undefined
+            if (!row) return false
+            const current = rowToData(row)
+            return commits.some(({ from, to, written }) => {
+                const item = from <= chapterNumber && chapterNumber <= to ? written.get(chapterNumber) : undefined
+                return !!item && samePersistedBlueprint(current, item)
+            })
+        }
     }
 
     /** 获取单个蓝图 */
