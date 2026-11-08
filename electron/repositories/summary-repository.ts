@@ -30,15 +30,12 @@ import { decideDerivedPatch, type CharacterFieldSnapshot, type DerivedSourceOrde
 import { parseFinalizedCharacterStateResponse } from '../../src/shared/finalized-continuity'
 import { hasCharacterIdentitySchema } from './character-repository'
 import { refreshCharacterStateProjection } from './character-roster-repository'
+import { CHARACTER_STATE_COLUMNS, writeCharacterStateField } from './character-continuity-repository'
 import type { ProjectEpoch } from '../../src/shared/source-ref'
 import { RECEIPTED_DRAFT_STATUS_SQL } from '../../src/shared/draft-status'
 
 const FACT_CATEGORIES = new Set(['character-state', 'timeline', 'open-thread', 'plot'])
 const CHARACTER_STATE_FIELDS = new Set<string>(CHARACTER_STATE_TEXT_FIELDS)
-const STATE_COLUMNS: Record<CharacterStateTextField, string> = {
-  location: 'cs_location', powerLevel: 'cs_power_level', physicalState: 'cs_physical_state',
-  mentalState: 'cs_mental_state', keyItems: 'cs_key_items', recentEvents: 'cs_recent_events',
-}
 const FINALIZED_CHARACTER_SNAPSHOT_KIND = 'finalized-character-snapshot:v1'
 interface FinalizedCharacterSnapshot {
   kind: typeof FINALIZED_CHARACTER_SNAPSHOT_KIND
@@ -82,7 +79,7 @@ function stateSnapshot(row: Record<string, unknown>, field: CharacterStateTextFi
     : stored?.kind === 'author' ? { kind: 'author', chapterNumber: stored.chapterNumber } : { kind: 'legacy' }
   const revision = stored?.revision ?? 0
   if (!Number.isSafeInteger(revision) || revision < 0) throw new Error('FINALIZED_CHARACTER_FIELD_REVISION_INVALID')
-  const value = String(row[STATE_COLUMNS[field]] ?? '')
+  const value = String(row[CHARACTER_STATE_COLUMNS[field]] ?? '')
   return { projectId: scope.projectId, epoch: scope.epoch, characterId: row.character_id as string, field, revision, value, valueHash: sha256(value), provenance: fieldProvenance,
     ...(stored?.sourceOrder ? { sourceOrder: structuredClone(stored.sourceOrder) } : {}) }
 }
@@ -467,7 +464,8 @@ export class SummaryRepository {
               reason: actual.provenance.kind === 'author' ? 'author-protected' : 'legacy-protected' })
             continue
           }
-          db.prepare(`UPDATE characters SET ${STATE_COLUMNS[field]}=? WHERE character_id=? AND retired=0`).run(value, update.characterId)
+          writeCharacterStateField(db, { characterId: update.characterId, characterName: captured.displayNameSnapshot, field, value,
+            origin: { kind: 'derived', source: context.source, quote: update.evidence, fieldRevision: actual.revision + 1 } })
           provenance[field] = { kind: 'derived', source: structuredClone(context.source), revision: actual.revision + 1, sourceOrder: structuredClone(context.sourceOrder) }
           receipt.applied++; changed = true
         }
@@ -557,10 +555,10 @@ export class SummaryRepository {
         }
         const provenance = JSON.parse(String(character.cs_provenance || '{}')) as Record<string, unknown>
         provenance[candidate.field] = { kind: 'author', chapterNumber: candidate.source.chapterNumber, revision: current.revision + 1 }
-        const updated = db.prepare(`UPDATE characters SET ${STATE_COLUMNS[candidate.field]}=?,cs_provenance=?,
-          cs_updated_at_chapter=MAX(COALESCE(cs_updated_at_chapter,0),?),updated_at=datetime('now')
-          WHERE character_id=? AND retired=0`).run(candidate.value, JSON.stringify(provenance), candidate.source.chapterNumber, candidate.characterId)
-        if (updated.changes !== 1) throw new Error('FINALIZED_CHARACTER_STATE_FIELD_CONFLICT')
+        if (!writeCharacterStateField(db, { characterId: candidate.characterId, characterName: String(character.name), field: candidate.field, value: candidate.value,
+          origin: { kind: 'adopted', operationId: request.operationId, source: candidate.source, quote: candidate.evidence } })) throw new Error('FINALIZED_CHARACTER_STATE_FIELD_CONFLICT')
+        db.prepare(`UPDATE characters SET cs_provenance=?,cs_updated_at_chapter=MAX(COALESCE(cs_updated_at_chapter,0),?),updated_at=datetime('now')
+          WHERE character_id=?`).run(JSON.stringify(provenance), candidate.source.chapterNumber, candidate.characterId)
         refreshCharacterStateProjection(db)
       }
       const receipt: StoredCharacterStateDecision = { candidateKey: candidate.candidateKey,
