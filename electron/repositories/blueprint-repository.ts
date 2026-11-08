@@ -488,6 +488,23 @@ export class BlueprintRepository {
         return rows.map(rowToData)
     }
 
+    /** 这一章现在的蓝图是否就是 afterMs 之后某次正式提交写进去的那份。提交时间只到秒，同一秒不算；提交记录读不出也不算。 */
+    static matchesCommitAfter(chapterNumber: number, afterMs: number, db = requireProjectDb()): boolean {
+        const row = db.prepare('SELECT * FROM blueprints WHERE chapter_number = ?').get(chapterNumber) as BlueprintRow | undefined
+        if (!row) return false
+        const current = rowToData(row)
+        const operations = db.prepare(`
+          SELECT character_sync_input FROM blueprint_commit_operations
+          WHERE start_chapter <= ? AND end_chapter >= ? AND CAST(strftime('%s', committed_at) AS INTEGER) * 1000 > ?
+        `).all(chapterNumber, chapterNumber, afterMs) as BlueprintCommitOperationRow[]
+        return operations.some(operation => {
+            let committed: BlueprintData[]
+            try { committed = readCharacterSyncInput(operation) } catch { return false }
+            const written = committed.find(item => item?.chapterNumber === chapterNumber)
+            return !!written && samePersistedBlueprint(current, written)
+        })
+    }
+
     /** 获取单个蓝图 */
     static getByChapter(chapterNumber: number): BlueprintData | null {
         const db = requireProjectDb()

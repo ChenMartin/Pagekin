@@ -814,7 +814,8 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
     "SELECT 1 FROM generation_attempts WHERE run_id=? AND json_extract(attempt_json,'$.status') IN ('reserved','dispatch-marked') LIMIT 1").get(runId)
   /**
    * 拿不准就列出：多列的一份作者能自己放弃，误藏的一份作者根本不知道还在。
-   * 蓝图以提交记录为准，作者手改不留记录，所以不算替代；提交时间只到秒，同一秒按没有提交算。
+   * 蓝图要求每一章现在就是开跑以后某次正式提交写进去的那份，删过、重建、手改过的都不算；
+   * 导入原稿的 fill-empty 提交会把原有行原样记账，所以还要求这一章开跑以后确实变过。
    * 大纲没有提交记录，只能比内容。
    */
   const planningSuperseded = (run: DurableGenerationRun, outline: PlotOutlineProgress | null, remaining: PlanningContinuation['remainingRange']): boolean => {
@@ -827,11 +828,8 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
         return now !== null && now !== plotOutlineChapterEntry(outline.sourceExpected.synopsis, chapter)
       })
     }
-    const committedAfterRun = deps.database.prepare(`SELECT 1 FROM blueprint_commit_operations
-      WHERE start_chapter<=? AND end_chapter>=? AND CAST(strftime('%s',committed_at) AS INTEGER)*1000>? LIMIT 1`)
-    const present = deps.database.prepare('SELECT 1 FROM blueprints WHERE chapter_number=?')
     const startedAtMs = repository.createdAtMs(run.runId)
-    return chapters.every(chapter => !!committedAfterRun.get(chapter, chapter, startedAtMs) && !!present.get(chapter)
+    return chapters.every(chapter => BlueprintRepository.matchesCommitAfter(chapter, startedAtMs, deps.database)
       && planningBlueprintSourceHash(deps.database, chapter) !== run.binding.sourceRefs.find(ref => ref.sourceId === `blueprint:${chapter}`)?.contentHash)
   }
   const planningDraft = (run: DurableGenerationRun, outline: PlotOutlineProgress | null, continuation: PlanningContinuation | undefined): PlanningDraftStanding | undefined => {
