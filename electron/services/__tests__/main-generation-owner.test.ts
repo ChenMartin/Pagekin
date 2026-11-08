@@ -1268,6 +1268,21 @@ describe('S07 durable task budget diagnostics', () => {
     expect(saved.outcome).toMatchObject({ status: 'incomplete', finishReason: 'error', receipt: { failureCode: 'GENERATION_CONTEXT_LENGTH_EXCEEDED' } })
     expect(saved.run.budgetDiagnostics![0]).toMatchObject({ runId: run.handle.runId, failureCode: 'GENERATION_CONTEXT_LENGTH_EXCEEDED', actualState: 'unknown' })
   })
+  it('counts one attempt and only the successful usage when a relay makes the provider swap its output field', async () => {
+    const fetch = syntheticStream()
+    fetch.mockResolvedValueOnce(new Response(JSON.stringify({ error: { message: "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.",
+      type: 'invalid_request_error', param: 'max_tokens', code: 'unsupported_parameter' } }), { status: 400 }) as never)
+    const f = fixture()
+    f.model.baseUrl = 'https://relay.example/v1'
+    const run = f.owner.begin(f.begin)
+    const saved = await f.owner.execute({ handle: run.handle, invocationNonce: 'relay-output-field', task })
+    expect(saved.outcome).toMatchObject({ status: 'completed', finishReason: 'stop' })
+    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(saved.run.ledger).toMatchObject({ physicalRequests: 1 })
+    expect(f.db.prepare('SELECT COUNT(*) FROM generation_attempts').pluck().get()).toBe(1)
+    expect(f.db.prepare('SELECT prompt_tokens AS input, completion_tokens AS output, total_tokens AS total FROM llm_calls').all())
+      .toEqual([{ input: 50, output: 12, total: 62 }])
+  })
   // 实测 gemini-3.8-flash：输入 20、正文 60、思考 830、总量 910。调用记录的「输出」要和 OpenAI 一样含思考（#484）。
   it.each([
     ['separately-billed', 60],

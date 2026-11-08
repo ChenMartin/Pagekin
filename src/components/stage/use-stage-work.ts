@@ -65,7 +65,7 @@ function workflowRefreshKey(runs: readonly WorkflowRun[]): string {
 }
 
 /**
- * 换项目或会话代数变化时立即刷新；工作流步骤推进、架构更新、蓝图资源变化时合并成一次。
+ * 换项目或会话代数变化时立即刷新；工作流步骤推进、架构更新、蓝图资源变化、放弃规划恢复稿时合并成一次。
  * 项目身份与工作流共用一个 effect，打开作品时只刷新一次。
  */
 export function useStageWorkRefresh(): void {
@@ -102,9 +102,13 @@ export function useStageWorkRefresh(): void {
     const offResource = globalEventBus.on('REFRESH_RESOURCE', ({ projectSession, resources }) => {
       if (isProjectSessionCurrent(projectSession) && shouldRefreshBlueprints(resources)) schedule.current()
     })
+    const offPlanningRecovery = globalEventBus.on('PLANNING_RECOVERY_CHANGED', ({ projectSession }) => {
+      if (isProjectSessionCurrent(projectSession)) schedule.current()
+    })
     return () => {
       offArch()
       offResource()
+      offPlanningRecovery()
       if (timer.current) clearTimeout(timer.current)
     }
   }, [])
