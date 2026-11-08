@@ -74,7 +74,6 @@ function threadOutcomeLabel(outcome: ChapterThreadOutcome, language: WritingLang
   }[outcome]
 }
 
-/** 存档里的说明带着审稿时写作语言的结论前缀；单独展示说明时去掉。 */
 export function withoutResolvedOutcomeLabel(description: string): string {
   const label = WRITING_LANGUAGES.map(language => threadOutcomeLabel('resolved', language))
     .find(candidate => description.startsWith(candidate))

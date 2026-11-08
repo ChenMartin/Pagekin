@@ -21,7 +21,6 @@ export interface ReviewedFinalDraft {
   goalReview: ChapterGoalReview
 }
 
-/** 不落库：每次按当前定稿、审稿和已确认事件重算，重开替换后自然跟着新稿走（ADR-0013，作者确认后才记账）。 */
 export function narrativeThreadReviewCandidates(
   threads: readonly NarrativeThreadView[],
   drafts: readonly ReviewedFinalDraft[],

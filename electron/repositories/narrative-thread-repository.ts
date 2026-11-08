@@ -41,7 +41,6 @@ function validatePlan(input: NarrativeThreadPlanInput): NarrativeThreadPlanInput
   return { ...input, title, type, authorIntent }
 }
 
-/** 原始审稿报告和作者确认的清单都把逐项核对放在 goalReview 字段；旧报告或坏报告没有结果。 */
 function savedGoalReview(reportBody: string): ChapterGoalReview | null {
   try {
     return parseChapterGoalReview((JSON.parse(reportBody) as { goalReview?: unknown } | null)?.goalReview)
