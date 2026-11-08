@@ -3657,10 +3657,11 @@ describe('规划恢复稿是否还列为可恢复（#608）', () => {
     const interrupted = await f.failed(1, 3, 'interrupted')
     f.startedMinuteEarlier(interrupted)
     BlueprintRepository.commitRange({ mode: 'replace-range', operationId: 'later', startChapter: 1, endChapter: 3, blueprints: rows(1, 3, '后来生成的') })
-    expect(f.listed()).toEqual([])
+    const other = await f.failed(4, 6, 'other')
+    expect(f.listed()).toEqual([other.runId])
     f.db.prepare("UPDATE blueprint_commit_operations SET character_sync_input=? WHERE operation_id='later'").run(stored)
     const list = f.owner.listRecovery()
-    expect(list.planning.map(item => item.handle.runId)).toEqual([interrupted.runId])
+    expect(list.planning.map(item => item.handle.runId).sort()).toEqual([interrupted.runId, other.runId].sort())
     expect(list.partial).toBeFalsy()
   })
 
