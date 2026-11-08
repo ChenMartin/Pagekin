@@ -1358,11 +1358,6 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
         { title: projectText('保存角色状态失败', 'Failed to save character states') },
       )
     }
-    // 【迁移优化】: project:save 已经持久化到 project_core 表的 characterStates 字段，
-    // 此处无需为了全局（-1）再进行一次 db:save-summary-snapshot 的冗余调用。
-    // try {
-    //   await ipc.invoke('db:save-summary-snapshot', -1, states)
-    // } catch { /* SQLite 可能未初始化 */ }
   },
 }))
 

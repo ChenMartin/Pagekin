@@ -118,7 +118,6 @@ const MUTATING_DATABASE_CHANNELS = new Set([
   'db:post-process-mark-step-ok',
   'db:post-process-mark-step-failed',
   'db:log-llm-call',
-  'db:save-summary-snapshot',
   'db:narrative-thread-plan-create',
   'db:narrative-thread-plan-update',
   'db:narrative-thread-plan-delete',
@@ -1252,16 +1251,5 @@ export function registerDatabaseController() {
   ipcMain.handle('db:get-llm-history', async (_event, limit: number | undefined, expectedProjectPath: string) => {
     assertRequiredExpectedProjectPath(getCurrentProjectPath(), expectedProjectPath)
     return LLMHistoryRepository.getHistory(limit ?? 50)
-  })
-
-  ipcMain.handle('db:save-summary-snapshot', async (_event, chapterNumber: number, characterStates: string, expectedProjectPath: string) => {
-    assertRequiredExpectedProjectPath(getCurrentProjectPath(), expectedProjectPath)
-    SummaryRepository.saveSnapshot(chapterNumber, characterStates)
-    return { success: true }
-  })
-
-  ipcMain.handle('db:get-latest-summary', async (_event, expectedProjectPath: string) => {
-    assertRequiredExpectedProjectPath(getCurrentProjectPath(), expectedProjectPath)
-    return SummaryRepository.getLatestSnapshot()
   })
 }
