@@ -15,8 +15,7 @@ const literalSchemaAssertions = [
   /\bschema[- ]?\d+/iu,
 ]
 
-// 有意停在旧版本的地方。每项写明为什么不跟当前版本走。
-const allowed = [
+const legacySchemaAllowlist = [
   { file: 'f05-u02-migration-journey.mjs', pattern: /pragma\('user_version', \{ simple: true \}\), 0\)/u,
     reason: '断言的是 schema 0 旧项目夹具导入前的状态' },
   { file: 'f05-u02-migration-journey.mjs', pattern: /schema0/u,
@@ -39,7 +38,7 @@ function lines() {
 }
 
 function stripAllowed(file: string, text: string) {
-  return allowed.filter(entry => entry.file === file).reduce((rest, entry) =>
+  return legacySchemaAllowlist.filter(entry => entry.file === file).reduce((rest, entry) =>
     rest.replace(new RegExp(entry.pattern.source, 'gu'), ''), text)
 }
 
@@ -58,7 +57,7 @@ describe('journey scripts take the project schema version from one source', () =
 
   it('keeps every allowlist entry pointing at a real line', () => {
     const all = lines()
-    const stale = allowed.filter(entry => !all.some(({ file, text }) => file === entry.file && entry.pattern.test(text)))
+    const stale = legacySchemaAllowlist.filter(entry => !all.some(({ file, text }) => file === entry.file && entry.pattern.test(text)))
     expect(stale).toEqual([])
   })
 })
