@@ -13,7 +13,7 @@ import type {
 import { alertError } from '../components/ui/AlertDialog'
 import { showFinalizationRepairNotice } from '../components/finalization-repair-notice'
 import { confirm } from '../components/ui/Confirm'
-import { appErrorMessage, displayedErrorMessage, englishWithReason } from '../i18n/app-errors'
+import { appErrorMessage, displayedErrorMessage, englishWithReason, legacyImportFailureMessage } from '../i18n/app-errors'
 import { saveDirtyEditorChangesForExit, useEditorStore } from './editor-store'
 import { countUnsavedEditorItemsForProject } from './editor-unsaved'
 import { useLayoutStore } from './layout-store'
@@ -73,6 +73,10 @@ type LocalizedProjectCopy = Readonly<{
 
 function projectText(zhCNText: string, enUSText: string): string {
   return useLocaleStore.getState().text(zhCNText, enUSText)
+}
+
+function importedCopyNotOpenedNotice(targetRoot: string): string {
+  return projectText(`副本已建立，但未能自动打开。请用“打开作品”选择：${targetRoot}`, `The copy was created but could not be opened. Use “Open a book” to select: ${targetRoot}`)
 }
 
 function projectCopy(zhCNText: string, enUSText: string): LocalizedProjectCopy {
@@ -854,6 +858,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
     const requestSequence = openProjectRequestSequence
     const isCurrent = () => requestSequence === openProjectRequestSequence
     set({ legacyImportNotice: '', legacyImportBusy: true })
+    let copiedTo: string | undefined
     try {
       const sourceRoot = source ?? await ipc.invoke('dialog:select-legacy-project')
       if (!sourceRoot || !isCurrent()) return false
@@ -863,25 +868,23 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
       const result = await ipc.invoke('project:import-legacy-copy', sourceRoot.grantId, target.grantId)
       if (result.state === 'cancelled') return false
       if (result.state === 'blocked') {
-        set({ legacyImportNotice: projectText(
-          `导入未完成，旧项目保持原样。原因：${result.code}`,
-          `Import did not complete; the original project is unchanged. Reason: ${result.code}`,
-        ) })
+        set({ legacyImportNotice: legacyImportFailureMessage(useLocaleStore.getState().locale, result.code) })
         return false
       }
+      copiedTo = result.targetRoot
       const { confirmLeaveSettings } = await import('../components/settings/unsaved-settings')
       const leave = isCurrent() ? await confirmLeaveSettings() : 'left'
       const opened = leave === 'left' && isCurrent() && await get().openProject(result.targetRoot).catch(() => false)
       set({ legacyImportNotice: opened
         ? projectText('旧项目已导入为独立副本。两份项目的后续修改不会自动同步。', 'Legacy project imported as an independent copy. Future changes do not sync between the two projects.')
         : leave === 'stayed'
-          ? projectText(`副本已建立。你选了继续编辑设置，所以没有自动打开；之后可用“打开作品”选择：${result.targetRoot}`, `The copy was created. You chose to keep editing settings, so it was not opened. Use Open project to select it later: ${result.targetRoot}`)
+          ? projectText(`副本已建立。你选了继续编辑设置，所以没有自动打开；之后可用“打开作品”选择：${result.targetRoot}`, `The copy was created. You chose to keep editing settings, so it was not opened. Use “Open a book” to select it later: ${result.targetRoot}`)
           : leave === 'busy'
-            ? projectText(`副本已建立。另一个「放弃未保存的修改？」确认还开着，所以没有自动打开；之后可用“打开作品”选择：${result.targetRoot}`, `The copy was created. Another “Discard unsaved changes?” confirmation was still open, so it was not opened. Use Open project to select it later: ${result.targetRoot}`)
-            : projectText(`副本已建立，但未能自动打开。请用“打开作品”选择：${result.targetRoot}`, `The copy was created but could not be opened. Use Open project to select: ${result.targetRoot}`) })
+            ? projectText(`副本已建立。另一个「放弃未保存的修改？」确认还开着，所以没有自动打开；之后可用“打开作品”选择：${result.targetRoot}`, `The copy was created. Another “Discard unsaved changes?” confirmation was still open, so it was not opened. Use “Open a book” to select it later: ${result.targetRoot}`)
+            : importedCopyNotOpenedNotice(result.targetRoot) })
       return opened
     } catch (error) {
-      set({ legacyImportNotice: projectText(`导入未完成：${String(error)}`, `Import did not complete: ${String(error)}`) })
+      set({ legacyImportNotice: copiedTo ? importedCopyNotOpenedNotice(copiedTo) : legacyImportFailureMessage(useLocaleStore.getState().locale, error) })
       return false
     } finally {
       set({ legacyImportBusy: false })

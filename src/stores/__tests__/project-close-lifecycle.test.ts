@@ -9,6 +9,7 @@ import {
 import { useLocaleStore } from '../locale-store'
 import { useProjectStore } from '../project-store'
 import { useWorkflowStore } from '../workflow-store'
+import { confirmLeaveSettings } from '../../components/settings/unsaved-settings'
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -32,6 +33,8 @@ vi.mock('../../services/ipc-client', () => ({
     ),
   },
 }))
+
+vi.mock('../../components/settings/unsaved-settings', { spy: true })
 
 vi.mock('../../components/ui/AlertDialog', () => ({
   alertError: mocks.alertError,
@@ -149,6 +152,23 @@ describe('project close lifecycle', () => {
     expect(mocks.invoke).not.toHaveBeenCalledWith('dialog:select-legacy-project')
     expect(useProjectStore.getState().currentProject).toEqual(project('C'))
     expect(mocks.alertError).not.toHaveBeenCalled()
+  })
+
+  it('副本建好之后才出错时，提示副本已建立和去哪打开，不说没有导入', async () => {
+    mocks.invoke.mockImplementation(async (channel: string) => {
+      if (channel === 'dialog:select-project-restore-target') return { grantId: 'new-copy-target' }
+      if (channel === 'project:import-legacy-copy') return { state: 'ready', projectId: 'C', targetRoot: project('C').path }
+      throw new Error(`Unexpected channel ${channel}`)
+    })
+    vi.mocked(confirmLeaveSettings).mockRejectedValueOnce(new Error('settings guard failed'))
+
+    await expect(useProjectStore.getState().importLegacyProject({ grantId: 'old-B-grant', displayName: 'B' })).resolves.toBe(false)
+
+    const notice = useProjectStore.getState().legacyImportNotice
+    expect(notice).toContain('副本已建立')
+    expect(notice).toContain('打开作品')
+    expect(notice).toContain(project('C').path)
+    expect(notice).not.toContain('没有导入')
   })
 
   it.each(['confirmation', 'target'])('keeps the active project when legacy import is cancelled at %s', async cancelAt => {
