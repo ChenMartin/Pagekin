@@ -108,7 +108,7 @@ export const A11_SCENARIOS = {
     await chapterView.finalize(page, 5)
     await chapterView.postProcess(page).getByText('4 / 4 完成').waitFor({ state: 'visible', timeout: 60_000 })
 
-    const chatsBefore = fake.chats.length
+    const requestsBefore = fake.requests.length
     await refs.open(page, 'plot')
     await refs.plotView(page, '伏笔线索').click()
     const candidates = page.getByRole('article', { name: '审稿发现的回收' })
@@ -126,8 +126,9 @@ export const A11_SCENARIOS = {
     await page.locator('#narrative-plan-3').getByText('第 5 章 · 已解决 · 对照远处灯塔的位置').waitFor({ state: 'visible' })
     const statusAfter = await page.locator('#narrative-plan-3 .stage-thread-name').innerText()
     assert.match(statusAfter, /已解决/, '确认后线索变已解决')
-    assert.equal(fake.chats.length, chatsBefore, '线索页显示和确认候选都不发模型请求')
+    const modelRequests = fake.requests.slice(requestsBefore).filter(kind => kind !== 'models')
+    assert.deepEqual(modelRequests, [], '线索页显示和确认候选都不发模型请求，向量请求也算')
     await shoot('a11-thread-review-candidate-confirmed')
-    return { card, statusBefore, statusAfter, chatsDuringPage: fake.chats.length - chatsBefore }
+    return { card, statusBefore, statusAfter, modelRequests }
   } },
 }
