@@ -124,8 +124,7 @@ export function insertContinuityBaseline(db: Database.Database): void {
 
   const relationships = db.prepare(`SELECT r.relationship_id, r.source_character_id, r.target_character_id, r.relation,
       r.source_display_snapshot, r.target_display_snapshot,
-      (SELECT COUNT(*) FROM character_relationships same
-        WHERE same.source_character_id = r.source_character_id AND same.target_character_id = r.target_character_id) AS pair_rows
+      COUNT(*) OVER (PARTITION BY r.source_character_id, r.target_character_id) AS pair_rows
     FROM character_relationships r ORDER BY r.relationship_id`).all() as Array<Record<string, unknown>>
   for (const row of relationships) {
     if (typeof row.relation !== 'string' || !row.relation
