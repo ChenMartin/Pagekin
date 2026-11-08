@@ -120,7 +120,11 @@ const targetOf = (node: ContinuityNode) => node.aspect === 'relation' ? node.tar
 /** 同一章同一字段连改几次，只留这一章最终生效的一条，取舍规则与 latestNodesBefore 相同。 */
 export function characterTimeline(nodes: readonly ContinuityNode[]): CharacterTimelineChapter[] {
   const series = new Map<string, ContinuityNode[]>()
-  for (const node of nodes) series.set(seriesKey(node), [...series.get(seriesKey(node)) ?? [], node])
+  for (const node of nodes) {
+    const key = seriesKey(node), line = series.get(key)
+    if (line) line.push(node)
+    else series.set(key, [node])
+  }
   const chapters = new Map<number, CharacterTimelineChange[]>()
   for (const line of series.values()) {
     line.sort((left, right) => newer(left, right) ? 1 : newer(right, left) ? -1 : 0)
