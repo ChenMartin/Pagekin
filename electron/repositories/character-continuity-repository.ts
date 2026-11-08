@@ -49,8 +49,12 @@ interface NodeWrite {
   evidence: Record<string, unknown>
 }
 
-function appendNode(db: BetterSqlite3.Database, node: NodeWrite): void {
+/** 业务写入和节点要一起成败，放在写业务列之前检查。 */
+function requireTransaction(db: BetterSqlite3.Database): void {
   if (!db.inTransaction) throw new Error('CHARACTER_CONTINUITY_TRANSACTION_REQUIRED')
+}
+
+function appendNode(db: BetterSqlite3.Database, node: NodeWrite): void {
   const series = db.prepare(`SELECT
       MAX(CASE WHEN e.draft_id IS NULL OR d.status='finalized' THEN e.effective_chapter END) AS chapter,
       COALESCE(MAX(json_extract(e.evidence_json,'$.seq')),0) AS seq
@@ -80,6 +84,7 @@ function stateNodePlacement(db: BetterSqlite3.Database, write: CharacterStateWri
 
 /** 写 cs_* 值列的唯一入口。返回 false 表示角色已不在名单上，什么也没写。 */
 export function writeCharacterStateField(db: BetterSqlite3.Database, write: CharacterStateWrite): boolean {
+  requireTransaction(db)
   const updated = db.prepare(`UPDATE characters SET ${CHARACTER_STATE_COLUMNS[write.field]}=? WHERE character_id=? AND retired=0`).run(write.value, write.characterId)
   if (updated.changes !== 1) return false
   appendNode(db, { subjectId: write.characterId, subjectName: write.characterName, target: null, aspect: write.field, value: write.value, ...stateNodePlacement(db, write) })
@@ -93,6 +98,7 @@ const RELATION_ORIGIN: Readonly<Record<CharacterApproval['action'], 'author' | '
 /** 写入 character_relationships 的唯一入口。 */
 export function insertCharacterRelationship(db: BetterSqlite3.Database, line: CharacterRelationshipLine & { relation: string; provenanceJson: string },
   approval: Pick<CharacterApproval, 'operationId' | 'action'>): void {
+  requireTransaction(db)
   db.prepare('INSERT INTO character_relationships VALUES(?,?,?,?,?,?,?,?)').run(line.relationshipId, line.sourceId, line.targetId, line.relation,
     line.sourceName, line.targetName, line.provenanceJson, approval.operationId)
   appendNode(db, { eventId: `relation:add:${line.relationshipId}`, subjectId: line.sourceId, subjectName: line.sourceName, target: { id: line.targetId, name: line.targetName },
@@ -102,6 +108,7 @@ export function insertCharacterRelationship(db: BetterSqlite3.Database, line: Ch
 
 /** 删除 character_relationships 的唯一入口。节点的值为空，靠 relationshipId 指出删的是哪一行。 */
 export function deleteCharacterRelationship(db: BetterSqlite3.Database, line: CharacterRelationshipLine, operationId: string): void {
+  requireTransaction(db)
   db.prepare('DELETE FROM character_relationships WHERE relationship_id=?').run(line.relationshipId)
   appendNode(db, { eventId: `relation:remove:${line.relationshipId}`, subjectId: line.sourceId, subjectName: line.sourceName, target: { id: line.targetId, name: line.targetName },
     aspect: 'relation', value: '', effectiveChapter: nextChapter(db), provenance: { kind: 'author', operationId }, draftId: null, evidence: { relationshipId: line.relationshipId } })

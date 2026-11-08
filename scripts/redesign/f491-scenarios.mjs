@@ -111,7 +111,31 @@ export async function finalizeChapter(page, chapterNumber) {
 export const postDetail = page => chapterView.postProcess(page).locator('li[data-state="failed"]').filter({ has: page.locator('b', { hasText: /^角色状态更新$/u }) })
   .locator('.stage-ch-post-detail')
 
+async function continuityNodes(projectPath) {
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(path.join(projectPath, '.ai-novel', 'project.db'), { readOnly: true })
+  try {
+    return db.prepare(`SELECT e.aspect,e.value,e.effective_chapter,e.provenance_json,e.evidence_json,d.chapter_number,d.status
+      FROM character_continuity_events e JOIN drafts d ON d.id=e.draft_id ORDER BY e.effective_chapter,e.aspect`).all().map(row => ({ ...row }))
+  } finally { db.close() }
+}
+
 export const F491_SCENARIOS = {
+  'c2-continuity-nodes-finalize': { model: true, shell: 'stage', setup: seedStageSample, run: async context => {
+    context.fake.replyCharacterState(characterStateReply)
+    await finalizeChapter(context.page, 3)
+    await finalizeChapter(context.page, 4)
+    const nodes = await continuityNodes(context.samplePath)
+    const expected = CHAPTER_UPDATES.flatMap((update, index) => Object.entries(update.currentState).map(([aspect, value]) =>
+      ({ aspect, value, chapter: 3 + index, quote: update.evidence })))
+    const summary = list => list.map(item => JSON.stringify(item)).sort()
+    assert.deepEqual(summary(nodes.map(node => ({ aspect: node.aspect, value: node.value, chapter: node.effective_chapter, quote: JSON.parse(node.evidence_json).quote.text }))),
+      summary(expected), '定稿写入的派生节点与模型回复逐字段一致')
+    assert.ok(nodes.every(node => JSON.parse(node.provenance_json).kind === 'derived' && node.chapter_number === node.effective_chapter && node.status === 'finalized'),
+      `节点来历为派生，绑定本章定稿。实际：${JSON.stringify(nodes)}`)
+    return { nodes: nodes.map(node => `${node.effective_chapter}:${node.aspect}`) }
+  } },
+
   'f491-backup-roundtrip': { model: true, shell: 'stage', setup: seedStageSample, run: async context => {
     context.fake.replyCharacterState(characterStateReply)
     const measured = {}
