@@ -9,7 +9,8 @@ import { SqliteSchemaAdapter } from '../sqlite-schema-adapter'
 const Database = createRequire(import.meta.url)('better-sqlite3') as typeof import('better-sqlite3')
 
 const CHARACTERS = 500, TARGETS_PER_CHARACTER = 19
-const OPEN_PROJECT_BUDGET_MS = 2_000
+// 修后本机中位 394 ms、修前中位 5821 ms；4 秒给并行负载留约 10 倍余量，仍抓得住相关子查询那次退化
+const OPEN_PROJECT_BUDGET_MS = 4_000
 
 it('backfills 500 characters and 10,000 relationships within the project-open budget, flagging only repeated pairs', () => {
   const db = new Database(':memory:')
