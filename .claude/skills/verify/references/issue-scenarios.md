@@ -125,6 +125,14 @@ RD 之后为具体缺陷补的场景。修同一块功能时，先在这里找�
 |---|---|---|---|---|
 | `i607-archive-after-import` | 设置「项目备份」点「导出本地存档」，提示是「本地存档已导出：<64 位哈希>」（`i607-1-export`）；修复前是 `UNIQUE constraint failed: import_run_receipts.effect_namespace, import_run_receipts.effect_key`。再点「从本地存档恢复副本」，提示「已恢复新副本」（`i607-2-restore`）；副本的导入回执、账本和导入运行的命名空间与效果键与原作品逐条一致，按 Ctrl O 打开副本（`i607-3-restored-open`） | 打开的恢复副本 | 是 | #607 |
 
+## 恢复稿太多分不清（#608）
+
+场景在 `scripts/redesign/i608-scenarios.mjs`。夹具模型按提示里的章节范围回蓝图 JSON（`fake.replyDirectoryBlueprints()`），关掉后蓝图生成失败。`measured.cards` 与 `afterDismiss` 是运行侧页「可恢复」区每张卡的标题、范围时间行和折叠标签。
+
+| 名称 | 检查 | 截图停在 | 夹具模型 | 对应 |
+|---|---|---|---|---|
+| `i608-recovery-pile` | 第 13–14 章蓝图生成完，第 15–16 章连着失败两次，再改第 13 章标题并保存。「可恢复」只剩一张「蓝图恢复稿 · 第 15–16 章」，写明「缺第 15–16 章 · 时间 生成」，较早那份折叠为「更早的 1 份」（`i608-run-sheet`、展开后 `i608-run-sheet-earlier`）；已生成完的第 13–14 章不再出现。点最新一份的「放弃…」，确认条写「正式内容不受影响；放弃后这份恢复稿不再列出。」（`i608-run-sheet-dismiss-confirm`），确认后较早那份顶上来、没有折叠（`i608-run-sheet-dismissed`）。修复前是三张都叫「蓝图恢复稿」、说明一模一样的卡 | 放弃后的运行侧页 | 是 | #608 |
+
 ## 逾期和到期的伏笔线索进正文提示（#279 A11）
 
 场景在 `scripts/redesign/a11-scenarios.mjs`。示例作品另把第 3、4 章导入为定稿，再建两条线索：计划第 1–2 章的「青铜钥匙」，计划第 3–5 章的「父亲的旧信」。

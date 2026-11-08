@@ -46,8 +46,14 @@ export interface PlanningEntry {
   kind: 'planning'
   key: string
   title: string
+  /** 「缺第 16 章 · 11月7日 14:32 生成」：作者靠它分清同一范围的几份。 */
+  meta: string
   note: string
   actionLabel: string
+  canDismiss: boolean
+  /** 同一范围更早的几份，新的在前。 */
+  earlier: PlanningEntry[]
+  labels: { dismiss: string; dismissConfirm: string; confirm: string; keep: string; earlier: string }
   recovery: GenerationRecoveryContext
 }
 
@@ -162,14 +168,31 @@ export function candidateEntry(candidate: RecoveryCandidate, locale: Locale): Ca
   }
 }
 
-/** 大纲分批生成会留下多份恢复稿，标题带上各自的章节范围以便区分。 */
-export function planningTitle(recovery: Pick<GenerationRecoveryContext, 'plotOutlineRecovery' | 'plotOutline'>, locale: Locale): string {
+const chapterSpan = (range: { from: number; to: number }) => range.from === range.to ? `${range.from}` : `${range.from}–${range.to}`
+
+export function planningTitle(recovery: Pick<GenerationRecoveryContext, 'plotOutlineRecovery' | 'plotOutline' | 'planningDraft'>, locale: Locale): string {
   const t = lang(locale)
-  if (!recovery.plotOutlineRecovery) return t('蓝图恢复稿', 'Blueprint recovery draft')
-  const range = recovery.plotOutline?.range
-  if (!range) return t('大纲恢复稿', 'Outline recovery draft')
-  const chapters = range.from === range.to ? `${range.from}` : `${range.from}–${range.to}`
-  return t(`大纲恢复稿 · 第 ${chapters} 章`, `Outline recovery draft · ch. ${chapters}`)
+  const outline = Boolean(recovery.plotOutlineRecovery)
+  const range = recovery.planningDraft?.requestedRange ?? (outline ? recovery.plotOutline?.range : undefined)
+  if (!range) return outline ? t('大纲恢复稿', 'Outline recovery draft') : t('蓝图恢复稿', 'Blueprint recovery draft')
+  const chapters = chapterSpan(range)
+  return outline ? t(`大纲恢复稿 · 第 ${chapters} 章`, `Outline recovery draft · ch. ${chapters}`)
+    : t(`蓝图恢复稿 · 第 ${chapters} 章`, `Blueprint recovery draft · ch. ${chapters}`)
+}
+
+/** 时间按作者电脑的时区。 */
+export function planningMeta(recovery: Pick<GenerationRecoveryContext, 'planningContinuation' | 'planningDraft'>, locale: Locale): string {
+  const t = lang(locale)
+  const remaining = recovery.planningContinuation?.remainingRange
+  const createdAt = recovery.planningDraft?.createdAtMs
+  return [
+    remaining && t(`缺第 ${chapterSpan(remaining)} 章`, `Missing ch. ${chapterSpan(remaining)}`),
+    createdAt !== undefined && t(`${planningTime(createdAt, locale)} 生成`, `Generated ${planningTime(createdAt, locale)}`),
+  ].filter(Boolean).join(' · ')
+}
+
+function planningTime(ms: number, locale: Locale): string {
+  return new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(ms)
 }
 
 /** 恢复稿编辑器顶部的待完成范围；只剩一章时与标题一样写「第 6 章」。 */
@@ -211,18 +234,42 @@ export function outlineSourceChangedNote(recovery: Pick<GenerationRecoveryContex
       'The model settings, book settings, a prompt template or a writing skill changed, so this recovery draft cannot replace saved content. View or copy it, then generate the plot outline again.')
 }
 
-function planningEntry(recovery: GenerationRecoveryContext, locale: Locale): PlanningEntry {
+function planningEntry(recovery: GenerationRecoveryContext, locale: Locale, earlier: PlanningEntry[] = []): PlanningEntry {
   const t = lang(locale)
   const sourceChanged = outlineSourceChangedNote(recovery, locale)
   return {
     kind: 'planning',
     key: recovery.handle.runId,
     title: planningTitle(recovery, locale),
+    meta: planningMeta(recovery, locale),
     note: outlineSourceInvalidNote(recovery, locale) ?? sourceChanged
       ?? t('自动生成已保留候选。可编辑并本地保存，或明确继续缺少的章节。', 'The candidate is preserved. Edit and save it locally, or explicitly generate the remaining chapters.'),
     actionLabel: sourceChanged ? t('查看恢复稿', 'View recovery draft') : t('编辑恢复稿', 'Edit recovery draft'),
+    canDismiss: recovery.planningContinuation?.state !== 'in-flight',
+    earlier,
+    labels: {
+      dismiss: t('放弃…', 'Dismiss…'),
+      dismissConfirm: t('正式内容不受影响；放弃后这份恢复稿不再列出。', 'Saved content stays as is. This recovery draft will no longer be listed.'),
+      confirm: t('放弃', 'Dismiss'),
+      keep: t('保留', 'Keep'),
+      earlier: t(`更早的 ${earlier.length} 份`, `${earlier.length} earlier ${pluralEn(earlier.length, 'draft')}`),
+    },
     recovery,
   }
+}
+
+function groupPlanning(recoveries: readonly GenerationRecoveryContext[], locale: Locale): PlanningEntry[] {
+  const groups = new Map<string, GenerationRecoveryContext[]>()
+  for (const recovery of recoveries) {
+    const range = recovery.planningDraft?.requestedRange
+    const key = range ? `${recovery.plotOutlineRecovery ? 'outline' : 'blueprint'}:${range.from}-${range.to}` : `run:${recovery.handle.runId}`
+    groups.set(key, [...groups.get(key) ?? [], recovery])
+  }
+  const createdAt = (recovery: GenerationRecoveryContext) => recovery.planningDraft?.createdAtMs ?? 0
+  return [...groups.values()]
+    .map(group => [...group].sort((a, b) => createdAt(b) - createdAt(a)))
+    .sort((a, b) => createdAt(b[0]) - createdAt(a[0]))
+    .map(([newest, ...earlier]) => planningEntry(newest, locale, earlier.map(recovery => planningEntry(recovery, locale))))
 }
 
 function editorEntry(recovery: EditorInlineRecovery, locale: Locale): EditorEntry {
@@ -434,7 +481,7 @@ export function canResumeDraft(entry: DraftEntry, picked: readonly string[]): bo
 /** 列出顺序与旧 AI 输出一致：恢复稿、选区建议、审修、批量、单章，最后是旧的恢复候选表。 */
 export function buildRecoveryEntries(sources: RecoverySources, locale: Locale): RecoveryEntry[] {
   return [
-    ...sources.planning.map(recovery => planningEntry(recovery, locale)),
+    ...groupPlanning(sources.planning, locale),
     ...sources.editors.map(recovery => editorEntry(recovery, locale)),
     ...sources.reviews.map(item => reviewEntry(item, locale)),
     ...sources.batches.map(batch => batchEntry(batch, locale)),

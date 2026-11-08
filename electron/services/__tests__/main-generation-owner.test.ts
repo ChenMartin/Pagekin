@@ -12,7 +12,7 @@ import { createMainGenerationOwner, safeGenerationModelReceipt } from '../main-g
 import { batchRootBudget, buildMainGenerationPlan, MAIN_GENERATION_POLICY, newMainGenerationPolicy, readMainGenerationPolicy } from '../main-generation-plan'
 import { createModelExecutionLeaseReceipt, ModelExecutionLeaseRegistry } from '../model-execution-lease'
 import * as providerPresets from '../../../src/shared/provider-presets'
-import { buildGenerationSourceBinding, rebuildGenerationSourceBinding } from '../generation-source-binding'
+import { buildGenerationSourceBinding, planningBlueprintSourceHash, rebuildGenerationSourceBinding } from '../generation-source-binding'
 import { getBuiltinPromptTemplate } from '../../../src/services/builtin-prompt-templates'
 import { readBuiltinWritingSkill } from '../../../src/shared/builtin-writing-skills'
 import type { ArchitecturePlanningIntent, BeginGenerationRequest } from '../../../src/shared/generation-owner-contract'
@@ -645,6 +645,23 @@ describe('explicit planning recovery with real SQLite', () => {
     expect(f.owner.readContext(run.handle)).toMatchObject({ planningContinuation: { state: 'complete' }, blueprintRecovery: { writeState: 'author-saved' } })
     expect(f.owner.listRecovery().planning).toEqual([])
     expect(f.owner.findBlueprintRecovery()).toBeNull()
+  })
+  it.each([['蓝图', 'blueprint'], ['大纲', 'plot-outline']] as const)('作者保存%s恢复稿时，运行上已记的放弃与大纲已提交都不丢（#608）', async (_label, kind) => {
+    const raw = '{"blueprints":[{"chapterNumber":1,"title":"未完'
+    const dispatch = vi.fn<GenerationRunServiceDependencies['dispatch']>(async (_request, options) => { options.onVisible({ kind: 'delta', text: raw }); return { finishReason: 'length', usage: null } })
+    const f = fixture(dispatch), run = f.owner.begin(kind === 'blueprint' ? directorySelection(f) : outlineSelection(f, 3))
+    if (kind === 'blueprint') await f.owner.execute({ handle: run.handle, invocationNonce: 'failed', task: { ...task, purpose: 'chapter-blueprint-directory', output: 'structured-data' } })
+    const repository = new GenerationRunRepository(() => f.db), context = f.owner.readContext(run.handle)
+    repository.recordPlanningDismissal(run.handle.runId)
+    f.db.transaction(() => repository.recordPlotOutlineCommitWithinTransaction(run.handle.runId)).immediate()
+    f.db.transaction(() => kind === 'blueprint'
+      ? f.owner.commitBlueprintAuthorEdit({ mode: 'replace-range', operationId: 'author-blueprint', startChapter: 1, endChapter: 1,
+        blueprints: parseTextBlueprintsStrict(JSON.stringify([blueprint(1)]), 1, 1, 'zh-CN', 'author'),
+        authorRecovery: { sourceHandle: run.handle, leaseEpoch: context.blueprintRecovery!.leaseEpoch } })
+      : f.owner.commitPlotOutlineAuthorEdit({ synopsis: renderPlotOutlineSynopsis(outlineEntry(1), 1, context.plotOutline!.sourceExpected), expected: context.plotOutline!.sourceExpected,
+        authorRecovery: { sourceHandle: run.handle, leaseEpoch: context.plotOutlineRecovery!.leaseEpoch, operationId: 'author-outline', committedRange: { from: 1, to: 1 } } })).immediate()
+    expect(repository.planningDismissed(run.handle.runId)).toBe(true)
+    expect(repository.plotOutlineCommitted(run.handle.runId)).toBe(true)
   })
   it('较新的章节蓝图运行读不出时，跳过它找到较早的恢复稿（#536）', async () => {
     const raw = '{"blueprints":[{"chapterNumber":1,"title":"未完'
@@ -3511,5 +3528,440 @@ describe('local model file path as the model name', () => {
     const owner = f.reopen(), resumed = await owner.resume(run.handle)
     expect((await owner.execute({ handle: resumed.handle, invocationNonce: 'after-upgrade', task })).outcome).toMatchObject({ status: 'completed' })
     expect(sent).toEqual([modelName])
+  })
+})
+
+describe('规划恢复稿是否还列为可恢复（#608）', () => {
+  const raw = '{"blueprints":[{"chapterNumber":1,"title":"未完'
+  const selection = (f: ReturnType<typeof fixture>, from: number, to: number, nonce: string): BeginGenerationRequest => ({
+    operation: 'chapter-blueprint-directory', uiActionNonce: nonce, modelId: f.model.id,
+    selectedDraftIds: [], selectedFinalizedDraftIds: [], selectedBlueprintChapterNumbers: Array.from({ length: to }, (_, index) => index + 1),
+    promptKeys: ['chapter_blueprint_chunk'], skillStages: ['planning'], output: 'structured-data', authorInputs: [
+      { id: 'planning:target-units', text: '700' }, { id: 'directory:pacing-guidance', text: '' },
+      { id: 'directory:author-config', text: '{"totalChapters":6}' },
+      { id: 'directory:requested-range', text: JSON.stringify({ mode: from === 1 ? 'full' : 'append', startChapter: from, endChapter: to }) },
+    ] })
+  const rows = (from: number, to: number, keyEvents = '角色发现关键线索') => Array.from({ length: to - from + 1 }, (_, index) => ({ chapterNumber: from + index,
+    title: `第${from + index}章`, role: '推进', purpose: '寻找线索', keyEvents, characters: [], suspenseHook: '', userGuidance: '', notes: '', notesUpdatedAt: '' }))
+  const directoryTask = { ...task, purpose: 'chapter-blueprint-directory', output: 'structured-data' as const }
+  function directoryFixture() {
+    let reply: 'complete' | 'incomplete' = 'incomplete'
+    const f = fixture(vi.fn<GenerationRunServiceDependencies['dispatch']>(async (_request, options) => {
+      options.onVisible({ kind: 'delta', text: reply === 'complete' ? '[{"chapterNumber":1}]' : raw })
+      return { finishReason: reply === 'complete' ? 'stop' : 'length', usage: null }
+    }))
+    const failed = async (from: number, to: number, nonce: string) => {
+      reply = 'incomplete'
+      const run = f.owner.begin(selection(f, from, to, nonce))
+      await f.owner.execute({ handle: run.handle, invocationNonce: nonce, task: directoryTask })
+      return run.handle
+    }
+    const finished = async (from: number, to: number, nonce: string) => {
+      reply = 'complete'
+      const run = f.owner.begin(selection(f, from, to, nonce)), range = { startChapter: from, endChapter: to }
+      await f.owner.execute({ handle: run.handle, invocationNonce: nonce, task: directoryTask })
+      f.db.transaction(() => {
+        const receipt = BlueprintRepository.commitRange({ mode: 'replace-range', operationId: `commit-${nonce}`, startChapter: from, endChapter: to, blueprints: rows(from, to) },
+          () => f.owner.assertSourcesCurrent(run.handle, range))
+        f.owner.recordDirectoryCommit(run.handle, range, receipt)
+      }).immediate()
+      return run.handle
+    }
+    const listed = () => f.owner.listRecovery().planning.map(item => item.handle.runId)
+    const startedMinuteEarlier = (handle: { runId: string }) =>
+      f.db.prepare('UPDATE generation_runs SET created_at_ms=created_at_ms-60000 WHERE run_id=?').run(handle.runId)
+    return { ...f, failed, finished, listed, startedMinuteEarlier }
+  }
+
+  it('生成完的一批蓝图，作者改了其中一章或角色名单变了以后，运行侧页与蓝图页都不再给它', async () => {
+    const f = directoryFixture()
+    await f.finished(1, 3, 'first-batch')
+    await f.finished(4, 6, 'second-batch')
+    expect(f.listed()).toEqual([])
+    BlueprintRepository.upsert({ ...rows(2, 2)[0], keyEvents: '作者改过第 2 章' })
+    expect(f.listed()).toEqual([])
+    expect(f.owner.findBlueprintRecovery()).toBeNull()
+    f.db.prepare("UPDATE project_core SET characters_arch='采纳新角色后的名单' WHERE id='main'").run()
+    expect(f.listed()).toEqual([])
+    expect(f.owner.findBlueprintRecovery()).toBeNull()
+  })
+
+  it('缺的章节后来由另一次生成补齐：旧恢复稿不再列出，候选原文照样读得到', async () => {
+    const f = directoryFixture()
+    const interrupted = await f.failed(1, 3, 'interrupted')
+    expect(f.listed()).toEqual([interrupted.runId])
+    f.startedMinuteEarlier(interrupted)
+    await f.finished(1, 3, 'filled-later')
+    expect(f.listed()).toEqual([])
+    expect(f.owner.findBlueprintRecovery()).toBeNull()
+    expect(f.owner.readContext(interrupted).blueprintRecovery?.draft).toBe(raw)
+  })
+
+  it('缺的章节由另一次生成补齐后，其中一章定稿写入章节要点：旧恢复稿仍不列出', async () => {
+    const f = directoryFixture()
+    const interrupted = await f.failed(1, 3, 'interrupted')
+    f.startedMinuteEarlier(interrupted)
+    await f.finished(1, 3, 'filled-later')
+    expect(f.listed()).toEqual([])
+    expect(BlueprintRepository.updateNotes(2, '定稿后写入的章节要点')).toBe(true)
+    expect(f.listed()).toEqual([])
+    expect(f.owner.findBlueprintRecovery()).toBeNull()
+  })
+
+  it('补齐之后改蓝图行的任一列：恢复稿重新列出，当且仅当这一列算进冻结的规划内容', async () => {
+    const f = directoryFixture()
+    const interrupted = await f.failed(1, 3, 'interrupted')
+    f.startedMinuteEarlier(interrupted)
+    await f.finished(1, 3, 'filled-later')
+    const columns = (f.db.prepare('PRAGMA table_info(blueprints)').all() as Array<{ name: string }>)
+      .map(column => column.name).filter(name => name !== 'chapter_number')
+    const relisted: Record<string, boolean> = {}, planningChanged: Record<string, boolean> = {}
+    for (const column of columns) {
+      const before = f.db.prepare(`SELECT ${column} AS value FROM blueprints WHERE chapter_number=2`).get() as { value: unknown }
+      const hashBefore = planningBlueprintSourceHash(f.db, 2)
+      f.db.prepare(`UPDATE blueprints SET ${column}=? WHERE chapter_number=2`).run(column === 'characters' ? '["后来加入的角色"]' : `改过的${column}`)
+      planningChanged[column] = planningBlueprintSourceHash(f.db, 2) !== hashBefore
+      relisted[column] = f.listed().includes(interrupted.runId)
+      f.db.prepare(`UPDATE blueprints SET ${column}=? WHERE chapter_number=2`).run(before.value)
+    }
+    expect(relisted).toEqual(planningChanged)
+    expect(relisted).toMatchObject({ title: true, key_events: true, notes: false, notes_updated_at: false })
+  })
+
+  it('缺的章节作者只新建了空白蓝图（没填内容就保存）：恢复稿照常列出', async () => {
+    const f = directoryFixture()
+    const interrupted = await f.failed(1, 3, 'interrupted')
+    for (const chapterNumber of [1, 2]) BlueprintRepository.upsert({ chapterNumber, title: '', role: '发展', purpose: '', keyEvents: '', characters: [],
+      suspenseHook: '', userGuidance: '', notes: '', notesUpdatedAt: '' })
+    f.db.prepare('INSERT INTO blueprints (chapter_number, title, role, purpose, key_events, characters, suspense_hook, user_guidance) VALUES (3, \'\', NULL, NULL, NULL, NULL, NULL, NULL)').run()
+    expect(f.listed()).toEqual([interrupted.runId])
+    expect(f.owner.findBlueprintRecovery()?.handle).toEqual(interrupted)
+    expect(f.owner.readContext(interrupted).planningDraft?.standing).toBe('open')
+  })
+
+  it('缺的章节作者手写补齐（没有走生成提交）：恢复稿照常列出', async () => {
+    const f = directoryFixture()
+    const interrupted = await f.failed(1, 3, 'interrupted')
+    f.startedMinuteEarlier(interrupted)
+    for (const row of rows(1, 3, '作者手写补齐')) BlueprintRepository.upsert(row)
+    expect(f.listed()).toEqual([interrupted.runId])
+    expect(f.owner.findBlueprintRecovery()?.handle).toEqual(interrupted)
+  })
+
+  it.each([
+    ['user_guidance', { userGuidance: '这几章改成雨夜' }],
+    ['role', { role: '高潮' }],
+  ])('重新生成已有章节没成功，作者只改了 %s：恢复稿照常列出', async (_field, change) => {
+    const f = directoryFixture()
+    for (const row of rows(1, 3, '作者早先写好的')) BlueprintRepository.upsert(row)
+    const regenerate = await f.failed(1, 3, 'regenerate')
+    f.startedMinuteEarlier(regenerate)
+    for (const row of rows(1, 3, '作者早先写好的')) BlueprintRepository.upsert({ ...row, ...change })
+    expect(f.listed()).toEqual([regenerate.runId])
+    expect(f.owner.readContext(regenerate).planningDraft?.standing).toBe('open')
+  })
+
+  it('开跑之后的正式提交覆盖了这几章，但其中一章后来被删了：恢复稿照常列出', async () => {
+    const f = directoryFixture()
+    for (const row of rows(1, 3, '作者早先写好的')) BlueprintRepository.upsert(row)
+    const regenerate = await f.failed(1, 3, 'regenerate')
+    f.startedMinuteEarlier(regenerate)
+    BlueprintRepository.commitRange({ mode: 'replace-range', operationId: 'later', startChapter: 1, endChapter: 3, blueprints: rows(1, 3, '后来生成的') })
+    expect(f.listed()).toEqual([])
+    BlueprintRepository.delete(2)
+    expect(f.listed()).toEqual([regenerate.runId])
+  })
+
+  it('正式提交之后删掉其中一章，又重建成空白蓝图：恢复稿照常列出', async () => {
+    const f = directoryFixture()
+    for (const row of rows(1, 3, '作者早先写好的')) BlueprintRepository.upsert(row)
+    const regenerate = await f.failed(1, 3, 'regenerate')
+    f.startedMinuteEarlier(regenerate)
+    BlueprintRepository.commitRange({ mode: 'replace-range', operationId: 'later', startChapter: 1, endChapter: 3, blueprints: rows(1, 3, '后来生成的') })
+    expect(f.listed()).toEqual([])
+    BlueprintRepository.delete(2)
+    BlueprintRepository.upsert({ chapterNumber: 2, title: '', role: '发展', purpose: '', keyEvents: '', characters: [],
+      suspenseHook: '', userGuidance: '', notes: '', notesUpdatedAt: '' })
+    expect(f.listed()).toEqual([regenerate.runId])
+    expect(f.owner.findBlueprintRecovery()?.handle).toEqual(regenerate)
+  })
+
+  it('正式提交之后作者手改了其中一章：恢复稿照常列出', async () => {
+    const f = directoryFixture()
+    const interrupted = await f.failed(1, 3, 'interrupted')
+    f.startedMinuteEarlier(interrupted)
+    BlueprintRepository.commitRange({ mode: 'replace-range', operationId: 'later', startChapter: 1, endChapter: 3, blueprints: rows(1, 3, '后来生成的') })
+    expect(f.listed()).toEqual([])
+    BlueprintRepository.upsert(rows(2, 2, '作者提交之后改过')[0])
+    expect(f.listed()).toEqual([interrupted.runId])
+    expect(f.owner.findBlueprintRecovery()?.handle).toEqual(interrupted)
+  })
+
+  it('早期版本一次开跑 1000 章的蓝图恢复稿，后来由正式提交补齐：打开恢复列表不卡住，作者改过最后一章后照常列出', async () => {
+    const f = directoryFixture(), count = 1000
+    f.db.prepare('UPDATE project_core SET total_chapters=?').run(count)
+    const selected = selection(f, 1, count, 'legacy-large')
+    selected.authorInputs = selected.authorInputs!.map(input => input.id === 'directory:author-config' ? { ...input, text: JSON.stringify({ totalChapters: count }) } : input)
+    const interrupted = (await frozenAggregateRun(f, selected)).handle
+    await f.owner.execute({ handle: interrupted, invocationNonce: 'legacy-large', task: directoryTask })
+    f.startedMinuteEarlier(interrupted)
+    BlueprintRepository.commitRange({ mode: 'replace-range', operationId: 'later', startChapter: 1, endChapter: count, blueprints: rows(1, count, '后来生成的关键事件。'.repeat(150)) })
+    const listedWithin = (limitMs: number) => {
+      const start = performance.now(), listed = f.listed()
+      expect(performance.now() - start).toBeLessThan(limitMs)
+      return listed
+    }
+    expect(listedWithin(5000)).toEqual([])
+    BlueprintRepository.upsert(rows(count, count, '作者提交之后改了最后一章')[0])
+    expect(listedWithin(5000)).toEqual([interrupted.runId])
+  }, 120_000)
+
+  it.each([
+    ['读不出', 'not json'],
+    ['缺这几章', '[]'],
+  ])('晚于运行的提交记录%s：恢复稿照常列出，其余运行不受影响', async (_case, stored) => {
+    const f = directoryFixture()
+    const interrupted = await f.failed(1, 3, 'interrupted')
+    f.startedMinuteEarlier(interrupted)
+    BlueprintRepository.commitRange({ mode: 'replace-range', operationId: 'later', startChapter: 1, endChapter: 3, blueprints: rows(1, 3, '后来生成的') })
+    const other = await f.failed(4, 6, 'other')
+    expect(f.listed()).toEqual([other.runId])
+    f.db.prepare("UPDATE blueprint_commit_operations SET character_sync_input=? WHERE operation_id='later'").run(stored)
+    const list = f.owner.listRecovery()
+    expect(list.planning.map(item => item.handle.runId).sort()).toEqual([interrupted.runId, other.runId].sort())
+    expect(list.partial).toBeFalsy()
+  })
+
+  it('导入作者原稿只记了提交、保留原有蓝图（fill-empty）：恢复稿照常列出', async () => {
+    const f = directoryFixture()
+    for (const row of rows(1, 3, '作者早先写好的')) BlueprintRepository.upsert(row)
+    const regenerate = await f.failed(1, 3, 'regenerate')
+    f.startedMinuteEarlier(regenerate)
+    BlueprintRepository.commitRange({ mode: 'replace-range', operationId: 'import', startChapter: 1, endChapter: 3, blueprints: rows(1, 3, '导入反推的') },
+      undefined, undefined, 'fill-empty')
+    expect(f.listed()).toEqual([regenerate.runId])
+  })
+
+  it('覆盖这几章的正式提交早于这次运行：作者之后再改也照常列出', async () => {
+    const f = directoryFixture()
+    await f.finished(1, 3, 'earlier-batch')
+    f.db.prepare("UPDATE blueprint_commit_operations SET committed_at=datetime('now','-1 minute')").run()
+    const regenerate = await f.failed(1, 3, 'regenerate')
+    for (const row of rows(1, 3, '作者后来改过')) BlueprintRepository.upsert(row)
+    expect(f.listed()).toEqual([regenerate.runId])
+  })
+
+  it('正式提交与这次运行开跑在同一秒，分不清先后：恢复稿照常列出', async () => {
+    const f = directoryFixture()
+    const interrupted = await f.failed(1, 3, 'interrupted')
+    await f.finished(1, 3, 'same-second')
+    f.db.prepare("UPDATE generation_runs SET created_at_ms=(SELECT CAST(strftime('%s',committed_at) AS INTEGER)*1000+500 FROM blueprint_commit_operations WHERE operation_id='commit-same-second') WHERE run_id=?")
+      .run(interrupted.runId)
+    expect(f.listed()).toEqual([interrupted.runId])
+  })
+
+  it('只补齐了缺的一部分章节，或重新生成已有章节没成功：恢复稿照常列出', async () => {
+    const f = directoryFixture()
+    BlueprintRepository.upsert(rows(2, 2, '作者早先写好的第 2 章')[0])
+    const regenerate = await f.failed(1, 3, 'regenerate')
+    BlueprintRepository.upsert(rows(3, 3, '作者后来只补了第 3 章')[0])
+    expect(f.listed()).toEqual([regenerate.runId])
+    expect(f.owner.findBlueprintRecovery()?.handle).toEqual(regenerate)
+  })
+
+  it('缺的章节都补上了，但重新生成没成功的那章仍是作者原来的内容：恢复稿照常列出', async () => {
+    const f = directoryFixture()
+    BlueprintRepository.upsert(rows(2, 2, '作者早先写好的第 2 章')[0])
+    const regenerate = await f.failed(1, 3, 'regenerate')
+    BlueprintRepository.upsert(rows(1, 1, '作者后来补的第 1 章')[0])
+    BlueprintRepository.upsert(rows(3, 3, '作者后来补的第 3 章')[0])
+    expect(f.listed()).toEqual([regenerate.runId])
+    expect(f.owner.findBlueprintRecovery()?.handle).toEqual(regenerate)
+  })
+
+  it('每份恢复稿带上生成时的章节范围与生成时间', async () => {
+    const f = directoryFixture()
+    const before = Date.now()
+    const handle = await f.failed(4, 6, 'append')
+    const draft = f.owner.readContext(handle).planningDraft
+    expect(draft).toMatchObject({ requestedRange: { from: 4, to: 6 }, standing: 'open' })
+    expect(draft!.createdAtMs).toBeGreaterThanOrEqual(before - 1000)
+    expect(draft!.createdAtMs).toBeLessThanOrEqual(Date.now())
+  })
+
+  it('作者放弃一份恢复稿：运行侧页与蓝图页都不再给它，候选原文与运行记录不变', async () => {
+    const f = directoryFixture()
+    const older = await f.failed(1, 3, 'older')
+    const newer = await f.failed(1, 3, 'newer')
+    expect(f.owner.findBlueprintRecovery()?.handle).toEqual(newer)
+    const repository = new GenerationRunRepository(() => f.db), frozen = repository.get(newer.runId)
+    const attempts = f.db.prepare('SELECT * FROM generation_attempts').all(), artifacts = f.db.prepare('SELECT * FROM generation_artifacts').all()
+    f.owner.dismissPlanningRecovery(newer)
+    f.owner.dismissPlanningRecovery(newer)
+    expect(f.listed()).toEqual([older.runId])
+    expect(f.owner.findBlueprintRecovery()?.handle).toEqual(older)
+    expect(f.owner.readContext(newer)).toMatchObject({ planningDraft: { standing: 'dismissed' }, blueprintRecovery: { draft: raw } })
+    expect(repository.get(newer.runId)).toEqual(frozen)
+    expect(f.db.prepare('SELECT * FROM generation_attempts').all()).toEqual(attempts)
+    expect(f.db.prepare('SELECT * FROM generation_artifacts').all()).toEqual(artifacts)
+    expect(f.reopen().listRecovery().planning.map(item => item.handle.runId)).toEqual([older.runId])
+  })
+
+  it('只有规划恢复稿能放弃', () => {
+    const f = directoryFixture()
+    const draft = f.owner.begin(f.begin)
+    expect(() => f.owner.dismissPlanningRecovery(draft.handle)).toThrow('GENERATION_PLANNING_RECOVERY_INVALID')
+  })
+
+  it('生成正在进行的那份：章节被别处补齐也不判为过时，也不能放弃', async () => {
+    let release: (() => void) | undefined
+    const f = fixture(vi.fn<GenerationRunServiceDependencies['dispatch']>(async () => {
+      await new Promise<void>(resolve => { release = resolve }); return { finishReason: null, usage: null }
+    }))
+    const run = f.owner.begin(selection(f, 1, 3, 'running'))
+    const work = f.owner.execute({ handle: run.handle, invocationNonce: 'running', task: directoryTask })
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'))
+    f.db.prepare('UPDATE generation_runs SET created_at_ms=created_at_ms-60000 WHERE run_id=?').run(run.handle.runId)
+    BlueprintRepository.commitRange({ mode: 'replace-range', operationId: 'elsewhere', startChapter: 1, endChapter: 3, blueprints: rows(1, 3, '别处生成的蓝图') })
+    expect(f.owner.readContext(run.handle).planningDraft?.standing).toBe('open')
+    expect(() => f.owner.dismissPlanningRecovery(run.handle)).toThrow('GENERATION_PLANNING_RECOVERY_IN_FLIGHT')
+    release!(); await work
+    expect(f.owner.readContext(run.handle).planningDraft?.standing).toBe('superseded')
+  })
+
+  it('一条运行读不出时只跳过它，其余恢复稿照常判定', async () => {
+    const f = directoryFixture()
+    const open = await f.failed(4, 6, 'still-open')
+    await f.finished(1, 3, 'done')
+    BlueprintRepository.upsert({ ...rows(2, 2)[0], keyEvents: '作者改过第 2 章' })
+    const broken = await f.failed(4, 6, 'broken')
+    f.db.prepare("UPDATE generation_runs SET binding_json=json_set(binding_json,'$.sourceManifest.policy.version','unknown-policy') WHERE run_id=?").run(broken.runId)
+    const list = f.owner.listRecovery()
+    expect(list.planning.map(item => item.handle.runId)).toEqual([open.runId])
+    expect(list.partial).toBe(true)
+    expect(f.owner.findBlueprintRecovery()?.handle).toEqual(open)
+    expect(() => f.owner.dismissPlanningRecovery(broken)).toThrow()
+    expect(f.listed()).toEqual([open.runId])
+  })
+
+  it('大纲一批写进正式大纲后，作者又改了这批里的章：不再列为可恢复', async () => {
+    const dispatch = vi.fn<GenerationRunServiceDependencies['dispatch']>(async (request, options) => {
+      options.onVisible({ kind: 'delta', text: outlineEntry(Number((request as { task: GenerationTask }).task.purpose.split(':')[2])) })
+      return { finishReason: 'stop', usage: null }
+    })
+    const f = fixture(dispatch)
+    f.db.prepare('UPDATE project_core SET total_chapters=?').run(2)
+    const run = f.owner.begin(outlineSelection(f, 2))
+    for (const chapter of [1, 2]) {
+      await f.owner.execute({ handle: run.handle, invocationNonce: `outline-${chapter}`, task: outlineTask(f.owner.read(run.handle).plotOutline!) })
+      acceptOutline(f.owner, run.handle)
+    }
+    const progress = f.owner.readContext(run.handle).plotOutline!
+    const synopsis = renderPlotOutlineRange(progress.composition!.text, progress.range, progress.sourceExpected)
+    f.db.transaction(() => {
+      if (f.owner.assertSynopsisCommit(run.handle, synopsis, progress.sourceExpected)
+        || ProjectCoreRepository.commitSynopsis({ synopsis, expected: progress.sourceExpected, generationRunHandle: run.handle }, f.db)) f.owner.recordPlotOutlineCommit(run.handle)
+    }).immediate()
+    expect(f.owner.listRecovery().planning).toEqual([])
+    f.db.prepare('UPDATE project_core SET synopsis=?').run(synopsis.replace('林岚确认第1份证词', '作者改写了第 1 章'))
+    expect(f.owner.listRecovery().planning).toEqual([])
+    expect(f.owner.readContext(run.handle).planningDraft).toMatchObject({ requestedRange: { from: 1, to: 2 }, standing: 'superseded' })
+  })
+
+  it('大纲一批中断后，作者给缺的章加了空标题，或手写补齐了这一章：都照常列出', async () => {
+    const dispatch = vi.fn<GenerationRunServiceDependencies['dispatch']>(async (request, options) => {
+      options.onVisible({ kind: 'delta', text: outlineEntry(Number((request as { task: GenerationTask }).task.purpose.split(':')[2])) })
+      return { finishReason: 'stop', usage: null }
+    })
+    const f = fixture(dispatch)
+    f.db.prepare('UPDATE project_core SET total_chapters=?').run(2)
+    const run = f.owner.begin(outlineSelection(f, 2))
+    await f.owner.execute({ handle: run.handle, invocationNonce: 'outline-1', task: outlineTask(f.owner.read(run.handle).plotOutline!) })
+    acceptOutline(f.owner, run.handle)
+    expect(f.owner.listRecovery().planning.map(item => item.handle.runId)).toEqual([run.handle.runId])
+    f.db.prepare('UPDATE project_core SET synopsis=?').run(`${outlineEntry(1)}\n\n## 第2章：待定\n`)
+    expect(f.owner.listRecovery().planning.map(item => item.handle.runId)).toEqual([run.handle.runId])
+    f.db.prepare('UPDATE project_core SET synopsis=?').run(`${outlineEntry(1)}\n\n## 第2章：待定\n作者自己写了第 2 章的行动与结果。`)
+    expect(f.owner.listRecovery().planning.map(item => item.handle.runId)).toEqual([run.handle.runId])
+    expect(f.owner.readContext(run.handle).planningDraft?.standing).toBe('open')
+  })
+
+  it('重新生成已有的一章大纲，写完了但没存进正式大纲，作者只改了这一章的标题：照常列出', async () => {
+    const dispatch = vi.fn<GenerationRunServiceDependencies['dispatch']>(async (_request, options) => {
+      options.onVisible({ kind: 'delta', text: outlineEntry(1) })
+      return { finishReason: 'stop', usage: null }
+    })
+    const f = fixture(dispatch)
+    const original = renderPlotOutlineSynopsis('## 第1章：旧的一夜\n林岚第一次到旧港。', 1, { totalChapters: 1, writingLanguage: 'zh-CN' })
+    f.db.prepare('UPDATE project_core SET total_chapters=?, synopsis=?').run(1, original)
+    const run = f.owner.begin(outlineSelection(f, 1))
+    await f.owner.execute({ handle: run.handle, invocationNonce: 'outline-1', task: outlineTask(f.owner.read(run.handle).plotOutline!) })
+    acceptOutline(f.owner, run.handle)
+    expect(f.owner.readContext(run.handle).plotOutline!.cursor).toEqual({ kind: 'complete' })
+    f.db.prepare('UPDATE project_core SET synopsis=?').run(original.replace('旧的一夜', '旧港初夜'))
+    expect(f.owner.listRecovery().planning.map(item => item.handle.runId)).toEqual([run.handle.runId])
+    expect(f.owner.readContext(run.handle).planningDraft?.standing).toBe('open')
+  })
+
+  it('升级前正式写入、运行上没有这一笔的大纲：这一批原样还在正式大纲里就不列出，作者改过其中一章后照常列出', async () => {
+    const dispatch = vi.fn<GenerationRunServiceDependencies['dispatch']>(async (request, options) => {
+      options.onVisible({ kind: 'delta', text: outlineEntry(Number((request as { task: GenerationTask }).task.purpose.split(':')[2])) })
+      return { finishReason: 'stop', usage: null }
+    })
+    const f = fixture(dispatch)
+    f.db.prepare('UPDATE project_core SET total_chapters=?').run(2)
+    const run = f.owner.begin(outlineSelection(f, 2))
+    for (const chapter of [1, 2]) {
+      await f.owner.execute({ handle: run.handle, invocationNonce: `outline-${chapter}`, task: outlineTask(f.owner.read(run.handle).plotOutline!) })
+      acceptOutline(f.owner, run.handle)
+    }
+    const progress = f.owner.readContext(run.handle).plotOutline!
+    const synopsis = renderPlotOutlineRange(progress.composition!.text, progress.range, progress.sourceExpected)
+    f.db.transaction(() => f.owner.assertSynopsisCommit(run.handle, synopsis, progress.sourceExpected)
+      || ProjectCoreRepository.commitSynopsis({ synopsis, expected: progress.sourceExpected, generationRunHandle: run.handle }, f.db)).immediate()
+    f.db.exec("UPDATE project_core SET premise='作者已修改前提' WHERE id='main'")
+    expect(f.owner.listRecovery().planning).toEqual([])
+    f.db.prepare('UPDATE project_core SET synopsis=?').run(synopsis.replace('林岚确认第1份证词', '作者改写了第 1 章'))
+    expect(f.owner.listRecovery().planning.map(item => item.handle.runId)).toEqual([run.handle.runId])
+  })
+
+  it('作者放弃的蓝图恢复稿，重开项目后在来源没变时接着生成：运行侧页与蓝图页仍不给它', async () => {
+    const f = directoryFixture()
+    const kept = await f.failed(1, 3, 'kept')
+    const dismissed = await f.failed(1, 3, 'dismissed')
+    f.owner.dismissPlanningRecovery(dismissed)
+    const owner = f.reopen()
+    expect(owner.listRecovery().planning.map(item => item.handle.runId)).toEqual([kept.runId])
+    await owner.resume(dismissed)
+    expect(owner.listRecovery().planning.map(item => item.handle.runId)).toEqual([kept.runId])
+    expect(owner.findBlueprintRecovery()?.handle.runId).toBe(kept.runId)
+    expect(owner.readContext({ ...dismissed, epoch: 'epoch-2' }).planningDraft?.standing).toBe('dismissed')
+  })
+
+  it('大纲一批正式写入后作者把正式大纲改回原样，再接着生成：仍不列为可恢复', async () => {
+    const dispatch = vi.fn<GenerationRunServiceDependencies['dispatch']>(async (request, options) => {
+      options.onVisible({ kind: 'delta', text: outlineEntry(Number((request as { task: GenerationTask }).task.purpose.split(':')[2])) })
+      return { finishReason: 'stop', usage: null }
+    })
+    const f = fixture(dispatch)
+    f.db.prepare('UPDATE project_core SET total_chapters=?').run(2)
+    const original = f.db.prepare("SELECT synopsis FROM project_core WHERE id='main'").pluck().get()
+    const run = f.owner.begin(outlineSelection(f, 2))
+    for (const chapter of [1, 2]) {
+      await f.owner.execute({ handle: run.handle, invocationNonce: `outline-${chapter}`, task: outlineTask(f.owner.read(run.handle).plotOutline!) })
+      acceptOutline(f.owner, run.handle)
+    }
+    const progress = f.owner.readContext(run.handle).plotOutline!
+    const synopsis = renderPlotOutlineRange(progress.composition!.text, progress.range, progress.sourceExpected)
+    f.db.transaction(() => {
+      if (f.owner.assertSynopsisCommit(run.handle, synopsis, progress.sourceExpected)
+        || ProjectCoreRepository.commitSynopsis({ synopsis, expected: progress.sourceExpected, generationRunHandle: run.handle }, f.db)) f.owner.recordPlotOutlineCommit(run.handle)
+    }).immediate()
+    f.db.prepare("UPDATE project_core SET synopsis=? WHERE id='main'").run(original)
+    const owner = f.reopen()
+    expect(owner.listRecovery().planning).toEqual([])
+    await owner.resume(run.handle)
+    expect(owner.listRecovery().planning).toEqual([])
+    expect(owner.readContext({ ...run.handle, epoch: 'epoch-2' }).planningDraft?.standing).toBe('superseded')
   })
 })

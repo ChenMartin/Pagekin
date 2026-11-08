@@ -16,6 +16,7 @@ import { useLocaleStore } from '../../../../stores/locale-store'
 import { useStageStore } from '../../../../stores/navigation/stage-store'
 import { useProjectStore } from '../../../../stores/project-store'
 import { useWorkflowStore } from '../../../../stores/workflow-store'
+import RunSheet from '../../run/RunSheet'
 import StageArchitecture from '../StageArchitecture'
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -686,5 +687,206 @@ ${outlineBody(1, 5)}` }
       await range(1, 5)
       expect(effect()).toBe('第 1–5 章按本次结果替换，序章原样保留。')
     })
+  })
+})
+
+describe('大纲恢复稿与运行侧页同一判定（#608）', () => {
+  it.each([
+    ['缺的第 6–10 章后来都写进了正式大纲', 'superseded', 10],
+    ['作者在运行侧页放弃了它', 'dismissed', 5],
+  ] as const)('%s：大纲一节不再给查看或编辑恢复稿的入口', async (_case, standing, written) => {
+    core = { ...core, synopsis: renderPlotOutlineSynopsis(outlineBody(1, written), written, OUTLINE_SOURCE) }
+    const handle = { projectId: session.projectId, epoch: '本次', rootActionId: '大纲动作', runId: '第二批' }
+    const draft = outlineBody(6, 7)
+    partial = { synopsis_result: draft, synopsis_incomplete: true, synopsis_generation_handle: handle }
+    recoveryContext = { handle, plotOutline: { range: { from: 6, to: 10 }, cursor: { kind: 'request', chapterNumber: 8, attempt: 'normal' } },
+      plotOutlineRecovery: { draft, completeChapters: [6, 7], writeState: { kind: 'blocked', reason: 'source-changed' }, saved: null },
+      planningDraft: { requestedRange: { from: 6, to: 10 }, createdAtMs: 1, standing } }
+    filledSpine(['premise', 'synopsis'])
+    await render()
+    const outline = host!.querySelector('[data-section="synopsis"]')!
+    const names = [...outline.querySelectorAll('button')].map(item => item.textContent)
+    expect(names).not.toContain('查看恢复稿')
+    expect(names).not.toContain('编辑恢复稿')
+    expect(outline.textContent).not.toContain('只能查看或复制')
+  })
+
+  it('放弃一份被打断的大纲恢复稿后：大纲一节不再说被打断，给出能点的续写缺的章', async () => {
+    core = { ...core, synopsis: renderPlotOutlineSynopsis(outlineBody(1, 5), 5, OUTLINE_SOURCE) }
+    const handle = { projectId: session.projectId, epoch: session.leaseId, rootActionId: '大纲动作', runId: '第二批' }
+    const draft = outlineBody(6, 7)
+    partial = { synopsis_protocol: PLOT_OUTLINE_PROTOCOL, synopsis_result: draft, synopsis_incomplete: true, synopsis_generation_handle: handle,
+      synopsis_covered_to: 5, synopsis_range: { from: 6, to: 10 } }
+    recoveryContext = { handle, plotOutline: { range: { from: 6, to: 10 }, cursor: { kind: 'request', chapterNumber: 8, attempt: 'normal' } },
+      plotOutlineRecovery: { draft, completeChapters: [6, 7], writeState: { kind: 'ready' }, saved: null },
+      planningDraft: { requestedRange: { from: 6, to: 10 }, createdAtMs: 1, standing: 'dismissed' } }
+    filledSpine(['premise', 'synopsis'])
+    await render()
+    const outline = host!.querySelector('[data-section="synopsis"]')!
+    const buttons = [...outline.querySelectorAll('button')]
+    expect(outline.textContent).not.toContain('被输出长度打断')
+    expect(buttons.map(item => item.textContent)).not.toContain('断点续写大纲')
+    expect(buttons.find(item => item.textContent === '续写第 6 章起')?.disabled).toBe(false)
+  })
+})
+
+describe('架构页开着时在运行侧页放弃大纲恢复稿（#608）', () => {
+  const handle = { projectId: session.projectId, epoch: session.leaseId, rootActionId: '大纲动作', runId: '第二批' }
+  let reply: { resolve: () => void; reject: (reason: Error) => void } | undefined
+  let dismissalFails: boolean
+
+  beforeEach(() => {
+    const body = outlineBody(1, 5)
+    core = { ...core, synopsis: renderPlotOutlineSynopsis(body, 5, OUTLINE_SOURCE) }
+    const draft = outlineBody(6, 7)
+    partial = { synopsis_result: draft, synopsis_incomplete: true, synopsis_generation_handle: handle }
+    recoveryContext = { handle, plotOutline: { range: { from: 6, to: 10 }, cursor: { kind: 'request', chapterNumber: 8, attempt: 'normal' } },
+      plotOutlineRecovery: { draft, completeChapters: [6, 7], writeState: { kind: 'ready' }, saved: null },
+      planningDraft: { requestedRange: { from: 6, to: 10 }, createdAtMs: 1, standing: 'open' },
+      planningContinuation: { state: 'ready', remainingRange: { from: 8, to: 10 } } }
+    filledSpine(['premise', 'synopsis'])
+    reply = undefined
+    dismissalFails = false
+    const fallback = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      const open = (recoveryContext?.planningDraft as { standing: string } | undefined)?.standing === 'open'
+      if (channel === 'generation:list-recovery') return { planning: open ? [recoveryContext] : [], editors: [], reviews: [], drafts: [], batches: [], partial: false }
+      if (channel === 'generation:dismiss-planning-recovery') {
+        // 主进程收到请求就同步记下放弃，回复晚一点才到渲染端。
+        if (!dismissalFails) recoveryContext = { ...recoveryContext, planningDraft: { requestedRange: { from: 6, to: 10 }, createdAtMs: 1, standing: 'dismissed' } }
+        return new Promise<void>((resolve, reject) => { reply = { resolve, reject } })
+      }
+      if (channel === 'db:recovery-candidate-list' || channel === 'skills:list-user') return []
+      if (channel === 'fs:check-exists') return false
+      return fallback(channel, ...args)
+    })
+  })
+
+  async function renderWithRunSheet() {
+    await act(async () => root!.render(
+      <>
+        <StageArchitecture projectKey={session.projectPath} />
+        <RunSheet sheet={{ kind: 'run', tab: 'active' }} />
+      </>,
+    ))
+    await vi.waitFor(() => expect(host!.querySelector('.arch-page[data-loading], .arch-page[data-cast-loading]')).toBeNull())
+    await vi.waitFor(() => expect(outlineEdit()).toBeTruthy())
+    await vi.waitFor(() => expect(document.querySelector('.run-recovery > .run-card')).toBeTruthy())
+  }
+  const outline = () => host!.querySelector('[data-section="synopsis"]')!
+  const outlineEdit = () => [...outline().querySelectorAll('button')].find(item => item.textContent === '编辑恢复稿')
+  const sheetButton = (name: string) => [...document.querySelector('.run-recovery > .run-card')!.querySelectorAll('button')].find(item => item.textContent === name)!
+  async function dismissInRunSheet() {
+    await act(async () => sheetButton('放弃…').click())
+    await act(async () => sheetButton('放弃').click())
+  }
+  const openedRecoveryTabs = () => useEditorStore.getState().tabs.flatMap(tab => tab.planningRecovery ? [tab.planningRecovery.handle.runId] : [])
+
+  it('放弃后大纲一节的恢复提示与「编辑恢复稿」立即消失，不用重新进入架构页', async () => {
+    await renderWithRunSheet()
+    expect(outline().textContent).toContain('上次生成在半途停下')
+    await dismissInRunSheet()
+    await act(async () => reply!.resolve())
+    await vi.waitFor(() => expect(outlineEdit()).toBeUndefined())
+    expect(outline().textContent).not.toContain('上次生成在半途停下')
+    expect(document.querySelector('.run-recovery')).toBeNull()
+  })
+
+  it('放弃失败：大纲一节的入口不变，运行侧页说明失败', async () => {
+    dismissalFails = true
+    await renderWithRunSheet()
+    await dismissInRunSheet()
+    await act(async () => reply!.reject(new Error('GENERATION_PLANNING_RECOVERY_IN_FLIGHT')))
+    await vi.waitFor(() => expect(document.querySelector('.run-recovery [role="alert"]')?.textContent).toBeTruthy())
+    expect(sheetButton('放弃…')).toBeTruthy()
+    await act(async () => outlineEdit()!.click())
+    await vi.waitFor(() => expect(openedRecoveryTabs()).toEqual(['第二批']))
+  })
+
+  it('放弃的回复还没到时点大纲一节的「编辑恢复稿」：不会打开已放弃的那份', async () => {
+    await renderWithRunSheet()
+    await dismissInRunSheet()
+    await act(async () => outlineEdit()!.click())
+    await act(async () => reply!.resolve())
+    expect(openedRecoveryTabs()).toEqual([])
+    await vi.waitFor(() => expect(outlineEdit()).toBeUndefined())
+    expect(openedRecoveryTabs()).toEqual([])
+  })
+})
+
+describe('架构页打开大纲恢复稿时读取失败（#608）', () => {
+  it('点「编辑恢复稿」时读不到恢复稿：提示恢复稿还在、没能打开，让作者再点一次', async () => {
+    core = { ...core, synopsis: renderPlotOutlineSynopsis(outlineBody(1, 5), 5, OUTLINE_SOURCE) }
+    const handle = { projectId: session.projectId, epoch: session.leaseId, rootActionId: '大纲动作', runId: '第二批' }
+    const draft = outlineBody(6, 7)
+    partial = { synopsis_result: draft, synopsis_incomplete: true, synopsis_generation_handle: handle }
+    recoveryContext = { handle, plotOutline: { range: { from: 6, to: 10 }, cursor: { kind: 'request', chapterNumber: 8, attempt: 'normal' } },
+      plotOutlineRecovery: { draft, completeChapters: [6, 7], writeState: { kind: 'ready' }, saved: null },
+      planningDraft: { requestedRange: { from: 6, to: 10 }, createdAtMs: 1, standing: 'open' } }
+    filledSpine(['premise', 'synopsis'])
+    await render()
+    const edit = [...host!.querySelector('[data-section="synopsis"]')!.querySelectorAll('button')].find(item => item.textContent === '编辑恢复稿')!
+    const fallback = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'generation:read-context') throw new Error('GENERATION_DATABASE_NOT_READY')
+      return fallback(channel, ...args)
+    })
+    await act(async () => edit.click())
+    await vi.waitFor(() => expect([...document.querySelectorAll('.pi-toast')].map(toast => toast.textContent))
+      .toContain('恢复稿还在，但没能打开读取时出错。请再点一次「编辑恢复稿」。'))
+    expect(useEditorStore.getState().tabs.filter(tab => tab.planningRecovery)).toEqual([])
+  })
+})
+
+describe('架构页的大纲恢复稿入口跟着主进程的判定走（#608）', () => {
+  it('点「编辑恢复稿」时这份恢复稿已不再给作者：不打开，大纲一节的恢复入口随之消失', async () => {
+    core = { ...core, synopsis: renderPlotOutlineSynopsis(outlineBody(1, 5), 5, OUTLINE_SOURCE) }
+    const handle = { projectId: session.projectId, epoch: session.leaseId, rootActionId: '大纲动作', runId: '第二批' }
+    const draft = outlineBody(6, 7)
+    partial = { synopsis_result: draft, synopsis_incomplete: true, synopsis_generation_handle: handle }
+    const context = (standing: string) => ({ handle, plotOutline: { range: { from: 6, to: 10 }, cursor: { kind: 'request', chapterNumber: 8, attempt: 'normal' } },
+      plotOutlineRecovery: { draft, completeChapters: [6, 7], writeState: { kind: 'ready' }, saved: null },
+      planningDraft: { requestedRange: { from: 6, to: 10 }, createdAtMs: 1, standing } })
+    recoveryContext = context('open')
+    filledSpine(['premise', 'synopsis'])
+    await render()
+    const outlineEdit = () => [...host!.querySelector('[data-section="synopsis"]')!.querySelectorAll('button')].find(item => item.textContent === '编辑恢复稿')
+    expect(outlineEdit()).toBeTruthy()
+    recoveryContext = context('dismissed')
+    await act(async () => outlineEdit()!.click())
+    await vi.waitFor(() => expect(outlineEdit()).toBeUndefined())
+    expect(useEditorStore.getState().tabs.filter(tab => tab.planningRecovery)).toEqual([])
+  })
+})
+
+describe('架构页一次刷新里恢复稿刚好变成不再给作者（#608）', () => {
+  it('大纲一节说被打断时一定有能点的恢复入口；入口没了就不再说被打断', async () => {
+    core = { ...core, synopsis: renderPlotOutlineSynopsis(outlineBody(1, 5), 5, OUTLINE_SOURCE) }
+    const handle = { projectId: session.projectId, epoch: session.leaseId, rootActionId: '大纲动作', runId: '第二批' }
+    const draft = outlineBody(6, 7)
+    partial = { synopsis_protocol: PLOT_OUTLINE_PROTOCOL, synopsis_result: draft, synopsis_incomplete: true, synopsis_generation_handle: handle,
+      synopsis_covered_to: 5, synopsis_range: { from: 6, to: 10 } }
+    const context = (standing: string) => ({ handle, plotOutline: { range: { from: 6, to: 10 }, cursor: { kind: 'request', chapterNumber: 8, attempt: 'normal' } },
+      plotOutlineRecovery: { draft, completeChapters: [6, 7], writeState: { kind: 'ready' }, saved: null },
+      planningDraft: { requestedRange: { from: 6, to: 10 }, createdAtMs: 1, standing } })
+    filledSpine(['premise', 'synopsis'])
+    const fallback = invoke.getMockImplementation()!
+    let previous = ''
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'generation:read-context') {
+        // 紧接着的第二次读取返回 superseded，模拟刷新中途恢复稿被补齐。
+        const repeated = previous === channel
+        previous = channel
+        return context(repeated ? 'superseded' : 'open')
+      }
+      if (channel === 'fs:read-json') previous = channel
+      return fallback(channel, ...args)
+    })
+    await render()
+    const outline = host!.querySelector('[data-section="synopsis"]')!
+    const buttons = [...outline.querySelectorAll('button')]
+    const names = buttons.map(item => item.textContent)
+    expect(names.includes('断点续写大纲') && !names.includes('编辑恢复稿')).toBe(false)
+    expect(buttons.some(item => ['编辑恢复稿', '续写第 6 章起'].includes(item.textContent ?? '') && !item.disabled)).toBe(true)
   })
 })

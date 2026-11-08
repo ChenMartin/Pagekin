@@ -3,6 +3,7 @@ import { ipc } from '../../services/ipc-client'
 import { createBatchRecoveryWorkflow, createDraftRecoveryWorkflow } from '../../services/workflows/draft-recovery-workflow'
 import { createReviewRevisionRecoveryWorkflow } from '../../services/workflows/review-revision-recovery-workflow'
 import type { ProjectSessionContext } from '../../shared/ipc-channels'
+import { globalEventBus } from '../../shared/event-bus'
 import { projectSessionContextFromProject, sameProjectSessionContext } from '../../shared/project-session-context'
 import { openPlanningRecoveryDraft, useEditorStore } from '../../stores/editor-store'
 import { useLocaleStore } from '../../stores/locale-store'
@@ -48,6 +49,8 @@ export interface RunRecovery {
   continueCandidate: (entry: CandidateEntry) => void
   discardCandidate: (entry: CandidateEntry) => void
   openPlanning: (entry: PlanningEntry) => void
+  /** 放弃只记在运行上，不动候选原文与正式内容。 */
+  dismissPlanning: (entry: PlanningEntry) => void
   continueEditor: (entry: EditorEntry) => void
   resumeReview: (entry: ReviewEntry) => void
   resumeBatch: (entry: BatchEntry) => void
@@ -128,6 +131,13 @@ export function useRunRecovery(): RunRecovery {
     }).catch(reason => { if (active) setLoadError(displayedErrorMessage(useLocaleStore.getState().locale, reason)) })
     return () => { active = false }
   }, [session, lastEnded, refreshTick])
+
+  useEffect(() => {
+    if (!session) return
+    return globalEventBus.on('PLANNING_RECOVERY_CHANGED', ({ projectSession }) => {
+      if (sameProjectSessionContext(projectSession, session)) setRefreshTick(value => value + 1)
+    })
+  }, [session])
 
   useEffect(() => {
     if (writing || !missedWhileWriting.current) return
@@ -230,6 +240,10 @@ export function useRunRecovery(): RunRecovery {
       const fresh = await ipc.invokeWithProjectSession(current, 'generation:read-context', { handle: entry.recovery.handle })
       if (!stillCurrent()) return
       openPlanningRecoveryDraft(fresh, current.projectPath, planningTitle(fresh, useLocaleStore.getState().locale))
+    }),
+    dismissPlanning: entry => void act(async current => {
+      await ipc.invokeWithProjectSession(current, 'generation:dismiss-planning-recovery', { handle: entry.recovery.handle })
+      globalEventBus.emit('PLANNING_RECOVERY_CHANGED', { projectSession: current })
     }),
     continueEditor: entry => void act(async current => {
       const receipt = await ipc.invokeWithProjectSession(current, 'editor-inline:execute', { handle: entry.recovery.view.handle })

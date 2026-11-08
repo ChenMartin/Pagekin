@@ -6,19 +6,38 @@
  */
 
 import type { NovelConfig, ProjectSessionContext } from '../shared/ipc-channels'
+import type { GenerationRecoveryContext } from '../shared/generation-owner-contract'
 import { CANONICAL_PROJECT_DIRECTORY } from '../shared/project-format'
 import { outlineProgress } from '../shared/plot-outline-checkpoint'
 import type { PlotOutlineRangeSource } from '../shared/plot-outline-contract'
 import { resolveWritingLanguage } from '../shared/writing-language'
 import { ipc } from './ipc-client'
 import { judgeArchCore } from './architecture-step-selection'
+import { architectureRecoveryHandle } from '../shared/architecture-recovery-navigation'
+import { planningRecoverable } from '../shared/planning-recovery'
 
-/** 读架构生成的分批检查点 partial_arch.json；没有、读不到或读失败都按没有检查点（undefined）。 */
-export async function readArchCheckpoint(projectSession: ProjectSessionContext): Promise<Record<string, unknown> | undefined> {
+/**
+ * 读架构生成的分批检查点 partial_arch.json；没有、读不到或读失败都按没有检查点（undefined）。
+ * 大纲恢复稿已不再给作者时，去掉检查点里 synopsis_ 开头的部分，免得各处仍把它当成被打断的一批。
+ * 把判定用的那次读取一并交回（未读或读失败为 null），调用方不要再读一次，否则两次读到的判定可能不同。
+ */
+export async function readArchCheckpointWithOutline(projectSession: ProjectSessionContext): Promise<{
+  checkpoint: Record<string, unknown> | undefined
+  outline: GenerationRecoveryContext | null
+}> {
   const { projectPath } = projectSession
   const result = await ipc.invokeWithProjectSession(projectSession, 'fs:read-json', `${projectPath}/${CANONICAL_PROJECT_DIRECTORY}/partial_arch.json`, projectPath)
     .catch(() => null)
-  return result?.success === true ? (result as { data?: Record<string, unknown> }).data : undefined
+  const checkpoint = result?.success === true ? (result as { data?: Record<string, unknown> }).data : undefined
+  const handle = architectureRecoveryHandle(checkpoint, 'synopsis', projectSession.projectId)
+  if (!checkpoint || !handle) return { checkpoint, outline: null }
+  const outline = await ipc.invokeWithProjectSession(projectSession, 'generation:read-context', { handle }).catch(() => null)
+  if (!outline?.plotOutlineRecovery || planningRecoverable(outline)) return { checkpoint, outline }
+  return { checkpoint: Object.fromEntries(Object.entries(checkpoint).filter(([key]) => !key.startsWith('synopsis_'))), outline }
+}
+
+export async function readArchCheckpoint(projectSession: ProjectSessionContext): Promise<Record<string, unknown> | undefined> {
+  return (await readArchCheckpointWithOutline(projectSession)).checkpoint
 }
 
 /** 作品核心里情节大纲的范围来源：章数与写作语言以作品核心为准，作品核心读不到时用作品设置。 */

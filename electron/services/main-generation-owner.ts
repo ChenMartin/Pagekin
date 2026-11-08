@@ -1,7 +1,8 @@
 import type Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
-import type { BeginGenerationRequest, ExecuteGenerationRequest, BeginGenerationBatchRequest, GenerationDraftCommitRequest, GenerationRecoveryContext, MaterialDecisionReceipt, VisibleCompositionAlgorithm, GenerationOwnerChannels, GenerationRecoveryList, ShortOutlineRetry, PlanningContinuation } from '../../src/shared/generation-owner-contract'
+import type { BeginGenerationRequest, ExecuteGenerationRequest, BeginGenerationBatchRequest, GenerationDraftCommitRequest, GenerationRecoveryContext, MaterialDecisionReceipt, VisibleCompositionAlgorithm, GenerationOwnerChannels, GenerationRecoveryList, ShortOutlineRetry, PlanningContinuation, PlanningDraftStanding } from '../../src/shared/generation-owner-contract'
+import { planningRecoverable } from '../../src/shared/planning-recovery'
 import { isDraftVisibleTextVersion } from '../../src/shared/draft-visible-text'
 import { generationOutputContract, type GenerationAuthorInput } from '../../src/shared/generation-owner-contract'
 import type { MainGenerationExecuteReceipt, MainGenerationRunHandle, MainGenerationRunSummary, MainGenerationRunView, MainGenerationSnapshot } from '../../src/services/generation/generation-runtime'
@@ -24,7 +25,7 @@ import { decodeBlueprintAuthorPayload } from '../../src/shared/blueprint-semanti
 import { GenerationDraftEffects, assertGenerationBatchIntent } from './generation-draft-effects'
 import { CharacterProposalService } from './character-proposal-service'
 import { proveCharacterProposal } from './generation-character-proposal-proof'
-import { compareGenerationSourceBindings, recordedModelName } from './generation-source-binding'
+import { compareGenerationSourceBindings, planningBlueprintSourceHash, recordedModelName } from './generation-source-binding'
 import type { GenerationKnowledgeSnapshot } from '../../src/shared/generation-knowledge'
 import type { PrepareDraftContextRequest, PreparedDraftContext } from '../../src/shared/generation-owner-contract'
 import { FinalizedCharacterGeneration } from './finalized-character-generation'
@@ -809,6 +810,45 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
     if (outline && !saved && (outline.composition?.chapters?.length || outline.cursor.kind === 'accept')) return { ...base, state: 'save-prefix' }
     return { ...base, state: 'ready' }
   }
+  const plotOutlineBatchInFormalOutline = (outline: PlotOutlineProgress): boolean => {
+    const batch = outline.cursor.kind === 'complete' ? outline.composition?.text.trim() : undefined
+    return !!batch && (ProjectCoreRepository.get(deps.database)?.synopsis ?? '').includes(batch)
+  }
+  const planningRunInFlight = (runId: string) => [...pending.keys()].some(key => (JSON.parse(key) as [string])[0] === runId) || !!deps.database.prepare(
+    "SELECT 1 FROM generation_attempts WHERE run_id=? AND json_extract(attempt_json,'$.status') IN ('reserved','dispatch-marked') LIMIT 1").get(runId)
+  /**
+   * 拿不准就列出：多列的一份作者能自己放弃，误藏的一份作者根本不知道还在。
+   * 导入原稿的 fill-empty 提交会把原有行原样记账，所以还要求这一章开跑以后确实变过。
+   * 大纲只认这次运行的正式写入；升级前写入的没有这一笔，退而看这一批原文是否还在正式大纲里。
+   */
+  const planningSuperseded = (run: DurableGenerationRun, outline: PlotOutlineProgress | null, remaining: PlanningContinuation['remainingRange']): boolean => {
+    if (!remaining) return true
+    if (outline) return repository.plotOutlineCommitted(run.runId) || plotOutlineBatchInFormalOutline(outline)
+    const chapters = Array.from({ length: remaining.to - remaining.from + 1 }, (_, index) => remaining.from + index)
+    const matchesCommit = BlueprintRepository.commitMatcherAfter(remaining, repository.createdAtMs(run.runId), deps.database)
+    return chapters.every(chapter => matchesCommit(chapter)
+      && planningBlueprintSourceHash(deps.database, chapter) !== run.binding.sourceRefs.find(ref => ref.sourceId === `blueprint:${chapter}`)?.contentHash)
+  }
+  const planningDraft = (run: DurableGenerationRun, outline: PlotOutlineProgress | null, continuation: PlanningContinuation | undefined): PlanningDraftStanding | undefined => {
+    const inputs = run.binding.sourceManifest.authorInputs as GenerationAuthorInput[] | undefined
+    const directory = run.binding.sourceManifest.operation === 'chapter-blueprint-directory'
+      ? inputs?.find(input => input.id === 'directory:requested-range') : undefined
+    const scope = directory ? JSON.parse(directory.text) as { startChapter: number; endChapter: number } : undefined
+    const requestedRange = outline ? { from: outline.range.from, to: outline.range.to } : scope ? { from: scope.startChapter, to: scope.endChapter } : null
+    if (!requestedRange) return undefined
+    const base = { requestedRange, createdAtMs: repository.createdAtMs(run.runId) }
+    if (planningRunInFlight(run.runId)) return { ...base, standing: 'open' }
+    if (repository.planningDismissed(run.runId)) return { ...base, standing: 'dismissed' }
+    if (continuation && planningSuperseded(run, outline, continuation.remainingRange)) return { ...base, standing: 'superseded' }
+    return { ...base, standing: 'open' }
+  }
+  /** 只记在运行上，候选原文与正式内容不动；正在生成的不能放弃。 */
+  const dismissPlanningRecovery = (handle: MainGenerationRunHandle) => {
+    const context = readContext(handle)
+    if (!context.planningDraft) throw new Error('GENERATION_PLANNING_RECOVERY_INVALID')
+    if (planningRunInFlight(handle.runId)) throw new Error('GENERATION_PLANNING_RECOVERY_IN_FLIGHT')
+    if (context.planningDraft.standing !== 'dismissed') repository.recordPlanningDismissal(handle.runId)
+  }
   const plotOutlineRecovery = (run: DurableGenerationRun, outline: PlotOutlineProgress): PlotOutlineRecovery => {
     const saved = repository.readPlotOutlineAuthorEdit(run.runId)
     const cursor = outline.cursor
@@ -829,9 +869,7 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
         writeState = projectGenerationInFlight() ? { kind: 'blocked', reason: 'in-flight' } : { kind: 'ready' }
       }
     } catch { /* Frozen proposals remain readable when current sources are unavailable. */ }
-    const batch = outline.cursor.kind === 'complete' ? outline.composition?.text.trim() : undefined
-    const inFormalOutline = !!batch && (ProjectCoreRepository.get(deps.database)?.synopsis ?? '').includes(batch)
-    return { sourceHandle: handleOf(run), leaseEpoch: deps.epoch, draft, inFormalOutline,
+    return { sourceHandle: handleOf(run), leaseEpoch: deps.epoch, draft, inFormalOutline: plotOutlineBatchInFormalOutline(outline),
       completeChapters: [...(outline.composition?.chapters?.map(chapter => chapter.chapterNumber) ?? []),
         ...(outline.cursor.kind === 'accept' ? [outline.cursor.chapterNumber] : [])],
       writeState, saved }
@@ -911,6 +949,7 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
     const run = requireRun(handle), manifest = run.binding.sourceManifest, composition = repository.isPrivatePlanningHistory(run.runId) ? null : repository.readVisibleComposition(run.runId)
     const plotOutline = repository.readPlotOutline(run.runId)
     const continuation = planningContinuation(run)
+    const draft = planningDraft(run, plotOutline, continuation)
     const blueprint = manifest.operation === 'chapter-blueprint-directory' ? repository.readBlueprintRecovery(run.runId) : null
     const blueprintSaved = blueprint?.kind === 'available' ? blueprint.authorEdit : null
     const draftSave = draftEffects.readRecovery(run.runId)
@@ -930,6 +969,7 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
     return { modelId: modelReceipt(run.binding).modelId, handle: handleOf(run), operation: manifest.operation as string, chapterNumber: manifest.chapterNumber as number | undefined,
       ...(plotOutline ? { plotOutline, plotOutlineRecovery: plotOutlineRecovery(run, plotOutline) } : {}),
       ...(continuation ? { planningContinuation: continuation } : {}),
+      ...(draft ? { planningDraft: draft } : {}),
       ...(blueprint && blueprint.kind !== 'available' ? { blueprintRecovery: {
         sourceHandle: handleOf(run), leaseEpoch: deps.epoch, draft: viewOf(run).candidates?.at(-1)?.text ?? '',
         editRange: null, saved: null, writeState: 'unavailable' as const, diagnostic: blueprint.diagnostic,
@@ -1006,7 +1046,7 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
   /**
    * 运行侧页「可恢复」区的数据。只读操作类型可能恢复的运行；一个运行读不出不挡其余运行，只标 partial。
    * 单章写稿保存过就不再需要恢复，正文后来改没改过都一样；只有这次打开里还留着没落盘的正文时仍列出，那段文字只能从这里复制。
-   * 规划恢复稿只列没写进正式内容的：续写已完成的，或来源变了但本批已原样在正式大纲里的，都不算可恢复。
+   * 规划恢复稿是否列出按 planningRecoverable 判定，与蓝图页横幅、架构页大纲提示同一条。
    */
   const listRecovery = (): GenerationRecoveryList => {
     assertCurrent()
@@ -1018,8 +1058,7 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
     const collect = {
       planning: (handle: MainGenerationRunHandle) => {
         const recovery = readContext(handle)
-        if ((recovery.plotOutlineRecovery || recovery.blueprintRecovery) && recovery.planningContinuation?.state !== 'complete'
-          && !recovery.plotOutlineRecovery?.inFormalOutline) list.planning.push(recovery)
+        if (planningRecoverable(recovery)) list.planning.push(recovery)
       },
       review: (handle: MainGenerationRunHandle) => { list.reviews.push({ view: viewOf(requireRun(handle)), recovery: readReviewRevisionRecovery(handle) }) },
       editor: (handle: MainGenerationRunHandle) => { list.editors.push(readEditorInlineRecovery(handle)) },
@@ -1059,14 +1098,14 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
   }
   /**
    * 蓝图页挂载时要的那份：最新一个还没写完的章节蓝图恢复稿；只读章节蓝图运行，读不出的跳过，不挡更早的恢复稿。
-   * 作者整段保存完的（续写已完成）与运行侧页一样不算。
+   * 判定同 planningRecoverable，不可恢复的跳过，找更早的。
    */
   const findBlueprintRecovery = (): GenerationRecoveryContext | null => {
     assertCurrent()
     for (const run of runSummaries().filter(item => item.operation === 'chapter-blueprint-directory')) {
       let recovery: GenerationRecoveryContext
       try { recovery = readContext(run.handle) } catch { continue }
-      if (recovery.blueprintRecovery && recovery.blueprintRecovery.writeState !== 'complete' && recovery.planningContinuation?.state !== 'complete') return recovery
+      if (recovery.blueprintRecovery && recovery.blueprintRecovery.writeState !== 'complete' && planningRecoverable(recovery)) return recovery
     }
     return null
   }
@@ -1530,7 +1569,7 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
     prepareReviewRevision: (request: PrepareReviewRevisionRequest) => reviewRevisions.prepare(request),
     commitReview: (request: ReviewGenerationCommitRequest) => reviewRevisions.commitReview(request, assertSourcesCurrent),
     commitRevision: (request: RevisionGenerationCommitRequest) => reviewRevisions.commitRevision(request, assertSourcesCurrent),
-    readReviewRevisionRecovery, listRecovery, findBlueprintRecovery,
+    readReviewRevisionRecovery, listRecovery, findBlueprintRecovery, dismissPlanningRecovery,
     readContext, readBatch, prepareDraftContext, preparedKnowledge, draftPreparationBinding, retryDraftShortOutline,
     beginBatch: (request: BeginGenerationBatchRequest) => {
       assertGenerationBatchIntent(request)
@@ -1558,6 +1597,7 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
       }).immediate()
     },
     assertSynopsisCommit, commitPlotOutlineAuthorEdit, commitBlueprintAuthorEdit,
+    recordPlotOutlineCommit: (handle: MainGenerationRunHandle) => repository.recordPlotOutlineCommitWithinTransaction(requireRun(handle).runId),
     withAgentChildEffect: <T>(handle: MainGenerationRunHandle, effect: () => T): T => { requireRun(handle); return agents.withChildEffect(handle, effect) },
     read: (handle: MainGenerationRunHandle) => viewOf(requireRun(handle)),
     listDirectoryProgress: () => {

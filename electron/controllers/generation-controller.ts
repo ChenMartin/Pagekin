@@ -50,6 +50,11 @@ export function assertGenerationSynopsisCommit(handle: MainGenerationRunHandle, 
   if (!entry || !database?.inTransaction) throw new Error('GENERATION_OWNER_REQUIRED')
   return entry.owner.assertSynopsisCommit(handle, synopsis, expected)
 }
+export function recordGenerationPlotOutlineCommit(handle: MainGenerationRunHandle): void {
+  const database = getProjectDb(), entry = database && owners.get(database)
+  if (!entry || !database?.inTransaction) throw new Error('GENERATION_OWNER_REQUIRED')
+  entry.owner.recordPlotOutlineCommit(handle)
+}
 export function commitGenerationPlotOutlineAuthorEdit(request: import('../repositories/project-core-repository').ProjectCoreSynopsisCommitRequest) {
   const database = getProjectDb(), entry = database && owners.get(database)
   if (!entry || !database?.inTransaction) throw new Error('GENERATION_OWNER_REQUIRED')
@@ -288,6 +293,7 @@ export function registerGenerationController(options: {
   register('generation:list-batches', 0, owner => owner.listBatches())
   register('generation:list-recovery', 0, owner => owner.listRecovery())
   register('generation:find-blueprint-recovery', 0, owner => owner.findBlueprintRecovery())
+  register('generation:dismiss-planning-recovery', 1, (owner, request) => owner.dismissPlanningRecovery(request.handle))
   register('generation:confirm-batch-finalization', 1, (owner, request) => owner.confirmBatchFinalization(request))
   register('generation:read-visible-composition', 1, (owner, handle) => owner.readVisibleComposition(handle))
   register('generation:list', 0, owner => owner.list())

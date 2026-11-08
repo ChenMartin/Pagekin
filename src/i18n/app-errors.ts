@@ -131,6 +131,7 @@ const ERROR_KEYS = {
   GENERATION_IMPORT_PREVIOUS_ATTEMPT_INCOMPLETE: 'error.importPreviousAttemptIncomplete',
   GENERATION_WORKFLOW_SESSION_BUSY: 'error.generationBusy',
   GENERATION_PLOT_OUTLINE_AUTHOR_IN_FLIGHT: 'error.generationBusy',
+  GENERATION_PLANNING_RECOVERY_IN_FLIGHT: 'error.generationBusy',
   GENERATION_KNOWLEDGE_BUSY: 'error.generationKnowledgeBusy',
   GENERATION_AUTHOR_INPUT_TOO_LARGE: 'error.generationInputTooLarge',
   GENERATION_IMPORT_CONTEXT_LIMIT: 'error.generationInputTooLarge',
