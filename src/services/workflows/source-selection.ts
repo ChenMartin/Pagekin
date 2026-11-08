@@ -20,6 +20,8 @@ export interface MaterialCandidate {
   staleLocator?: boolean
   /** 从同一可读来源回读到的不可变原文；stale 定位的唯一合法替代。 */
   recoveredProse?: readonly string[]
+  /** 知识库片段在快照里的最终排名，从 1 起；升级前冻结的快照没有。 */
+  knowledgeRank?: number
   /** 未定稿候选材料；只有通过准入的白名单项才可能入选。 */
   candidate?: { source: CandidateSource; admission: CandidateAdmission }
 }
@@ -119,6 +121,14 @@ function canonicalCandidate(candidate: MaterialCandidate): string {
 const compareCandidate = (left: MaterialCandidate, right: MaterialCandidate): number =>
   compareCodeUnit(canonicalCandidate(left), canonicalCandidate(right))
 
+/** 字面命中只决定知识库片段和其他材料怎么穿插；片段彼此的先后归快照排名。 */
+function keepKnowledgeRank(sorted: readonly MaterialCandidate[]): MaterialCandidate[] {
+  const ranked = sorted.filter(item => item.knowledgeRank !== undefined)
+    .sort((left, right) => left.knowledgeRank! - right.knowledgeRank!)
+  let next = 0
+  return sorted.map(item => item.knowledgeRank === undefined ? item : ranked[next++]!)
+}
+
 /**
  * 不可变源身份。同一条源修订被引用两次属于矛盾输入（同一份内容不可能既是
  * author 又是 unknown，也不可能同时必需与可选），必须先拒绝，否则后续的
@@ -183,7 +193,7 @@ export function selectChapterSources(input: SourceSelectionInput): SourceSelecti
     admissible.push(candidate)
   }
 
-  const requiredFirst = [...admissible].sort((left, right) => {
+  const requiredFirst = keepKnowledgeRank([...admissible].sort((left, right) => {
     if (left.required !== right.required) return Number(right.required) - Number(left.required)
     // 先必需后可选；可选材料之间按本章相关词命中数排序，再按稳定全序收口。
     if (!left.required) {
@@ -191,7 +201,7 @@ export function selectChapterSources(input: SourceSelectionInput): SourceSelecti
       if (delta !== 0) return delta
     }
     return compareCandidate(left, right)
-  })
+  }))
   const included: SelectedMaterial[] = []
   const coveredContent = new Set<string>()
   let remaining = input.capacity.maxInputUnits

@@ -730,7 +730,7 @@ export class GenerateDraftCommand extends BaseWorkflowCommand {
         expectedProjectPath,
       ))
       if (results.length > 0) {
-        knowledgeReferences = results.map((result: { fileName: string; score: number; text: string }, index: number) => ({
+        knowledgeReferences = results.map((result: { fileName: string; score: number; text: string; rank?: number }, index: number) => ({
           text: result.text,
           rendered: promptLanguageText(
             writingLanguage,
@@ -738,6 +738,7 @@ export class GenerateDraftCommand extends BaseWorkflowCommand {
             `[${index + 1}] (${result.fileName}, relevance ${(result.score * 100).toFixed(0)}%)\n${result.text}`,
           ),
           deduplicateAgainstFinalized: true,
+          ...(result.rank === undefined ? {} : { knowledgeRank: result.rank }),
         }))
       } else {
         const emptyContext = promptLanguageText(writingLanguage, '（知识库中无相关内容）', '(no relevant knowledge-base context)')

@@ -59,6 +59,7 @@ export interface ChapterMaterialReference {
   readonly text: string
   readonly rendered: string
   readonly deduplicateAgainstFinalized?: boolean
+  readonly knowledgeRank?: number
 }
 
 export interface ChapterMaterialBundle {
@@ -489,6 +490,7 @@ export async function assembleChapterMaterials(input: {
     provenance: MaterialCandidate['provenance']
     required: boolean
     staleLocator?: false
+    knowledgeRank?: number
   }): Promise<MaterialCandidate | undefined> => {
     // 没有材料文本的来源贡献不了任何东西；如果给它建候选，只会在省略清单里
     // 冒出一个成本为 0 的假纳入。
@@ -502,6 +504,7 @@ export async function assembleChapterMaterials(input: {
       category: material.category, provenance: material.provenance, required: material.required,
       text: material.text,
       ...(material.staleLocator === undefined ? {} : { staleLocator: material.staleLocator }),
+      ...(material.knowledgeRank === undefined ? {} : { knowledgeRank: material.knowledgeRank }),
     }
     candidates.push(candidate)
     familyBySourceId.set(material.sourceId, family)
@@ -668,6 +671,7 @@ export async function assembleChapterMaterials(input: {
       category: 'reference',
       provenance: 'author',
       required: false,
+      ...(reference.knowledgeRank === undefined ? {} : { knowledgeRank: reference.knowledgeRank }),
     })
     if (candidate) referenceCandidates.push({ candidate, reference })
     else {

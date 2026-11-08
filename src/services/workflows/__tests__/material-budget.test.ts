@@ -81,6 +81,18 @@ describe('按模型窗口分配可选材料', () => {
     expect(estimateMaterialTokens(bytes(result.text) + NON_MATERIAL_UNITS)).toBeLessThanOrEqual(value.inputTokens)
   })
 
+  it('知识库片段按快照排名取舍：额度不够时先裁排名靠后的，字面命中多也不能插队', async () => {
+    const [thread, ...chunks] = MIDDLE.references
+    // 字面命中最多的片段排名最后；没带排名的线索块仍按相关度和片段穿插。
+    const ranked = [thread!, ...chunks.map((chunk, index) => ({ ...chunk, knowledgeRank: index + 1 }))]
+    const result = await assembleChapterMaterials({ ...MIDDLE, references: ranked, ...withBudget(budget(16_385)) })
+    const included = optionalIds(result)
+    const omitted = result.decision.omitted.filter(item => item.reason === 'budget').map(item => item.sourceId)
+
+    expect(included).toContain('reference:1')
+    expect(omitted).toContain('reference:5')
+  })
+
   it('必需材料单独超过窗口时照常发出，可选材料全部不放', async () => {
     const value = budget(16_385)
     const result = await assembleChapterMaterials({ ...MATURE, ...withBudget(value) })
@@ -103,7 +115,8 @@ describe('按模型窗口分配可选材料', () => {
 
   it('旧收据没有额度字段时，按收据记下的可选材料原样重现，收据也不多出额度字段', async () => {
     const original = await assembleChapterMaterials({ ...MIDDLE, ...withBudget(budget(16_385)) })
-    const { budget: _frozen, ...legacy } = original.decision
+    const legacy = { ...original.decision }
+    delete legacy.budget
     const optionalContentHashes = legacy.included.filter(item => !item.required).map(item => item.contentHash)
 
     const resumed = await assembleChapterMaterials({ ...MIDDLE, ...withAdmission({ kind: 'frozen', optionalContentHashes }) })
