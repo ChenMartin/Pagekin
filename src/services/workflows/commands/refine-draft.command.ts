@@ -67,8 +67,13 @@ export class RefineDraftCommand extends ReviewRevisionCommand {
     const bare = render([])
     let admission: ReviewRevisionMaterialAdmission
     try {
-      admission = await selectFrozenReviewRevisionMaterials(frozen, current, await this.materialAdmission(params),
-        this.nonMaterialUnits(params, bare.prompt, bare.systemRole))
+      const materialAdmission = await this.materialAdmission(params)
+      const bareUnits = this.nonMaterialUnits(params, bare.prompt, bare.systemRole)
+      const select = (extraUnits: number) => selectFrozenReviewRevisionMaterials(frozen, current, materialAdmission, bareUnits + extraUnits)
+      admission = await select(0)
+      // 默认模板把历史同时填进 global_summary 和 short_summary，多出来的一份按实际渲染量再选一次。
+      const rendered = render(admission.admitted)
+      admission = await select(Math.max(0, this.nonMaterialUnits(params, rendered.prompt, rendered.systemRole) - bareUnits - admission.decision.capacity.admittedUnits))
     } catch (error) {
       if (!(error instanceof ChapterMaterialCapacityError)) throw error
       const blocked = error.decision.decision === 'capacity-conflict'
