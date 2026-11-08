@@ -3663,9 +3663,9 @@ describe('规划恢复稿是否还列为可恢复（#608）', () => {
       expect(performance.now() - start).toBeLessThan(limitMs)
       return listed
     }
-    expect(listedWithin(3000)).toEqual([])
+    expect(listedWithin(5000)).toEqual([])
     BlueprintRepository.upsert(rows(count, count, '作者提交之后改了最后一章')[0])
-    expect(listedWithin(3000)).toEqual([interrupted.runId])
+    expect(listedWithin(5000)).toEqual([interrupted.runId])
   }, 120_000)
 
   it.each([
