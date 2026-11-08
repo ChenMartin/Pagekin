@@ -2,10 +2,9 @@ import { useEffect, useMemo, useState } from 'react'
 import { BookOpen, ListChecks, MoreHorizontal, Sparkles } from 'lucide-react'
 import { blueprintWritePrefill } from '../../../services/workflows/chapter-write-launch'
 import type { DirectoryWorkflowParams } from '../../../services/workflows/directory-workflow'
-import { openPlanningRecoveryDraft } from '../../../stores/editor-store'
 import { useLocaleStore } from '../../../stores/locale-store'
 import { useStageStore } from '../../../stores/navigation/stage-store'
-import { isCurrentProjectSession, currentProjectSessionForPath, useChapterBlueprints } from '../../editor/use-chapter-blueprints'
+import { useChapterBlueprints } from '../../editor/use-chapter-blueprints'
 import { Button } from '../../ui/Button'
 import { DangerConfirm } from '../../ui/DangerConfirm'
 import { EmptyState } from '../../ui/EmptyState'
@@ -94,13 +93,6 @@ export default function StageBlueprint({ projectKey, initialChapterNumber, selec
     }
   }
 
-  const openRecovery = () => {
-    const session = currentProjectSessionForPath(projectKey)
-    if (plan.planningRecovery && session && isCurrentProjectSession(session)) {
-      openPlanningRecoveryDraft(plan.planningRecovery, projectKey, text('蓝图恢复稿', 'Blueprint recovery draft'))
-    }
-  }
-
   // 只有第一次读取（含换作品）才整页换成读取中；之后的重新加载保留页面、打开的弹层与对话框，作者的输入不丢。
   if (plan.loading && !plan.projectDataReady) {
     return <div className="stage-bp-loading" role="status">{text('正在读取章节蓝图…', 'Loading chapter blueprints…')}</div>
@@ -176,7 +168,7 @@ export default function StageBlueprint({ projectKey, initialChapterNumber, selec
         <Notice
           tone="info"
           title={text('有一份蓝图恢复稿', 'A blueprint recovery draft is available')}
-          actions={<Button variant="secondary" size="sm" onClick={openRecovery}>{text('编辑恢复稿', 'Edit recovery draft')}</Button>}
+          actions={<Button variant="secondary" size="sm" onClick={plan.openPlanningRecovery}>{text('编辑恢复稿', 'Edit recovery draft')}</Button>}
         >
           {text('上次生成蓝图时中断，恢复出了一部分。列表里仍是原来的蓝图；保存恢复稿才会替换，也可以在恢复稿里接着生成缺少的章节。',
             'The last blueprint generation stopped partway. The list still shows the original blueprints; saving the recovery draft replaces them, and you can generate the missing chapters from there.')}

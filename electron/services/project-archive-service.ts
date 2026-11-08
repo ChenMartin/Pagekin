@@ -4,6 +4,8 @@ import { createHash, randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
 
 import { CHARACTER_STATE_TEXT_FIELDS } from '../../src/shared/character-roster'
+import { validThreadOutcome } from '../../src/shared/chapter-goal-review'
+import { writtenChapterThreadTasks } from '../../src/shared/narrative-thread'
 import { readPortableCurrentAuthority } from './portable-current-authority'
 import { parsePortableRuntimeFreeze, readPortableRuntimeFreeze } from './portable-runtime-freeze'
 
@@ -610,8 +612,9 @@ function assertReviewContext(value: unknown): Record<string, unknown> {
       reviewIntegerFields(goalReview, ['version', 'chapterNumber'])
       reviewTextFields(goalReview, ['coverage'])
       for (const value of reviewArray(goalReview.items)) {
-        const item = object(value, ['id', 'text', 'status', 'description', 'evidence'])
-        reviewTextFields(item, ['id', 'text', 'status', 'description'])
+        const item = object(value, ['id', 'text', 'status', 'description', 'evidence', 'threadOutcome'])
+        reviewTextFields(item, ['id', 'text', 'status', 'description', 'threadOutcome'])
+        if (!validThreadOutcome(item)) fail('PORTABLE_UNSAFE_PROJECTION')
         for (const evidenceValue of reviewArray(item.evidence)) {
           const evidence = object(evidenceValue, ['quote', 'start', 'end'])
           reviewTextFields(evidence, ['quote'])
@@ -851,6 +854,36 @@ function projectionForRow(
   return { projection, excludedFields }
 }
 
+/** 未审稿件的审稿目标要读写稿运行冻结的线索任务（见 review-revision-context.ts 的 draftThreadTasks），导出时别把这两处一并清空。 */
+function draftThreadTaskProofs(db: InstanceType<typeof BetterSqlite>, reviewRoots: ReadonlySet<string>): {
+  receipts: Map<string, string>; bindings: Map<string, string>
+} {
+  const rows = db.prepare(`SELECT a.attempt_id,a.run_id,a.root_action_id,r.binding_json,
+      json_extract(a.usage_receipt_json,'$.draftCommit.id') AS draft_id,
+      json_extract(a.usage_receipt_json,'$.draftCommit.chapterNumber') AS chapter_number,
+      json_type(a.usage_receipt_json,'$.draftCommit.id') AS draft_id_type,
+      json_type(a.usage_receipt_json,'$.draftCommit.chapterNumber') AS chapter_number_type
+    FROM generation_attempts a JOIN generation_runs r ON r.run_id=a.run_id
+    WHERE json_valid(a.usage_receipt_json) AND json_extract(a.usage_receipt_json,'$.draftCommit.id') IS NOT NULL`).all() as Array<{
+    attempt_id: string; run_id: string; root_action_id: string; binding_json: string; draft_id: unknown; chapter_number: unknown
+    draft_id_type: string; chapter_number_type: string | null }>
+  const receipts = new Map<string, string>(), bindings = new Map<string, string>()
+  for (const row of rows) {
+    if (reviewRoots.has(row.root_action_id)) continue
+    const tasks = writtenChapterThreadTasks(row.binding_json)
+    if (!tasks || row.draft_id_type !== 'integer' || row.chapter_number_type !== 'integer'
+      || !Number.isSafeInteger(row.draft_id) || !Number.isSafeInteger(row.chapter_number)) {
+      console.warn('[portable-export] 写稿记录里的线索任务读不出，这份稿的线索任务不随副本带走', { draftId: row.draft_id })
+      continue
+    }
+    if (!tasks.length) continue
+    receipts.set(row.attempt_id, JSON.stringify({ draftCommit: { id: row.draft_id, chapterNumber: row.chapter_number } }))
+    bindings.set(row.run_id, JSON.stringify({ sourceManifest: {
+      authorInputs: [{ id: 'draft:chapter-info', text: JSON.stringify({ threadTasks: tasks }) }] } }))
+  }
+  return { receipts, bindings }
+}
+
 /** Shared C17 copy-only history projection. Call only on an isolated target staging DB. */
 export function sanitizePortableDatabase(databasePath: string): {
   history: HistoryProjection[]
@@ -866,6 +899,7 @@ export function sanitizePortableDatabase(databasePath: string): {
       root_action_id: string }>).map(row => row.root_action_id))
     const reviewRuns = new Set((db.prepare('SELECT run_id,root_action_id FROM generation_runs').all() as Array<{
       run_id: string; root_action_id: string }>).filter(row => reviewRoots.has(row.root_action_id)).map(row => row.run_id))
+    const draftProofs = draftThreadTaskProofs(db, reviewRoots)
     for (const row of avatarRows) {
       if ('recordId' in row) safeId(row.recordId)
       if ('characterId' in row) safeId(row.characterId)
@@ -925,10 +959,13 @@ export function sanitizePortableDatabase(databasePath: string): {
               originalReceiptVerified: false,
             })
           }
-          if (update) update.run(...updates.map(column => neutralValue(
-            `${table}.${column.name}`, column, row[column.name],
-            reviewProof,
-          )), row.__portable_rowid__)
+          const draftProof = table === 'generation_attempts' ? draftProofs.receipts.get(String(row.attempt_id))
+            : table === 'generation_runs' ? draftProofs.bindings.get(String(row.run_id)) : undefined
+          if (update) update.run(...updates.map(column => {
+            const key = `${table}.${column.name}`
+            if (draftProof !== undefined && (key === 'generation_attempts.usage_receipt_json' || key === 'generation_runs.binding_json')) return draftProof
+            return neutralValue(key, column, row[column.name], reviewProof)
+          }), row.__portable_rowid__)
           for (const [index, column] of columns.entries()) {
             if (policies[index]!.disposition !== 'validated-relative') continue
             const value = row[column.name]

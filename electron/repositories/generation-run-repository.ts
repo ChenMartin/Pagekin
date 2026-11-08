@@ -102,6 +102,12 @@ function binding(request: RunBinding): RunBinding {
         fail('GENERATION_BINDING_INVALID');
     return JSON.parse(encode({ projectId: request.projectId, epoch: request.epoch, fingerprint: request.fingerprint, contextSnapshotId: request.contextSnapshotId, sourceManifest: request.sourceManifest, sourceRefs: request.sourceRefs }));
 }
+/** `$` 开头的键是运行上的记账，不属于冻结绑定；重写冻结绑定时必须带回。 */
+function splitStoredBinding(json: string): { frozen: RunBinding; records: Record<string, unknown> } {
+    const entries = Object.entries(JSON.parse(json) as Record<string, unknown>);
+    return { frozen: Object.fromEntries(entries.filter(([key]) => !key.startsWith('$'))) as unknown as RunBinding,
+        records: Object.fromEntries(entries.filter(([key]) => key.startsWith('$'))) };
+}
 export class GenerationRunRepository {
     private readonly database: Database.Database | null;
     constructor(getDb: () => Database.Database | null = getProjectDb, private readonly now: () => number = Date.now,
@@ -124,9 +130,11 @@ export class GenerationRunRepository {
         } | undefined;
         if (!row)
             fail('GENERATION_RUN_MISSING');
-        const { $runEffects, $blueprintRetirement, ...frozen } = JSON.parse(row.binding_json) as RunBinding & { $runEffects?: unknown; $blueprintRetirement?: unknown };
-        void $runEffects; void $blueprintRetirement;
-        return { runId: row.run_id, rootActionId: row.root_action_id, binding: frozen, status: row.status };
+        return { runId: row.run_id, rootActionId: row.root_action_id, binding: splitStoredBinding(row.binding_json).frozen, status: row.status };
+    }
+    private replaceFrozenBinding(runId: string, frozen: RunBinding): void {
+        const { records } = splitStoredBinding(this.db().prepare('SELECT binding_json FROM generation_runs WHERE run_id=?').pluck().get(runId) as string);
+        this.db().prepare('UPDATE generation_runs SET binding_json=? WHERE run_id=?').run(encode({ ...frozen, ...records }), runId);
     }
     private authorEditedRoot(rootId: string): boolean {
         return !!this.db().prepare('SELECT 1 FROM generation_runs WHERE root_action_id=? AND json_type(binding_json,?) IS NOT NULL LIMIT 1').get(rootId, authorEffectPath);
@@ -305,7 +313,7 @@ export class GenerationRunRepository {
             if (!isDeepStrictEqual(run.binding, expected)) fail('GENERATION_BINDING_CONFLICT');
             if (run.status !== 'running' || budget.root.status !== 'active' || this.attemptCount(runId) > 0 || budget.blockedCode)
                 fail('GENERATION_MATERIAL_DECISION_TOO_LATE');
-            this.db().prepare('UPDATE generation_runs SET binding_json=? WHERE run_id=?').run(encode(frozen), runId);
+            this.replaceFrozenBinding(runId, frozen);
             return this.get(runId);
         });
     }
@@ -606,6 +614,24 @@ export class GenerationRunRepository {
         }
         return catalog;
     }
+    createdAtMs(runId: string): number {
+        return this.db().prepare('SELECT created_at_ms FROM generation_runs WHERE run_id=?').pluck().get(runId) as number;
+    }
+    planningDismissed(runId: string): boolean {
+        return this.db().prepare(`SELECT json_type(binding_json,'$."$planningDismissal"') FROM generation_runs WHERE run_id=?`).pluck().get(runId) != null;
+    }
+    /** 作者放弃这份规划恢复稿：只在运行上记一笔，冻结的绑定、尝试、候选原文都不动；从别处导入的冻结历史不写。 */
+    recordPlanningDismissal(runId: string): void {
+        if (this.portableFrozenRoot(this.get(runId).rootActionId)) fail('GENERATION_PLANNING_HISTORY_READ_ONLY');
+        this.db().prepare(`UPDATE generation_runs SET binding_json=json_set(binding_json,'$."$planningDismissal"','dismissed') WHERE run_id=?`).run(runId);
+    }
+    plotOutlineCommitted(runId: string): boolean {
+        return this.db().prepare(`SELECT json_type(binding_json,'$."$plotOutlineCommitted"') FROM generation_runs WHERE run_id=?`).pluck().get(runId) != null;
+    }
+    recordPlotOutlineCommitWithinTransaction(runId: string): void {
+        if (!this.db().inTransaction) fail('GENERATION_PLOT_OUTLINE_TRANSACTION_REQUIRED');
+        this.db().prepare(`UPDATE generation_runs SET binding_json=json_set(binding_json,'$."$plotOutlineCommitted"','committed') WHERE run_id=?`).run(runId);
+    }
     retireBlueprintRecoveryWithinTransaction(): void {
         if (!this.db().inTransaction) fail('GENERATION_DIRECTORY_TRANSACTION_REQUIRED');
         const rows = this.db().prepare("SELECT run_id,root_action_id FROM generation_runs WHERE json_extract(binding_json,'$.sourceManifest.operation')='chapter-blueprint-directory'").all() as { run_id: string; root_action_id: string }[];
@@ -761,7 +787,8 @@ export class GenerationRunRepository {
             budget.root.epoch = next.epoch;
             budget.root.status = 'active';
             this.db().prepare('UPDATE generation_roots SET action_json=? WHERE root_action_id=?').run(encode(budget.root), run.rootActionId);
-            this.db().prepare('UPDATE generation_runs SET binding_json=?,status=? WHERE run_id=?').run(encode(next), 'running', runId);
+            this.replaceFrozenBinding(runId, next);
+            this.db().prepare('UPDATE generation_runs SET status=? WHERE run_id=?').run('running', runId);
         });
     }
     recoverInterrupted(): void {

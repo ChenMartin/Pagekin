@@ -3,7 +3,8 @@ import { isDeepStrictEqual } from 'node:util'
 import type { ExpectedDraftSource, NovelConfig } from '../../src/shared/ipc-channels'
 import type { PrepareReviewRevisionRequest, ReviewMaterialIdentity, ReviewRevisionContext } from '../../src/shared/review-revision-generation'
 import { parseHumanConfirmedReviewSnapshot, serializeHumanConfirmedReviewSnapshot } from '../../src/shared/human-confirmed-review'
-import { freezeChapterGoals } from '../../src/shared/chapter-goal-review'
+import { freezeChapterGoals, withChapterThreadGoals } from '../../src/shared/chapter-goal-review'
+import { writtenChapterThreadTasks, type ChapterThreadTask } from '../../src/shared/narrative-thread'
 import { findBlueprintContinuityRisks } from '../../src/shared/consistency-preflight'
 import { CHARACTER_STATE_TEXT_FIELDS } from '../../src/shared/character-roster'
 import { CURRENT_DRAFT_STATUS_SQL } from '../../src/shared/draft-status'
@@ -18,6 +19,20 @@ import { textHash } from '../repositories/generation-run-repository'
 
 export const REVIEW_REVISION_OPERATIONS = ['review-chapter', 'refine-draft', 'refine-from-review'] as const
 const fail = (): never => { throw new Error('GENERATION_REVIEW_CONTEXT_INVALID') }
+
+/**
+ * 写出这份草稿的写稿运行在开跑时冻结的线索任务。修稿合并与作者改稿都沿用同一个草稿 id，
+ * 版本恢复等另起新草稿的路径找不到记录，与旧草稿一样不加线索目标。
+ */
+function draftThreadTasks(db: Database.Database, draftId: number, chapterNumber: number): readonly ChapterThreadTask[] {
+  const bindings = db.prepare(`SELECT r.binding_json FROM generation_attempts a JOIN generation_runs r ON r.run_id=a.run_id
+    WHERE json_valid(a.usage_receipt_json) AND json_extract(a.usage_receipt_json,'$.draftCommit.id')=?
+      AND json_extract(a.usage_receipt_json,'$.draftCommit.chapterNumber')=?`).pluck().all(draftId, chapterNumber) as string[]
+  if (bindings.length !== 1) return []
+  const tasks = writtenChapterThreadTasks(bindings[0]!)
+  if (!tasks) console.warn('[narrative-thread] 写稿记录里的线索任务读不出，这份稿的审稿不加线索目标', { draftId })
+  return tasks ?? []
+}
 
 /** Reconstruct only the original author selection, never a newer manuscript or confirmation. */
 export function reviewRevisionRequest(context: ReviewRevisionContext): PrepareReviewRevisionRequest {
@@ -147,8 +162,8 @@ export function captureReviewRevisionContext(db: Database.Database, request: Pre
       writingLanguage: core.writingLanguage, uiLocale: request.uiLocale, authorInputs: structuredClone(request.authorInputs),
       characterStates: stateLines.join('\n') || (core.writingLanguage === 'en-US' ? '(none)' : '（暂无）'),
       worldbuilding: core.worldbuilding, history, blueprints, ...(predecessor ? { predecessor } : {}),
-      frozenGoals: freezeChapterGoals(source.chapterNumber, currentBlueprint?.keyEvents,
-        [core.worldSetting, ...authorCards.map(card => card.notes)]),
+      frozenGoals: withChapterThreadGoals(freezeChapterGoals(source.chapterNumber, currentBlueprint?.keyEvents,
+        [core.worldSetting, ...authorCards.map(card => card.notes)]), draftThreadTasks(db, source.id, source.chapterNumber), core.writingLanguage),
       preflightFindings: currentBlueprint ? findBlueprintContinuityRisks(history.flatMap(item => item.projection ? [item.projection] : []), currentBlueprint, ConsistencyExemptionRepository.list(db)) : [],
       ...(confirmation ? { confirmation } : {}), ...(recheck ? { recheck } : {}) }
   })()

@@ -971,3 +971,95 @@ describe('作者原稿反推的建议', () => {
     expect(host!.querySelector('[aria-label="反推建议"]')).toBeNull()
   })
 })
+
+describe('运行侧页的规划恢复稿（#608）', () => {
+  const at = (hour: number) => new Date(2026, 10, 7, hour, 32).getTime()
+  const planning = (runId: string, from: number, to: number, hour: number) => ({
+    handle: { projectId: session.projectId, epoch: session.leaseId, rootActionId: `根${runId}`, runId }, operation: 'chapter-blueprint-directory',
+    blueprintRecovery: { writeState: 'ready' }, planningDraft: { requestedRange: { from, to }, createdAtMs: at(hour), standing: 'open' },
+    planningContinuation: { state: 'ready', remainingRange: { from: to, to } },
+  })
+  const dismissed = () => invoke.mock.calls.filter(([channel]) => channel === 'generation:dismiss-planning-recovery')
+    .map(([, ...args]) => (args.find(arg => typeof arg === 'object' && arg !== null && 'handle' in arg) as { handle: { runId: string } }).handle.runId)
+  let listed: ReturnType<typeof planning>[]
+  beforeEach(() => {
+    listed = [planning('最早', 15, 16, 9), planning('另一段', 13, 14, 8), planning('最新', 15, 16, 11)]
+    const fallback = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'generation:list-recovery') return { planning: listed, editors: [], reviews: [], drafts: [], batches: [], partial: false }
+      if (channel === 'generation:dismiss-planning-recovery') {
+        const runId = (args.find(arg => typeof arg === 'object' && arg !== null && 'handle' in arg) as { handle: { runId: string } }).handle.runId
+        listed = listed.filter(item => item.handle.runId !== runId)
+        return undefined
+      }
+      return fallback(channel, ...args)
+    })
+  })
+  const cards = () => [...host!.querySelectorAll('.run-recovery > .run-card')]
+    .map(card => [card.querySelector('.run-card-title')?.textContent, card.querySelector('.run-card-heading .run-card-meta')?.textContent])
+
+  it('每张卡写明生成范围、缺的章与生成时间；同一范围只突出最新一份，更早的折叠为「更早的 N 份」', async () => {
+    await render()
+    await vi.waitFor(() => expect(cards()).toEqual([
+      ['蓝图恢复稿 · 第 15–16 章', '缺第 16 章 · 11月7日 11:32 生成'],
+      ['蓝图恢复稿 · 第 13–14 章', '缺第 14 章 · 11月7日 08:32 生成'],
+    ]))
+    const earlier = host!.querySelector<HTMLDetailsElement>('.run-earlier')!
+    expect(earlier.open).toBe(false)
+    expect(earlier.querySelector('summary')?.textContent).toBe('更早的 1 份')
+    expect(earlier.querySelector('.run-card-meta')?.textContent).toBe('缺第 16 章 · 11月7日 09:32 生成')
+  })
+
+  it('放弃要就地确认、只说正式内容不受影响；选「保留」不调用主进程，确认后这份不再列出，更早的一份顶上来', async () => {
+    await render()
+    await vi.waitFor(() => expect(cards()).toHaveLength(2))
+    const firstCard = () => host!.querySelector('.run-recovery > .run-card')!
+    const dismiss = () => [...firstCard().querySelector('.run-card-buttons')!.querySelectorAll('button')].find(item => item.textContent === '放弃…')!
+    await act(async () => dismiss().click())
+    expect(firstCard().querySelector('[role="group"]')?.textContent).toContain('正式内容不受影响；放弃后这份恢复稿不再列出。')
+    await click('保留')
+    expect(dismissed()).toEqual([])
+
+    await act(async () => dismiss().click())
+    await click('放弃')
+    await vi.waitFor(() => expect(cards()).toEqual([
+      ['蓝图恢复稿 · 第 15–16 章', '缺第 16 章 · 11月7日 09:32 生成'],
+      ['蓝图恢复稿 · 第 13–14 章', '缺第 14 章 · 11月7日 08:32 生成'],
+    ]))
+    expect(dismissed()).toEqual(['最新'])
+    expect(host!.querySelector('.run-earlier')).toBeNull()
+  })
+
+  it('有生成正在进行时卡片不给放弃', async () => {
+    listed = [{ ...planning('进行中', 1, 2, 9), planningContinuation: { state: 'in-flight', remainingRange: { from: 2, to: 2 } } }]
+    await render()
+    await vi.waitFor(() => expect(cards()).toHaveLength(1))
+    expect(button('编辑恢复稿')).toBeTruthy()
+    expect(button('放弃…')).toBeUndefined()
+  })
+
+  it('确认放弃时另一张卡正在打开恢复稿：确认条留着，打开结束后再点「放弃」才放弃', async () => {
+    let opened: (() => void) | undefined
+    const fallback = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'generation:read-context') {
+        await new Promise<void>(resolve => { opened = resolve })
+        return listed[1]
+      }
+      return fallback(channel, ...args)
+    })
+    await render()
+    await vi.waitFor(() => expect(cards()).toHaveLength(2))
+    const card = (index: number) => host!.querySelectorAll('.run-recovery > .run-card')[index]!
+    const inCard = (index: number, name: string) => [...card(index).querySelectorAll<HTMLButtonElement>('.run-card-buttons button')].find(item => item.textContent === name)!
+    await act(async () => inCard(0, '放弃…').click())
+    await act(async () => inCard(1, '编辑恢复稿').click())
+    await act(async () => inCard(0, '放弃').click())
+    expect(card(0).querySelector('[role="group"]')?.textContent).toContain('正式内容不受影响；放弃后这份恢复稿不再列出。')
+    expect(dismissed()).toEqual([])
+
+    await act(async () => opened!())
+    await act(async () => inCard(0, '放弃').click())
+    await vi.waitFor(() => expect(dismissed()).toEqual(['最新']))
+  })
+})

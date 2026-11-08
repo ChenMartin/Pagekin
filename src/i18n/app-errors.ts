@@ -46,6 +46,8 @@ const ERROR_KEYS = {
   PROJECT_DELETE_FAILED: 'error.projectDeleteFailed',
   PROJECT_RECENT_LIST_UPDATE_FAILED: 'error.projectRecentListUpdateFailed',
   PROJECT_ARCHIVE_TARGET_EXISTS: 'error.projectArchiveTargetExists',
+  // 导出或云备份时有一列登记为脱敏投影却没有投影办法（#611），整次打包中止，作品不动。
+  PORTABLE_UNSAFE_PROJECTION: 'error.portableUnsafeProjection',
   // 选择文件或文件夹后授权已过期、用尽或被撤销（例如选完很久才确认）。
   EXTERNAL_FILE_GRANT_NOT_FOUND: 'error.externalFileGrantExpired',
   EXTERNAL_FILE_GRANT_EXPIRED: 'error.externalFileGrantExpired',
@@ -129,6 +131,7 @@ const ERROR_KEYS = {
   GENERATION_IMPORT_PREVIOUS_ATTEMPT_INCOMPLETE: 'error.importPreviousAttemptIncomplete',
   GENERATION_WORKFLOW_SESSION_BUSY: 'error.generationBusy',
   GENERATION_PLOT_OUTLINE_AUTHOR_IN_FLIGHT: 'error.generationBusy',
+  GENERATION_PLANNING_RECOVERY_IN_FLIGHT: 'error.generationBusy',
   GENERATION_KNOWLEDGE_BUSY: 'error.generationKnowledgeBusy',
   GENERATION_AUTHOR_INPUT_TOO_LARGE: 'error.generationInputTooLarge',
   GENERATION_IMPORT_CONTEXT_LIMIT: 'error.generationInputTooLarge',

@@ -87,9 +87,21 @@ function importReply(prompt) {
   return null
 }
 
-function responseFor(prompt, { extraction, plotTree, review, characterState, importInference }) {
+/** 按提示里的章范围回齐全蓝图；关闭时回正文，使解析失败、留下蓝图恢复稿。 */
+function directoryReply(prompt) {
+  const range = /为接下来的 第(\d+)章到第(\d+)章/u.exec(prompt)
+  if (!range) return null
+  const [from, to] = [Number(range[1]), Number(range[2])]
+  return { kind: 'directory-blueprints', content: JSON.stringify({ blueprints: Array.from({ length: to - from + 1 }, (_, index) => from + index).map(chapterNumber => ({
+    chapterNumber, title: `雾港第${chapterNumber}夜`, role: '发展', purpose: '推进灯塔线索', keyEvents: '林岚沿着潮汐表继续追查沉船的来历',
+    characters: ['林岚'], relationships: [], suspenseHook: '雾钟又在深夜响起' })) }) }
+}
+
+function responseFor(prompt, { extraction, plotTree, review, characterState, importInference, directoryBlueprints }) {
   const imported = importInference ? importReply(prompt) : null
   if (imported) return imported
+  const directory = directoryBlueprints ? directoryReply(prompt) : null
+  if (directory) return directory
   if (prompt.includes('不可变小说配置 JSON 合同') || prompt.includes('Immutable novel-configuration JSON contract')) {
     return { kind: 'config', content: JSON.stringify(FIXTURE_CONFIG) }
   }
@@ -135,6 +147,7 @@ export async function startFakeModel(diagnostics) {
   let characterState = null
   let keylessEmbeddings = false
   let importInference = false
+  let directoryBlueprints = false
   let contextLengthRejection = null
   /** 每次被接受的嵌入请求带的 Authorization 头（没有时为 null），场景据此确认本机检索模型真的没带 Key。 */
   const embeddingAuthorizations = []
@@ -174,6 +187,7 @@ export async function startFakeModel(diagnostics) {
   const acceptKeylessEmbeddings = (accepted = true) => { keylessEmbeddings = accepted }
   /** 之后的参考小说导入：全局推演回一份合法 JSON（三张角色卡），分批蓝图推演按本批章号回齐全的蓝图。 */
   const replyImport = () => { importInference = true }
+  const replyDirectoryBlueprints = (on = true) => { directoryBlueprints = on }
   const rejectContextLength = (rejected = true) => {
     if (!rejected) { contextLengthRejection = null; return }
     const sample = new URL('../../electron/llm/__tests__/provider-context-length-samples.json', import.meta.url)
@@ -196,7 +210,7 @@ export async function startFakeModel(diagnostics) {
       const body = JSON.parse(Buffer.concat(await Array.fromAsync(request)).toString('utf8'))
       await pass()
       const prompt = [body.system ?? '', ...(body.messages ?? []).map(message => message.content)].join('\n')
-      const { kind, content } = responseFor(prompt, { extraction, plotTree, review, characterState, importInference })
+      const { kind, content } = responseFor(prompt, { extraction, plotTree, review, characterState, importInference, directoryBlueprints })
       chats.push({ kind, model: body.model, messages: body.messages, protocol: 'anthropic',
         anthropicVersion: request.headers['anthropic-version'] ?? null, system: body.system ?? null, maxTokens: body.max_tokens, stream: body.stream === true })
       record(kind, `anthropic ${prompt.slice(0, 100).replace(/\s+/g, ' ')}`)
@@ -239,7 +253,7 @@ export async function startFakeModel(diagnostics) {
       return
     }
     const prompt = (body.messages ?? []).map(message => typeof message.content === 'string' ? message.content : JSON.stringify(message.content)).join('\n')
-    const reply = responseFor(prompt, { extraction, plotTree, review, characterState, importInference })
+    const reply = responseFor(prompt, { extraction, plotTree, review, characterState, importInference, directoryBlueprints })
     const { kind } = reply
     const content = kind === 'character-state' && brokenCharacterState ? '角色状态暂时无法整理。' : reply.content
     chats.push({ kind, model: body.model, messages: body.messages })
@@ -267,6 +281,6 @@ export async function startFakeModel(diagnostics) {
   })
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve) })
   server.unref()
-  return { port: server.address().port, requests, chats, gate, streamProse, streamLog, replyCharacterCards, breakCharacterState, dropCharacterState, replyPlotTree, failProse, replyReview, replyCharacterState, acceptKeylessEmbeddings, replyImport, rejectContextLength, embeddingAuthorizations,
+  return { port: server.address().port, requests, chats, gate, streamProse, streamLog, replyCharacterCards, breakCharacterState, dropCharacterState, replyPlotTree, failProse, replyReview, replyCharacterState, acceptKeylessEmbeddings, replyImport, replyDirectoryBlueprints, rejectContextLength, embeddingAuthorizations,
     close: () => new Promise(resolve => { server.closeAllConnections(); server.close(() => resolve()) }) }
 }

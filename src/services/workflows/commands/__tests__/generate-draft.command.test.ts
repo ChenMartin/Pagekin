@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createHash } from 'node:crypto'
 
+import type { ChapterInfo } from '../../chapter-workflow'
 import { useProjectStore } from '../../../../stores/project-store'
 import { useLLMStore } from '../../../../stores/llm-store'
 import { useEditorStore } from '../../../../stores/editor-store'
@@ -397,6 +398,7 @@ describe('GenerateDraftCommand generation runtime boundary', () => {
     writingLanguage?: 'zh-CN' | 'en-US'
     uiLocale?: 'zh-CN' | 'en-US'
     chapterNumber?: number
+    threadTasks?: unknown[]
     characters?: string[]
     characterAliases?: Array<{ name: string; characterId: string }>
     continuity?: Array<{
@@ -620,6 +622,7 @@ describe('GenerateDraftCommand generation runtime boundary', () => {
       wordsTarget: options.wordsTarget,
       userGuidance: options.userGuidance,
       knowledgeQueryHint: options.knowledgeQueryHint,
+      ...(options.threadTasks ? { threadTasks: options.threadTasks as ChapterInfo['threadTasks'] } : {}),
     }, {
       ...(options.mainDefault ? {} : { dependencies: { createRuntime: options.runtime.createRuntime } }),
       resumeHandle: options.resumeHandle,
@@ -3507,9 +3510,181 @@ ${headingPrefix}第3章：潮门
     await command.execute({ step: {}, context, callbacks })
 
     const prompt = observedTask?.messages.find(message => message.role === 'user')?.content ?? ''
-    expect(prompt).not.toContain('青铜钥匙')
+    expect(prompt).not.toContain('【当前相关活跃叙事线索】')
+    expect(promptLine(prompt, '青铜钥匙')).toBe('')
+    expect(prompt).toContain('- 本章推进或回收：青铜钥匙（已逾期 3 章；作者意图：青铜钥匙要有交代。）')
     expect(callbacks.log).not.toHaveBeenCalledWith(expect.stringContaining('已加载相关活跃叙事线索'))
     expect(callbacks.log).toHaveBeenCalledWith(expect.stringContaining('相关活跃叙事线索（1 条）被可选材料预算省掉'))
+  })
+
+  it('lists at most six due or overdue threads as hard tasks, longest overdue first, and skips a broken range', async () => {
+    let observedTask: GenerationTask | undefined
+    const runtime = fakeRuntime((_attempt, task) => {
+      observedTask = task
+      return outcome('新章正文。'.repeat(125), 'stop')
+    })
+    const { context, callbacks, command } = setup({
+      runtime,
+      chapterNumber: 6,
+      wordsTarget: 500,
+      previousFinalizedContent: '第五章定稿原文。',
+      narrativeThreads: [
+        threadView(1, '坏区间', 5, 3),
+        threadView(2, '雨夜来信', 4, 6),
+        threadView(3, '区间线索', 5, 9),
+        ...Array.from({ length: 7 }, (_, index) => threadView(4 + index, `逾期线索${index + 1}`, 1, 5 - (index % 5))),
+      ],
+    })
+
+    await command.execute({ step: {}, context, callbacks })
+
+    const prompt = observedTask?.messages.find(message => message.role === 'user')?.content ?? ''
+    const tasks = prompt.split('\n').filter(line => line.startsWith('- 本章推进或回收：'))
+    expect(tasks.map(line => /：(\S+?)（/u.exec(line)?.[1])).toEqual(['逾期线索5', '逾期线索4', '逾期线索3', '逾期线索2', '逾期线索7', '逾期线索1'])
+    expect(tasks[0]).toContain('已逾期 5 章')
+    expect(prompt).not.toContain('本章推进或回收：坏区间')
+    expect(prompt).not.toContain('本章推进或回收：区间线索')
+    expect(prompt).not.toContain('本章推进或回收：雨夜来信')
+    expect(callbacks.log).toHaveBeenCalledWith(expect.stringContaining('本章硬任务线索 6 条；另有 2 条到期或逾期线索本次未列入'))
+  })
+
+  it('writes no thread task when no thread is due or overdue', async () => {
+    let observedTask: GenerationTask | undefined
+    const runtime = fakeRuntime((_attempt, task) => {
+      observedTask = task
+      return outcome('新章正文。'.repeat(125), 'stop')
+    })
+    const { context, callbacks, command } = setup({
+      runtime,
+      chapterNumber: 5,
+      wordsTarget: 500,
+      previousFinalizedContent: '第四章定稿原文。',
+      narrativeThreads: [threadView(1, '区间线索', 3, 8)],
+    })
+
+    await command.execute({ step: {}, context, callbacks })
+
+    const prompt = observedTask?.messages.find(message => message.role === 'user')?.content ?? ''
+    expect(promptLine(prompt, '区间线索')).not.toBe('')
+    expect(prompt).not.toContain('本章推进或回收')
+  })
+
+  it('tells the author when threads cannot be read, so the chapter is written without thread tasks knowingly', async () => {
+    let observedTask: GenerationTask | undefined
+    const runtime = fakeRuntime((_attempt, task) => {
+      observedTask = task
+      return outcome('新章正文。'.repeat(125), 'stop')
+    })
+    const f = setup({ runtime, chapterNumber: 5, wordsTarget: 500, previousFinalizedContent: '第四章定稿原文。',
+      narrativeThreads: [threadView(1, '青铜钥匙', 1, 2)] })
+    const original = f.invoke.getMockImplementation()!
+    f.invoke.mockImplementation(async (channel, ...args) => {
+      if (channel === 'db:narrative-thread-list-relevant') throw new Error('SQLITE_BUSY')
+      return original(channel, ...args)
+    })
+
+    await f.command.execute({ step: {}, context: f.context, callbacks: f.callbacks })
+
+    const prompt = observedTask?.messages.find(message => message.role === 'user')?.content ?? ''
+    expect(prompt).not.toContain('本章推进或回收')
+    expect(f.callbacks.log).toHaveBeenCalledWith(expect.stringContaining('伏笔线索没能读取'))
+  })
+
+  describe('冻结的线索硬任务在主进程开跑与恢复之间不变', () => {
+    const frozenTask = { planId: 1, title: '青铜钥匙', authorIntent: '青铜钥匙要有交代。', schedule: { kind: 'due' } }
+    const chapterInfoText = (threadTasks?: unknown[]) => JSON.stringify({ chapterNumber: 1, title: '第一章', role: '开端',
+      purpose: '建立冲突', characters: [], keyEvents: '开端', ...(threadTasks ? { threadTasks } : {}) })
+    const hash = (value: string) => createHash('sha256').update(value).digest('hex')
+    const sentChapterInfos = (invoke: ReturnType<typeof vi.fn>) => invoke.mock.calls.flatMap(([, ...args]) => args.flatMap(arg => {
+      const inputs = (arg as { authorInputs?: Array<{ id: string; text: string }> } | null)?.authorInputs
+      return inputs?.filter(input => input.id === 'draft:chapter-info').map(input => input.text) ?? []
+    }))
+
+    it('新开写把到期线索冻结进 draft:chapter-info，准备上下文与开跑请求逐字一致', async () => {
+      const f = setup({ runtime: fakeOutcomes(), wordsTarget: 900, mainDefault: true, narrativeThreads: [threadView(1, '青铜钥匙', 1, 1)] })
+      f.context.generationModelId = '合成模型'
+      const original = f.invoke.getMockImplementation()!
+      f.invoke.mockImplementation(async (channel, ...args) => {
+        if (channel === 'generation:begin') throw new Error('STOP_AFTER_BEGIN')
+        return original(channel, ...args)
+      })
+      await expect(f.command.execute({ step: {}, context: f.context, callbacks: f.callbacks })).rejects.toThrow('STOP_AFTER_BEGIN')
+      const sent = sentChapterInfos(f.invoke)
+      expect(sent.length).toBeGreaterThanOrEqual(2)
+      expect(new Set(sent)).toEqual(new Set([chapterInfoText([frozenTask])]))
+      expect(f.callbacks.log).toHaveBeenCalledWith(expect.stringContaining('本章硬任务线索 1 条'))
+    })
+
+    function resumeFixture(recordedTasks: unknown[] | undefined, currentThreads: NarrativeThreadView[]) {
+      const handle: MainGenerationRunHandle = { projectId: 'generation-runtime', epoch: 'lease-generation-runtime', rootActionId: '原根', runId: '原正文' }
+      // 从恢复入口进来时，章节信息就是记录里的 JSON 原样展开，格式坏的任务也在里面。
+      const f = setup({ runtime: fakeOutcomes(), mainDefault: true, resumeHandle: handle, wordsTarget: 900, narrativeThreads: currentThreads,
+        threadTasks: recordedTasks })
+      f.context.generationModelId = '合成模型'
+      const seed = '潮'.repeat(500)
+      const addition = `${'灯'.repeat(500)}。`
+      const expected = composeDraftVisibleContinuation(seed, addition, DRAFT_VISIBLE_TEXT_VERSION)
+      const view: MainGenerationRunView = { handle, status: 'running', nonReplayable: false, artifacts: [],
+        budget: { maxAttempts: 32, maxRequestedOutputTokens: 2000000, maxRequestedOutputTokensPerAttempt: 32768, deadlineAt: Date.now() + 3600000 } }
+      const continuationPrompts: string[] = []
+      const original = f.invoke.getMockImplementation()!
+      f.invoke.mockImplementation(async (channel, ...args) => {
+        if (channel === 'generation:read') return view
+        if (channel === 'generation:read-context') return { draftSave: { kind: 'absent' }, handle, operation: 'chapter-draft', chapterNumber: 1,
+          authorInputs: [
+            { id: 'draft:chapter-info', text: chapterInfoText(recordedTasks) },
+            { id: 'draft:author-config', text: JSON.stringify(useProjectStore.getState().currentProject!.novelConfig) },
+            { id: 'draft:target-units', text: '900' },
+          ], selectedDraftIds: [], selectedFinalizedDraftIds: [], selectedBlueprintChapterNumbers: [1, 2, 3, 4, 5, 6],
+          knowledgeSnapshot: { version: 1, state: 'empty', storageState: 'absent', query: '第一章 开端', topK: 5, canonicalRevision: null, documentsRevision: null, items: [] },
+          composition: { algorithm: DRAFT_VISIBLE_TEXT_VERSION, text: seed, textHash: hash(seed), artifactIds: ['原片'], sources: [] },
+          lastCompositionFinishReason: 'length', attemptedPurposes: ['chapter-draft'] }
+        if (channel === 'generation:execute') {
+          const task = (args[0] as { task: GenerationTask }).task
+          expect(task.purpose).toBe('chapter-draft-continuation')
+          continuationPrompts.push(task.messages.map(message => message.content).join('\n'))
+          const result = outcome(addition, 'stop')
+          result.receipt.visibleArtifact = { artifactId: '续片', attemptId: '续请求', revision: 1, textHash: hash(addition) }
+          return { outcome: result, run: view }
+        }
+        if (channel === 'generation:compose-visible')
+          return { algorithm: DRAFT_VISIBLE_TEXT_VERSION, artifactIds: ['原片', '续片'], text: expected, textHash: hash(expected), sources: [] }
+        if (channel === 'generation:commit-draft') return { success: true, id: 18, version: 1, content: expected, contentHash: hash(expected) }
+        return original(channel, ...args)
+      })
+      return { f, expected, continuationPrompts }
+    }
+
+    it('恢复时沿用记录里的冻结任务；开写后线索已被标为回收，续写仍按冻结任务', async () => {
+      const { f, expected, continuationPrompts } = resumeFixture([frozenTask], [])
+      await expect(f.command.execute({ step: {}, context: f.context, callbacks: f.callbacks })).resolves.toBe(expected)
+      expect(continuationPrompts).toHaveLength(1)
+      expect(continuationPrompts[0]).toContain('- 本章推进或回收：青铜钥匙（本章到期；作者意图：青铜钥匙要有交代。）')
+    })
+
+    it('恢复时线索块与开写时一样列出冻结任务的线索，续写提示不因冻结而变形', async () => {
+      const { f, expected, continuationPrompts } = resumeFixture([frozenTask],
+        [threadView(1, '青铜钥匙', 1, 1), threadView(2, '雨夜来信', 1, 1)])
+      await expect(f.command.execute({ step: {}, context: f.context, callbacks: f.callbacks })).resolves.toBe(expected)
+      expect(continuationPrompts).toHaveLength(1)
+      expect(continuationPrompts[0]).toContain('- 本章推进或回收：青铜钥匙（本章到期；作者意图：青铜钥匙要有交代。）')
+      expect(promptLine(continuationPrompts[0]!, '青铜钥匙')).not.toBe('')
+      expect(promptLine(continuationPrompts[0]!, '雨夜来信')).not.toBe('')
+    })
+
+    it('记录里的任务格式坏了就拒绝续写，不带着坏数据发请求', async () => {
+      const { f, continuationPrompts } = resumeFixture([{ planId: 1, title: '青铜钥匙', authorIntent: '交代。', schedule: { kind: 'later' } }], [])
+      await expect(f.command.execute({ step: {}, context: f.context, callbacks: f.callbacks }))
+        .rejects.toThrow('GENERATION_DRAFT_RECOVERY_AUTHOR_INPUT_CHANGED')
+      expect(continuationPrompts).toHaveLength(0)
+    })
+
+    it('旧记录没有冻结任务时照常恢复，不按现在的计划补任务', async () => {
+      const { f, expected, continuationPrompts } = resumeFixture(undefined, [threadView(1, '青铜钥匙', 1, 1)])
+      await expect(f.command.execute({ step: {}, context: f.context, callbacks: f.callbacks })).resolves.toBe(expected)
+      expect(continuationPrompts).toHaveLength(1)
+      expect(continuationPrompts[0]).not.toContain('本章推进或回收')
+    })
   })
 
   it('previews only authored text before completion and reconciles to the persisted terminal draft', async () => {

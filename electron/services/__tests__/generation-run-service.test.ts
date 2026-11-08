@@ -295,3 +295,33 @@ it('never persists stop completion for a prefix whose terminal flush failed, inc
         const reopened=new GenerationRunRepository(()=>db),receipt=reopened.receipt(result.attempt.attemptId);expect(receipt.result?.finishReason).toBe('error');expect(receipt.budget.blockedCode).toBe('GENERATION_STORAGE_FAILED');expect(receipt.artifact?.text).toBe('');
     } finally {if(db.open)db.close();fs.rmSync(root,{recursive:true,force:true})}
 });
+describe('运行上的记账跟着运行走（#608）', () => {
+    const marked = (manifest: Record<string, unknown> = {}) => {
+        const f = fixture(), run = f.repository.open({ ...f.open, sourceManifest: { ...f.open.sourceManifest, ...manifest } });
+        f.repository.recordPlanningDismissal(run.runId);
+        f.db.transaction(() => f.repository.recordPlotOutlineCommitWithinTransaction(run.runId)).immediate();
+        return { ...f, run };
+    };
+    it.each<[string, (f: ReturnType<typeof marked>) => void, Record<string, unknown>?]>([
+        ['重开后接着生成', f => { f.repository.pause(f.run.rootActionId); f.repository.resume(f.run.runId, { ...f.run.binding, epoch: 'epoch-2' }); }],
+        ['开跑前换绑素材决定', f => { f.repository.replaceUnstartedBinding(f.run.runId, f.run.binding, { ...f.run.binding, contextSnapshotId: 'context-2' }); }],
+        ['再记一次放弃与大纲已提交', f => { f.repository.recordPlanningDismissal(f.run.runId); f.db.transaction(() => f.repository.recordPlotOutlineCommitWithinTransaction(f.run.runId)).immediate(); }],
+        ['清空蓝图时退役目录恢复', f => { f.db.transaction(() => f.repository.retireBlueprintRecoveryWithinTransaction()).immediate(); }, { operation: 'chapter-blueprint-directory' }],
+        ['记下接着规划的下一次运行', f => {
+            const next = f.repository.open({ ...f.open, uiActionNonce: 'next' }), handle = (run: typeof next) => ({ projectId: 'project', epoch: 'epoch', rootActionId: run.rootActionId, runId: run.runId });
+            f.db.transaction(() => f.repository.recordPlanningContinuation({ kind: 'planning-continuation', sourceHandle: handle(f.run), nextHandle: handle(next), requestHash: textHash('next') })).immediate();
+        }],
+    ])('%s之后，放弃与大纲已提交都还在，读出的绑定不带它们', (_case, write, manifest) => {
+        const f = marked(manifest);
+        write(f);
+        expect(f.repository.planningDismissed(f.run.runId)).toBe(true);
+        expect(f.repository.plotOutlineCommitted(f.run.runId)).toBe(true);
+        expect(Object.keys(f.repository.get(f.run.runId).binding).filter(key => key.startsWith('$'))).toEqual([]);
+    });
+    it('接着生成换上的是新的冻结绑定', () => {
+        const f = marked();
+        f.repository.pause(f.run.rootActionId);
+        f.repository.resume(f.run.runId, { ...f.run.binding, epoch: 'epoch-2' });
+        expect(f.repository.get(f.run.runId)).toMatchObject({ status: 'running', binding: { ...f.run.binding, epoch: 'epoch-2' } });
+    });
+});

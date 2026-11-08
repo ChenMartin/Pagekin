@@ -167,3 +167,65 @@ it('accepts a same-hash predecessor whose final was later replaced', () => {
  f.db.prepare('UPDATE drafts_all SET source_dependencies=? WHERE id=1').run(JSON.stringify([{kind:'candidate',draftId:2,contentHash:textHash('前驱正文')}]))
  expect(f.capture().predecessor?.content).toBe('前驱正文')
 })
+
+describe('写稿时冻结的线索任务进本章审稿目标', () => {
+  const task = { planId: 4, title: '青铜钥匙', authorIntent: '交代钥匙来历。', schedule: { kind: 'overdue', chaptersOverdue: 1 } }
+  function writtenBy(db: import('better-sqlite3').Database, chapterInfo: Record<string, unknown>, draftId = 1, chapterNumber = 2) {
+    db.prepare('INSERT INTO generation_roots(root_action_id,idempotency_key,action_json,budget_json) VALUES(?,?,?,?)')
+      .run(`根-${draftId}`, `幂等-${draftId}`, '{}', '{}')
+    db.prepare('INSERT INTO generation_runs(run_id,root_action_id,binding_json,status,created_at_ms,open_key) VALUES(?,?,?,?,?,?)')
+      .run(`写稿-${draftId}`, `根-${draftId}`, JSON.stringify({ projectId: PROJECT_ID, epoch: '租约', sourceManifest: { operation: 'chapter-draft',
+        authorInputs: [{ id: 'draft:chapter-info', text: JSON.stringify(chapterInfo) }, { id: 'draft:target-units', text: '900' }] } }),
+      'completed', 1, `开启-${draftId}`)
+    db.prepare('INSERT INTO generation_attempts(attempt_id,reservation_id,run_id,root_action_id,attempt_json,usage_receipt_json,invocation_nonce) VALUES(?,?,?,?,?,?,?)')
+      .run(`请求-${draftId}`, `预留-${draftId}`, `写稿-${draftId}`, `根-${draftId}`, '{}',
+        JSON.stringify({ purpose: 'chapter-draft', draftCommit: { success: true, id: draftId, version: 1, content: '原稿', contentHash: textHash('原稿'), chapterNumber } }), `随机-${draftId}`)
+  }
+
+  it('从写出这份草稿的运行记录读冻结任务，覆盖率不因线索目标改变', () => {
+    const f = fixture()
+    f.db.prepare('INSERT INTO blueprints(chapter_number,title,key_events) VALUES(2,?,?)').run('第二章', '')
+    writtenBy(f.db, { chapterNumber: 2, title: '第二章', threadTasks: [task] })
+    const goals = f.capture().frozenGoals
+    expect(goals.coverage).toBe('not_configured')
+    expect(goals.items).toEqual([{ id: 'ch2:thread:4', text: expect.stringContaining('青铜钥匙') }])
+  })
+
+  it('开写后作者改了线索计划或标为已回收，审稿目标仍按冻结值', () => {
+    const f = fixture()
+    writtenBy(f.db, { chapterNumber: 2, title: '第二章', threadTasks: [task] })
+    const before = f.capture().frozenGoals
+    f.db.prepare('INSERT INTO narrative_thread_plans(id,title,type,target_start_chapter,target_end_chapter,author_intent) VALUES(?,?,?,?,?,?)')
+      .run(4, '改名后的钥匙', '伏笔', 5, 9, '改了意图')
+    expect(f.capture().frozenGoals).toEqual(before)
+  })
+
+  it('旧草稿没有冻结任务或找不到写稿记录时，照旧只核对作者目标', () => {
+    const f = fixture()
+    f.db.prepare('INSERT INTO blueprints(chapter_number,title,key_events) VALUES(2,?,?)').run('第二章', '')
+    expect(f.capture().frozenGoals).toEqual({ chapterNumber: 2, coverage: 'not_configured', items: [] })
+    writtenBy(f.db, { chapterNumber: 2, title: '第二章' })
+    expect(f.capture().frozenGoals.items).toEqual([])
+  })
+
+  it('写稿记录里的线索任务段写坏，审稿照常、不加线索目标，并记一行日志', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const f = fixture()
+      writtenBy(f.db, { chapterNumber: 2, title: '第二章', threadTasks: [{ ...task, planId: '坏' }] })
+      expect(f.capture().frozenGoals.items).toEqual([])
+      expect(warn).toHaveBeenCalledTimes(1)
+    } finally { warn.mockRestore() }
+  })
+
+  it('写稿记录里有本章信息这一项但内容不是文本，按写坏处理并记一行日志', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const f = fixture()
+      writtenBy(f.db, { chapterNumber: 2, title: '第二章', threadTasks: [task] })
+      f.db.exec("UPDATE generation_runs SET binding_json=json_set(binding_json,'$.sourceManifest.authorInputs[0].text',5)")
+      expect(f.capture().frozenGoals.items).toEqual([])
+      expect(warn).toHaveBeenCalledTimes(1)
+    } finally { warn.mockRestore() }
+  })
+})

@@ -12,6 +12,7 @@ export interface ProjectSqliteEvidence {
   preIdentityDomain?: { tableCounts: Record<string, number>; authorContentHash: string }
   preAssetDomain?: { tableCounts: Record<string, number>; authorContentHash: string }
   preRecycleDomain?: { tableCounts: Record<string, number>; authorContentHash: string }
+  preContinuityDomain?: { tableCounts: Record<string, number>; authorContentHash: string }
 }
 export interface ProjectAssetSourceEntry {
   readonly relativePath: string
@@ -271,7 +272,8 @@ export async function migrateProjectFormat<V, A = unknown>(options: {
       const targetSchema = await deps.backupSqlite(path.join(source, 'vela.db'), path.join(staging, deps.databaseName))
       if (targetSchema.schemaVersion !== CURRENT_DESKTOP_SCHEMA_VERSION || !isDeepStrictEqual(
         journal.sourceSchema.schemaVersion < 3 ? targetSchema.preIdentityDomain
-          : journal.sourceSchema.schemaVersion < 8 ? targetSchema.preRecycleDomain : targetSchema.domain,
+          : journal.sourceSchema.schemaVersion < 8 ? targetSchema.preRecycleDomain
+            : journal.sourceSchema.schemaVersion < 9 ? targetSchema.preContinuityDomain : targetSchema.domain,
         journal.sourceSchema.domain,
       )) fail('PROJECT_MIGRATION_SQLITE_CONTENT_CHANGED')
       checkpoint('sqlite-backed-up')

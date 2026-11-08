@@ -1,10 +1,11 @@
+import { ChevronRight } from 'lucide-react'
 import { useId, useRef, useState, type ReactNode } from 'react'
 import { countDraftUnits } from '../../../shared/draft-units'
 import { useLocaleStore } from '../../../stores/locale-store'
 import GenerationBudgetDiagnostics from '../../panels/GenerationBudgetDiagnostics'
 import { useProjectStore } from '../../../stores/project-store'
 import type { WorkflowRun } from '../../../stores/workflow-store'
-import { canResumeDraft, isInFlight, type CandidateEntry, type DraftEntry, type RecoveryEntry } from '../../run/run-recovery'
+import { canResumeDraft, isInFlight, type CandidateEntry, type DraftEntry, type PlanningEntry, type RecoveryEntry } from '../../run/run-recovery'
 import type { RunRecovery } from '../../run/use-run-recovery'
 import { Button } from '../../ui/Button'
 import { Check } from '../../ui/Check'
@@ -35,10 +36,7 @@ function RecoveryCard({ entry, recovery, text }: { entry: RecoveryEntry; recover
     case 'candidate':
       return <CandidateCard entry={entry} recovery={recovery} text={text} />
     case 'planning':
-      return (
-        <RecoveryShell title={entry.title} text={text} notes={[entry.note]}
-          actions={<Button variant="secondary" size="sm" disabled={busy} onClick={() => recovery.openPlanning(entry)}>{entry.actionLabel}</Button>} />
-      )
+      return <PlanningCard entry={entry} recovery={recovery} text={text} />
     case 'editor':
       return (
         <RecoveryShell title={entry.title} text={text} notes={[entry.instructionNote, entry.usage, entry.conflictNote]}
@@ -73,14 +71,16 @@ function RecoveryCard({ entry, recovery, text }: { entry: RecoveryEntry; recover
   }
 }
 
-function RecoveryShell({ title, text, saved = false, notes = [], budget, actions, children }: {
+function RecoveryShell({ title, meta, text, saved = false, notes = [], budget, actions, children, after }: {
   title: string
+  meta?: string
   text: Text
   saved?: boolean
   notes?: (string | undefined)[]
   budget?: ReactNode
   actions?: ReactNode
   children?: ReactNode
+  after?: ReactNode
 }) {
   const titleId = useId()
   return (
@@ -88,13 +88,60 @@ function RecoveryShell({ title, text, saved = false, notes = [], budget, actions
       <header className="run-card-heading">
         <p className="run-card-kicker">{saved ? text('已保存', 'Saved') : text('可恢复', 'Recoverable')}</p>
         <h3 id={titleId} className="run-card-title">{title}</h3>
+        {meta && <p className="run-card-meta">{meta}</p>}
       </header>
       {notes.filter(Boolean).map(note => <p key={note} className="run-note">{note}</p>)}
       {children}
       {budget}
       {actions && <div className="run-card-buttons">{actions}</div>}
+      {after}
     </article>
   )
+}
+
+function PlanningCard({ entry, recovery, text }: { entry: PlanningEntry; recovery: RunRecovery; text: Text }) {
+  return (
+    <RecoveryShell title={entry.title} meta={entry.meta} text={text} notes={[entry.note]}
+      actions={<PlanningActions entry={entry} recovery={recovery} />}
+      after={entry.earlier.length > 0 && (
+        <details className="run-earlier">
+          <summary><ChevronRight size={14} aria-hidden />{entry.labels.earlier}</summary>
+          <ul className="run-earlier-list">
+            {entry.earlier.map(item => (
+              <li key={item.key} className="run-earlier-item">
+                <p className="run-card-meta">{item.meta}</p>
+                {item.note !== entry.note && <p className="run-note">{item.note}</p>}
+                <div className="run-card-buttons"><PlanningActions entry={item} recovery={recovery} /></div>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )} />
+  )
+}
+
+/** 放弃只是不再列出：正式内容与候选原文都不动，所以不用危险色。 */
+function PlanningActions({ entry, recovery }: { entry: PlanningEntry; recovery: RunRecovery }) {
+  const [confirming, setConfirming] = useState(false)
+  const dismissButton = useRef<HTMLButtonElement>(null)
+  if (confirming) return (
+    <InlineConfirm
+      message={entry.labels.dismissConfirm}
+      confirmLabel={entry.labels.confirm}
+      cancelLabel={entry.labels.keep}
+      onConfirm={() => {
+        if (recovery.busy) return
+        setConfirming(false)
+        recovery.dismissPlanning(entry)
+      }}
+      onCancel={() => setConfirming(false)}
+      returnFocusRef={dismissButton}
+    />
+  )
+  return <>
+    <Button variant="secondary" size="sm" disabled={recovery.busy} onClick={() => recovery.openPlanning(entry)}>{entry.actionLabel}</Button>
+    {entry.canDismiss && <Button ref={dismissButton} variant="text" size="sm" disabled={recovery.busy} onClick={() => setConfirming(true)}>{entry.labels.dismiss}</Button>}
+  </>
 }
 
 function Excerpt({ text, note, copyLabel, onCopy }: { text: string; note?: string; copyLabel?: string; onCopy?: () => void }) {

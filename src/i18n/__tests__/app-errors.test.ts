@@ -17,6 +17,11 @@ describe('localized application errors', () => {
       .toContain('打开期间作品文件被其他程序改动')
   })
 
+  it('explains an archive that stopped on an unsafe projection instead of showing the raw code', () => {
+    expect(appErrorMessage('zh-CN', { errorCode: 'PORTABLE_UNSAFE_PROJECTION' })).toBe('作品没有改动。有一项数据无法安全打包，存档没有生成。请把这条提示反馈给我们。')
+    expect(displayedErrorMessage('en-US', new Error('PORTABLE_UNSAFE_PROJECTION'))).toContain('Your book is unchanged.')
+  })
+
   it('preserves an unknown error as localized diagnostic text', () => {
     expect(appErrorMessage('en-US', new Error('disk full'))).toBe('Something went wrong: disk full')
   })

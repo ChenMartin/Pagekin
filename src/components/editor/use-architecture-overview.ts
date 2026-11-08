@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { archOutlineSource, readArchCheckpoint } from '../../services/architecture-service'
+import { archOutlineSource, readArchCheckpointWithOutline } from '../../services/architecture-service'
 import { useProjectStore } from '../../stores/project-store'
 import { useWorkflowStore } from '../../stores/workflow-store'
 import { useLocaleStore } from '../../stores/locale-store'
@@ -32,6 +32,7 @@ import type { GenerationRecoveryContext } from '../../shared/generation-owner-co
 import type { ArchitectureConfirmFormOptions } from '../dialogs/use-architecture-confirm-form'
 import { openPlanningRecoveryDraft } from '../../stores/editor-store'
 import { outlineSourceChangedBlocked, planningTitle } from '../run/run-recovery'
+import { planningRecoverable } from '../../shared/planning-recovery'
 import { outlineProgress, type OutlineProgress } from '../../shared/plot-outline-checkpoint'
 import type { PlotOutlineRangeSource } from '../../shared/plot-outline-contract'
 import { displayedErrorMessage } from '../../i18n/app-errors'
@@ -143,7 +144,7 @@ export function useArchitectureOverview(projectKey: string) {
     const outlineSource = archOutlineSource(core, currentProject?.novelConfig)
     const { synopsis: dbSynopsis, totalChapters, writingLanguage } = outlineSource
     try {
-      const partial = await readArchCheckpoint(projectSession)
+      const { checkpoint: partial, outline } = await readArchCheckpointWithOutline(projectSession)
       recoveredWorldBuildingCandidate = partial?.world_building_incomplete === true && typeof partial.world_building_partial_result === 'string'
         ? partial.world_building_partial_result : ''
       recoveredSynopsisCandidate = partial?.synopsis_incomplete === true && typeof partial.synopsis_result === 'string'
@@ -153,14 +154,11 @@ export function useArchitectureOverview(projectKey: string) {
         const handle = architectureRecoveryHandle(partial, kind, projectSession.projectId)
         if (!handle) continue
         try {
-          if (kind === 'synopsis') {
-            const context = await ipc.invokeWithProjectSession(projectSession, 'generation:read-context', { handle }).catch(() => null)
-            if (context?.plotOutlineRecovery) {
-              recoveredPlanning = context
-              recoveredSynopsisCandidate = context.plotOutlineRecovery.draft
-              confirmedSynopsisHandle = handle
-              continue
-            }
+          if (kind === 'synopsis' && outline?.plotOutlineRecovery) {
+            recoveredPlanning = outline
+            recoveredSynopsisCandidate = outline.plotOutlineRecovery.draft
+            confirmedSynopsisHandle = handle
+            continue
           }
           const composition = await ipc.invokeWithProjectSession(projectSession, 'generation:read-visible-composition', handle)
           if (composition?.algorithm !== 'visible-append-v1' || !composition.text) continue
@@ -270,7 +268,10 @@ export function useArchitectureOverview(projectKey: string) {
       loadStatus()
       loadCharacterRosterStatus()
     })
-    return () => { unsub3(); unsub4() }
+    const unsub5 = globalEventBus.on('PLANNING_RECOVERY_CHANGED', ({ projectSession }) => {
+      if (isProjectSessionCurrent(projectSession)) void loadStatus()
+    })
+    return () => { unsub3(); unsub4(); unsub5() }
   }, [currentProject, loadCharacterRosterStatus, loadStatus, projectKey])
 
   /** 打开单个架构文件（arch-file 类型；若 tab 已存在则刷新磁盘内容） */
@@ -435,9 +436,19 @@ export function useArchitectureOverview(projectKey: string) {
 
   /** 情节大纲有可编辑的恢复稿时打开它。 */
   const openRecoveryDraft = () => {
-    if (!planningRecovery) return
     const session = captureProjectSession(currentProject)
-    if (session && isProjectSessionCurrent(session)) openPlanningRecoveryDraft(planningRecovery, projectKey, planningTitle(planningRecovery, useLocaleStore.getState().locale))
+    if (!planningRecovery || !session) return
+    void ipc.invokeWithProjectSession(session, 'generation:read-context', { handle: planningRecovery.handle }).then(fresh => {
+      if (!isProjectSessionCurrent(session)) return
+      if (planningRecoverable(fresh)) openPlanningRecoveryDraft(fresh, projectKey, planningTitle(fresh, useLocaleStore.getState().locale))
+      else void loadStatus()
+    }).catch(async () => {
+      if (!isProjectSessionCurrent(session)) return
+      const [zh, en] = outlineSourceChangedBlocked(planningRecovery) ? ['查看恢复稿', 'View recovery draft'] : ['编辑恢复稿', 'Edit recovery draft']
+      const { toast } = await import('../ui/Toast')
+      toast.error(useLocaleStore.getState().text(`恢复稿还在，但没能打开\n\n读取时出错。请再点一次「${zh}」。`,
+        `The recovery draft is still there but did not open.\n\nReading it failed. Click ${en} again.`))
+    })
   }
 
   return {

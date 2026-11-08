@@ -25,7 +25,7 @@ import { toast } from '../ui/Toast'
 import { globalEventBus, type EventPayloadMap } from '../../shared/event-bus'
 import { shouldRefreshBlueprints } from './blueprint-refresh'
 import { useLocaleStore } from '../../stores/locale-store'
-import { registerEditorExitSaveHandler, useEditorStore } from '../../stores/editor-store'
+import { openPlanningRecoveryDraft, registerEditorExitSaveHandler, useEditorStore } from '../../stores/editor-store'
 import type { GenerationRecoveryContext } from '../../shared/generation-owner-contract'
 import {
   CHAPTER_CARD_TAB_ID,
@@ -91,6 +91,16 @@ export function useChapterBlueprints({
   const currentProject = useProjectStore(s => s.currentProject)
   const [planningRecovery, setPlanningRecovery] = useState<GenerationRecoveryContext | null>(null)
   const latestDirectoryRun = useWorkflowStore(state => state.history.find(run => run.type === 'directory' && run.projectPath === projectKey)?.id)
+  const [recoveryRevision, setRecoveryRevision] = useState(0)
+  useEffect(() => {
+    const offDismiss = globalEventBus.on('PLANNING_RECOVERY_CHANGED', ({ projectSession }) => {
+      if (isCurrentProjectSession(projectSession)) setRecoveryRevision(value => value + 1)
+    })
+    const offBlueprints = globalEventBus.on('REFRESH_RESOURCE', ({ projectSession, resources }) => {
+      if (shouldRefreshBlueprints(resources) && isCurrentProjectSession(projectSession)) setRecoveryRevision(value => value + 1)
+    })
+    return () => { offDismiss(); offBlueprints() }
+  }, [])
   useEffect(() => {
     const session = currentProjectSessionForPath(projectKey)
     if (!session) return
@@ -99,7 +109,21 @@ export function useChapterBlueprints({
       if (current && isCurrentProjectSession(session)) setPlanningRecovery(recovery)
     }).catch(() => {})
     return () => { current = false }
-  }, [projectKey, currentProject?.sessionLease, latestDirectoryRun])
+  }, [projectKey, currentProject?.sessionLease, latestDirectoryRun, recoveryRevision])
+  /** 打开蓝图恢复稿，以点击时主进程的最新判定为准。 */
+  const openPlanningRecovery = useCallback(() => {
+    const session = currentProjectSessionForPath(projectKey)
+    if (!session) return
+    void ipc.invokeWithProjectSession(session, 'generation:find-blueprint-recovery').then(recovery => {
+      if (!isCurrentProjectSession(session)) return
+      setPlanningRecovery(recovery)
+      if (recovery) openPlanningRecoveryDraft(recovery, projectKey, useLocaleStore.getState().text('蓝图恢复稿', 'Blueprint recovery draft'))
+    }).catch(() => {
+      if (!isCurrentProjectSession(session)) return
+      toast.error(useLocaleStore.getState().text('恢复稿还在，但没能打开\n\n读取时出错。请再点一次「编辑恢复稿」。',
+        'The recovery draft is still there but did not open.\n\nReading it failed. Click Edit recovery draft again.'))
+    })
+  }, [projectKey])
   // ✅ action 用 getState() 获取，不订阅 workflow store 高频更新
   const addLog = useWorkflowStore.getState().addLog
   const [blueprints, setBlueprints] = useState<ChapterBlueprint[]>([])
@@ -698,6 +722,7 @@ export function useChapterBlueprints({
     authorityError,
     recoveringLegacyImportedText,
     planningRecovery,
+    openPlanningRecovery,
     reload: loadBlueprints,
     updateField,
     saveOne: handleSaveOne,

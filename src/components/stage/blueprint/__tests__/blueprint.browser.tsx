@@ -14,6 +14,7 @@ import { editorSaveHandler, useEditorStore } from '../../../../stores/editor-sto
 import { useLocaleStore } from '../../../../stores/locale-store'
 import { useStageStore } from '../../../../stores/navigation/stage-store'
 import { useProjectStore } from '../../../../stores/project-store'
+import RunSheet from '../../run/RunSheet'
 import StageBlueprint from '../StageBlueprint'
 
 const writableOverride = vi.hoisted(() => ({ value: null as number[] | null }))
@@ -772,5 +773,148 @@ describe('蓝图阶段', () => {
     await expect.element(page.getByRole('button', { name: '写第 3 章' })).toBeVisible()
     await act(async () => page.getByRole('button', { name: '本次写作选项' }).click())
     await expect.element(page.getByRole('dialog', { name: '本次写作选项' }).getByLabelText(/作者微操指导/)).toHaveValue('')
+  })
+})
+
+describe('蓝图页开着时在运行侧页放弃蓝图恢复稿（#608）', () => {
+  const recovery = (runId: string, createdAtMs: number) => ({
+    handle: { projectId: SESSION.projectId, epoch: SESSION.leaseId, rootActionId: `根${runId}`, runId }, operation: 'chapter-blueprint-directory',
+    blueprintRecovery: { writeState: 'ready', draft: `第 15–16 章蓝图（${runId}）`, editRange: { from: 15, to: 16 } },
+    planningDraft: { requestedRange: { from: 15, to: 16 }, createdAtMs, standing: 'open' },
+    planningContinuation: { state: 'ready', remainingRange: { from: 16, to: 16 } },
+  })
+  let open: ReturnType<typeof recovery>[]
+  let reply: { resolve: () => void; reject: (reason: Error) => void } | undefined
+  let dismissalFails: boolean
+
+  beforeEach(() => {
+    open = [recovery('最新', 2000)]
+    reply = undefined
+    dismissalFails = false
+    const fallback = invoke.getMockImplementation() as (channel: string, ...args: unknown[]) => Promise<unknown>
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'generation:list-recovery') return { planning: open, editors: [], reviews: [], drafts: [], batches: [], partial: false }
+      if (channel === 'generation:find-blueprint-recovery') return [...open].sort((a, b) => b.planningDraft.createdAtMs - a.planningDraft.createdAtMs)[0] ?? null
+      if (channel === 'generation:dismiss-planning-recovery') {
+        // 主进程收到请求就同步记下放弃，回复晚一点才到渲染端。
+        const runId = (args[0] as { handle: { runId: string } }).handle.runId
+        if (!dismissalFails) open = open.filter(item => item.handle.runId !== runId)
+        return new Promise<void>((resolve, reject) => { reply = { resolve, reject } })
+      }
+      if (channel === 'db:recovery-candidate-list' || channel === 'skills:list-user') return []
+      if (channel === 'fs:check-exists') return false
+      return fallback(channel, ...args)
+    })
+  })
+
+  async function renderWithRunSheet() {
+    await act(async () => root?.render(
+      <div className="paper-ink">
+        <StageBlueprint projectKey={PROJECT_PATH} />
+        <RunSheet sheet={{ kind: 'run', tab: 'active' }} />
+      </div>,
+    ))
+    await expect.element(page.getByRole('complementary', { name: '章节规划' })).toBeVisible()
+    await vi.waitFor(() => expect(banner()).toBeTruthy())
+    await vi.waitFor(() => expect(document.querySelector('.run-recovery > .run-card')).toBeTruthy())
+  }
+  const banner = () => [...document.querySelectorAll('.pi-notice')].find(notice => notice.querySelector('.pi-notice-title')?.textContent === '有一份蓝图恢复稿')
+  const bannerEdit = () => [...banner()!.querySelectorAll('button')].find(item => item.textContent === '编辑恢复稿')!
+  const sheetButton = (name: string) => [...document.querySelector('.run-recovery > .run-card')!.querySelectorAll('button')].find(item => item.textContent === name)!
+  async function dismissNewestInRunSheet() {
+    await act(async () => sheetButton('放弃…').click())
+    await act(async () => sheetButton('放弃').click())
+  }
+  const openedRecoveryTabs = () => useEditorStore.getState().tabs.flatMap(tab => tab.planningRecovery ? [tab.planningRecovery.handle.runId] : [])
+
+  it('放弃唯一一份：横幅与「编辑恢复稿」立即消失，不用重新进入蓝图页', async () => {
+    await renderWithRunSheet()
+    await dismissNewestInRunSheet()
+    await act(async () => reply!.resolve())
+    await vi.waitFor(() => expect(banner()).toBeUndefined())
+    expect(document.querySelector('.run-recovery')).toBeNull()
+  })
+
+  it('同范围还有更早一份：横幅留着，「编辑恢复稿」打开更早的那份', async () => {
+    open = [recovery('更早', 1000), recovery('最新', 2000)]
+    await renderWithRunSheet()
+    await dismissNewestInRunSheet()
+    await act(async () => reply!.resolve())
+    await act(async () => bannerEdit().click())
+    await vi.waitFor(() => expect(openedRecoveryTabs()).toEqual(['更早']))
+  })
+
+  it('放弃失败：横幅仍指向原来那份，运行侧页说明失败', async () => {
+    dismissalFails = true
+    await renderWithRunSheet()
+    await dismissNewestInRunSheet()
+    await act(async () => reply!.reject(new Error('GENERATION_PLANNING_RECOVERY_IN_FLIGHT')))
+    await vi.waitFor(() => expect(document.querySelector('.run-recovery [role="alert"]')?.textContent).toBeTruthy())
+    expect(sheetButton('放弃…')).toBeTruthy()
+    await act(async () => bannerEdit().click())
+    await vi.waitFor(() => expect(openedRecoveryTabs()).toEqual(['最新']))
+  })
+
+  it('放弃的回复还没到时点横幅的「编辑恢复稿」：不会打开已放弃的那份', async () => {
+    await renderWithRunSheet()
+    await dismissNewestInRunSheet()
+    await act(async () => bannerEdit().click())
+    await act(async () => reply!.resolve())
+    expect(openedRecoveryTabs()).toEqual([])
+    await vi.waitFor(() => expect(banner()).toBeUndefined())
+    expect(openedRecoveryTabs()).toEqual([])
+  })
+})
+
+describe('蓝图页打开蓝图恢复稿时读取失败（#608）', () => {
+  it('点横幅的「编辑恢复稿」时读不到恢复稿：提示恢复稿还在、没能打开，让作者再点一次', async () => {
+    const recovery = { handle: { projectId: SESSION.projectId, epoch: SESSION.leaseId, rootActionId: '根', runId: '最新' },
+      blueprintRecovery: { writeState: 'ready', draft: '第 15–16 章蓝图', editRange: { from: 15, to: 16 } },
+      planningDraft: { requestedRange: { from: 15, to: 16 }, createdAtMs: 1, standing: 'open' } }
+    let findFails = false
+    const fallback = invoke.getMockImplementation() as (channel: string, ...args: unknown[]) => Promise<unknown>
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'generation:find-blueprint-recovery') {
+        if (findFails) throw new Error('GENERATION_DATABASE_NOT_READY')
+        return recovery
+      }
+      return fallback(channel, ...args)
+    })
+    await renderPage()
+    await expect.element(page.getByRole('button', { name: '编辑恢复稿' })).toBeVisible()
+    findFails = true
+    await act(async () => page.getByRole('button', { name: '编辑恢复稿' }).click())
+    await vi.waitFor(() => expect([...document.querySelectorAll('.pi-toast')].map(toast => toast.textContent))
+      .toContain('恢复稿还在，但没能打开读取时出错。请再点一次「编辑恢复稿」。'))
+    expect(useEditorStore.getState().tabs.filter(tab => tab.planningRecovery)).toEqual([])
+  })
+})
+
+describe('蓝图页的恢复稿横幅跟着主进程的判定走（#608）', () => {
+  let current: unknown
+  beforeEach(() => {
+    current = { handle: { projectId: SESSION.projectId, epoch: SESSION.leaseId, rootActionId: '根', runId: '最新' },
+      blueprintRecovery: { writeState: 'ready', draft: '第 15–16 章蓝图', editRange: { from: 15, to: 16 } },
+      planningDraft: { requestedRange: { from: 15, to: 16 }, createdAtMs: 1, standing: 'open' } }
+    const fallback = invoke.getMockImplementation() as (channel: string, ...args: unknown[]) => Promise<unknown>
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => channel === 'generation:find-blueprint-recovery' ? current : fallback(channel, ...args))
+  })
+  const banner = () => [...document.querySelectorAll('.pi-notice-title')].find(title => title.textContent === '有一份蓝图恢复稿')
+
+  it('点「编辑恢复稿」时已经没有可给的恢复稿：不打开，横幅随之消失', async () => {
+    await renderPage()
+    await expect.element(page.getByRole('button', { name: '编辑恢复稿' })).toBeVisible()
+    current = null
+    await act(async () => page.getByRole('button', { name: '编辑恢复稿' }).click())
+    await vi.waitFor(() => expect(banner()).toBeUndefined())
+    expect(useEditorStore.getState().tabs.filter(tab => tab.planningRecovery)).toEqual([])
+  })
+
+  it('缺的章节在页面开着时都存了正式蓝图：横幅随蓝图刷新一起消失', async () => {
+    await renderPage()
+    await expect.element(page.getByRole('button', { name: '编辑恢复稿' })).toBeVisible()
+    current = null
+    await refreshBlueprints()
+    await vi.waitFor(() => expect(banner()).toBeUndefined())
   })
 })

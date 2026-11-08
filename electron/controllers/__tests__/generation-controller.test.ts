@@ -36,6 +36,7 @@ import { useProjectStore } from '../../../src/stores/project-store'
 import { useWorkflowStore, type WorkflowContext, type StepCallbacks } from '../../../src/stores/workflow-store'
 import { useLocaleStore } from '../../../src/stores/locale-store'
 import type { MainGenerationRunHandle } from '../../../src/services/generation/generation-runtime'
+import { GenerationRunRepository } from '../../repositories/generation-run-repository'
 import { PLOT_OUTLINE_PROTOCOL, renderPlotOutlineSynopsis } from '../../../src/shared/plot-outline-contract'
 import { clearProjectCustomPrompts } from '../../../src/services/prompt-templates'
 import { exportPortableProject } from '../../services/project-archive-service'
@@ -917,6 +918,39 @@ describe('chapter outline command through registered main IPC and formal CAS', (
     await expect(f.execute(handle)).rejects.toThrow('attempts-exhausted')
     expect(f.fetch).toHaveBeenCalledTimes(2)
     expect(ProjectCoreRepository.get()?.synopsis).toBe('旧正式大纲')
+  })
+
+  it('大纲一批正式写进大纲后，作者改了其中一章：恢复列表不再给这次运行', async () => {
+    const f = outlineFixture()
+    await f.execute()
+    const handle = f.navigation().synopsis_generation_handle
+    getProjectDb()!.prepare('UPDATE project_core SET synopsis=?').run(f.target.replace('林岚核对证词1', '作者改写了第 1 章'))
+    expect((await invoke('generation:list-recovery')).planning).toEqual([])
+    expect((await invoke('generation:read-context', { handle })).planningDraft).toMatchObject({ standing: 'superseded' })
+  })
+
+  it('大纲正式保存被拒：作者之后自己写好这几章，恢复列表照常给这次运行', async () => {
+    const f = outlineFixture()
+    vi.spyOn(ProjectCoreRepository, 'commitSynopsis').mockReturnValueOnce(false)
+    await expect(f.execute()).rejects.toThrow()
+    const handle = f.navigation().synopsis_generation_handle
+    expect(ProjectCoreRepository.get()?.synopsis).toBe('旧正式大纲')
+    getProjectDb()!.prepare('UPDATE project_core SET synopsis=?').run(f.target.replaceAll('林岚核对证词', '作者自己写的证词'))
+    expect((await invoke('generation:list-recovery')).planning.map((item: { handle: MainGenerationRunHandle }) => item.handle.runId)).toEqual([handle.runId])
+  })
+
+  it('大纲写入的事务在记下这一笔后出错：正式大纲和这一笔一起撤回，作者自己写好这几章后恢复列表照常给这次运行', async () => {
+    const f = outlineFixture()
+    const original = GenerationRunRepository.prototype.recordPlotOutlineCommitWithinTransaction
+    vi.spyOn(GenerationRunRepository.prototype, 'recordPlotOutlineCommitWithinTransaction').mockImplementationOnce(function (this: GenerationRunRepository, runId: string) {
+      original.call(this, runId)
+      throw new Error('TEST_FAULT_AFTER_MARK')
+    })
+    await expect(f.execute()).rejects.toThrow()
+    const handle = f.navigation().synopsis_generation_handle
+    expect(ProjectCoreRepository.get()?.synopsis).toBe('旧正式大纲')
+    getProjectDb()!.prepare('UPDATE project_core SET synopsis=?').run(f.target.replaceAll('林岚核对证词', '作者自己写的证词'))
+    expect((await invoke('generation:list-recovery')).planning.map((item: { handle: MainGenerationRunHandle }) => item.handle.runId)).toEqual([handle.runId])
   })
 
   it.each(['third-text', 'other-core', 'prompt', 'model'] as const)('refuses lost-CAS-response recovery when %s changed', async changed => {
