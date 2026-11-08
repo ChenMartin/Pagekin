@@ -632,6 +632,12 @@ describe('material decision receipt binding (S10B step 3)', () => {
         expect(budgeted.binding.sourceManifest.materialDecisionHash).not.toBe(legacy.binding.sourceManifest.materialDecisionHash);
     });
 
+    it('recomputes the frozen input allowance from the window, reserve and margin', () => {
+        const f = receiptFixture();
+        f.input.materialDecision = { ...decision(), budget: { ...BUDGET, inputTokens: 900_000 } };
+        expect(decisionOf(f.build().binding)?.budget).toEqual(BUDGET);
+    });
+
     it('rejects the receipt on a non-chapter operation', () => {
         const f = fixture();
         f.input.materialDecision = decision();

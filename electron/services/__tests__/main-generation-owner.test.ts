@@ -34,6 +34,7 @@ import { reopenFinalizedChapter } from '../chapter-reopen-service'
 import { ChapterDeletionService } from '../chapter-deletion-service'
 import { GenerationDraftEffects } from '../generation-draft-effects'
 import type { ModelProfile } from '../../../src/shared/ipc-channels'
+import type { GenerationKnowledgeSnapshot } from '../../../src/shared/generation-knowledge'
 import type { GenerationRunServiceDependencies } from '../generation-run-service'
 import { getProjectDb, getCurrentProjectPath } from '../../database'
 import { ProjectClearRepository } from '../../repositories/project-clear-repository'
@@ -70,13 +71,14 @@ function fixture(dispatch?: GenerationRunServiceDependencies['dispatch'], silico
     modelName: silicon ? 'deepseek-ai/DeepSeek-V4-Flash' : 'gpt-4.1', apiKey: 'synthetic-private-key',
     baseUrl: silicon ? 'https://api.siliconflow.cn/v1' : 'https://api.openai.com/v1', temperature: 0.7, maxTokens: 2048, purposes: ['generation'],
     capabilities: { contextWindowTokens: 32768, maxOutputTokens: 2048, reasoning: false, structuredOutput: false, usage: true } }
+  const modelSource: { load: () => ModelProfile | null } = { load: () => model }
   const makeOwner = () => {
     const capturedDb = db, capturedEpoch = epoch
     const sourceDeps = { db: capturedDb, projectStorageRoot, globalDataRoot,
       readBuiltinPrompt: (key: string, language: 'zh-CN' | 'en-US') => JSON.stringify(getBuiltinPromptTemplate(key, language)), readBuiltinSkill: readBuiltinWritingSkill }
     return createMainGenerationOwner({ database: capturedDb, projectId: 'project', epoch: capturedEpoch,
       assertCurrent: () => { if (!current || capturedEpoch !== epoch || capturedDb !== db) throw new Error('GENERATION_EPOCH_STALE') },
-      leases: new ModelExecutionLeaseRegistry({ loadModel: () => model }), loadModel: () => model, dispatch,
+      leases: new ModelExecutionLeaseRegistry({ loadModel: () => model }), loadModel: () => modelSource.load(), dispatch,
       onReasoning,
       onSnapshot,
       buildBinding: (selection, modelReceipt, policy) => buildGenerationSourceBinding(sourceDeps, { ...selection, projectId: 'project', epoch: capturedEpoch,
@@ -89,7 +91,7 @@ function fixture(dispatch?: GenerationRunServiceDependencies['dispatch'], silico
     if (db.open) db.close(); fs.rmSync(root, { recursive: true, force: true }) })
   const begin: BeginGenerationRequest = { operation: 'chapter-draft', uiActionNonce: 'click', modelId: model.id, chapterNumber: 1,
     selectedDraftIds: [], selectedFinalizedDraftIds: [], promptKeys: ['first_chapter_draft'], skillStages: [], output: 'visible-text' }
-  return { root, model, get db() { return db }, owner: owners[0], begin,
+  return { root, model, modelSource, get db() { return db }, owner: owners[0], begin,
     invalidate: () => { current = false },
     reopen: () => { owners.at(-1)!.suspendForProjectClose(); db.close(); db = new Database(path.join(root, 'project.db')); epoch = `epoch-${owners.length + 1}`;
       const owner = makeOwner(); owners.push(owner); return owner },
@@ -1665,8 +1667,21 @@ describe('材料额度（ADR-0026）', () => {
     expect(presetWindow.contextWindowTokens).toBeGreaterThan(32_768)
     expect(resolveMaterialBudget(profile({ ...preset, capabilities: { contextWindowTokens: 16_385 } as ModelProfile['capabilities'] }), 8_192))
       .toMatchObject({ contextWindowTokens: 16_385, contextWindowSource: 'manual' })
-    expect(resolveMaterialBudget(profile({ capabilities: { contextWindowTokens: 64_000 } as ModelProfile['capabilities'], capabilitySources: { contextWindowTokens: 'endpoint' } }), 8_192))
+    expect(presetWindow.contextWindowTokens).not.toBe(64_000)
+    expect(resolveMaterialBudget(profile({ ...preset, capabilities: { contextWindowTokens: 64_000 } as ModelProfile['capabilities'], capabilitySources: { contextWindowTokens: 'endpoint' } }), 8_192))
       .toMatchObject({ contextWindowTokens: 64_000, contextWindowSource: 'endpoint' })
+  })
+
+  it.each<[string, ModelProfile | null]>([
+    ['已被删除', null],
+    ['换成了别的窗口', { id: 'model', name: '换后', provider: 'openai', protocol: 'openai', modelName: 'gpt-4.1', apiKey: 'synthetic-private-key', baseUrl: 'https://api.openai.com/v1',
+      temperature: 0.7, maxTokens: 2048, purposes: ['generation'], capabilities: { contextWindowTokens: 262_144, maxOutputTokens: 2048, reasoning: false, structuredOutput: false, usage: true } }],
+  ])('写稿准备的额度取自建绑定时读到的模型：之后模型%s也不受影响', (_name, later) => {
+    const f = fixture(), snapshot: GenerationKnowledgeSnapshot = { version: 1, state: 'empty', storageState: 'absent', query: '第一章', topK: 5, canonicalRevision: null, documentsRevision: null, items: [] }
+    let reads = 0
+    f.modelSource.load = () => ++reads === 1 ? f.model : later
+    const prepared = f.owner.prepareDraftContext({ chapterNumber: 1, modelId: f.model.id, promptKeys: ['first_chapter_draft'], skillStages: [], authorInputs: [], query: '第一章', selectedDraftIds: [] }, snapshot)
+    expect(prepared.materialBudget).toMatchObject({ contextWindowTokens: 32_768 })
   })
 
   it('窗口比预留还小时输入额度归零，不报错', () => {
