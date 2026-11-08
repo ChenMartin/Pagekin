@@ -126,6 +126,19 @@ describe('按模型窗口分配可选材料', () => {
   })
 })
 
+describe('旧收据遇到带排名的快照', () => {
+  it('恢复时不按排名重排，提示词和当初一字不差', async () => {
+    const original = await assembleChapterMaterials({ ...MIDDLE, ...withBudget(budget(32_768)) })
+    const optionalContentHashes = original.decision.included.filter(item => !item.required).map(item => item.contentHash)
+    const [thread, ...chunks] = MIDDLE.references
+    const ranked = [thread!, ...chunks.map((chunk, index) => ({ ...chunk, knowledgeRank: index + 1 }))]
+
+    const resumed = await assembleChapterMaterials({ ...MIDDLE, references: ranked, ...withAdmission({ kind: 'frozen', optionalContentHashes }) })
+
+    expect(resumed.text).toBe(original.text)
+  })
+})
+
 describe('审稿、修稿走同一套额度', () => {
   const history = async (sourceId: string, chars: number, seed: number, term = ''): Promise<ReviewRevisionMaterial> => {
     const text = term + cjk(chars, seed)

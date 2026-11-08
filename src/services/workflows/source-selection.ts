@@ -193,7 +193,7 @@ export function selectChapterSources(input: SourceSelectionInput): SourceSelecti
     admissible.push(candidate)
   }
 
-  const requiredFirst = keepKnowledgeRank([...admissible].sort((left, right) => {
+  const relevanceFirst = [...admissible].sort((left, right) => {
     if (left.required !== right.required) return Number(right.required) - Number(left.required)
     // 先必需后可选；可选材料之间按本章相关词命中数排序，再按稳定全序收口。
     if (!left.required) {
@@ -201,7 +201,9 @@ export function selectChapterSources(input: SourceSelectionInput): SourceSelecti
       if (delta !== 0) return delta
     }
     return compareCandidate(left, right)
-  }))
+  })
+  // 旧收据当初没按排名放；恢复时材料顺序一变，提示词哈希就对不上。
+  const requiredFirst = input.optionalMaterial?.kind === 'frozen' ? relevanceFirst : keepKnowledgeRank(relevanceFirst)
   const included: SelectedMaterial[] = []
   const coveredContent = new Set<string>()
   let remaining = input.capacity.maxInputUnits
