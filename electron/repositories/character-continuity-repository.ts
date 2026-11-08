@@ -95,7 +95,6 @@ const RELATION_ORIGIN: Readonly<Record<CharacterApproval['action'], 'author' | '
   'author-edit': 'author', 'confirm-identity': 'author', 'adopt-generated': 'adopted', 'adopt-import': 'adopted',
 })
 
-/** 写入 character_relationships 的唯一入口。 */
 export function insertCharacterRelationship(db: BetterSqlite3.Database, line: CharacterRelationshipLine & { relation: string; provenanceJson: string },
   approval: Pick<CharacterApproval, 'operationId' | 'action'>): void {
   requireTransaction(db)
