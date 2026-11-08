@@ -860,15 +860,19 @@ function draftThreadTaskProofs(db: InstanceType<typeof BetterSqlite>, reviewRoot
 } {
   const rows = db.prepare(`SELECT a.attempt_id,a.run_id,a.root_action_id,r.binding_json,
       json_extract(a.usage_receipt_json,'$.draftCommit.id') AS draft_id,
-      json_extract(a.usage_receipt_json,'$.draftCommit.chapterNumber') AS chapter_number
+      json_extract(a.usage_receipt_json,'$.draftCommit.chapterNumber') AS chapter_number,
+      json_type(a.usage_receipt_json,'$.draftCommit.id') AS draft_id_type,
+      json_type(a.usage_receipt_json,'$.draftCommit.chapterNumber') AS chapter_number_type
     FROM generation_attempts a JOIN generation_runs r ON r.run_id=a.run_id
     WHERE json_valid(a.usage_receipt_json) AND json_extract(a.usage_receipt_json,'$.draftCommit.id') IS NOT NULL`).all() as Array<{
-    attempt_id: string; run_id: string; root_action_id: string; binding_json: string; draft_id: unknown; chapter_number: unknown }>
+    attempt_id: string; run_id: string; root_action_id: string; binding_json: string; draft_id: unknown; chapter_number: unknown
+    draft_id_type: string; chapter_number_type: string | null }>
   const receipts = new Map<string, string>(), bindings = new Map<string, string>()
   for (const row of rows) {
     if (reviewRoots.has(row.root_action_id)) continue
     const tasks = writtenChapterThreadTasks(row.binding_json)
-    if (!tasks || !Number.isSafeInteger(row.draft_id) || !Number.isSafeInteger(row.chapter_number)) {
+    if (!tasks || row.draft_id_type !== 'integer' || row.chapter_number_type !== 'integer'
+      || !Number.isSafeInteger(row.draft_id) || !Number.isSafeInteger(row.chapter_number)) {
       console.warn('[portable-export] 写稿记录里的线索任务读不出，这份稿的线索任务不随副本带走', { draftId: row.draft_id })
       continue
     }
