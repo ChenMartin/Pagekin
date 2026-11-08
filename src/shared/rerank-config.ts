@@ -40,18 +40,22 @@ export interface RerankConfigInput {
 const SILICONFLOW = BUILTIN_PRESETS.find(preset => preset.provider === 'siliconflow')!
 const SILICONFLOW_HOSTS = new Set([SILICONFLOW.baseUrl, ...(SILICONFLOW.budgetCapabilityBaseUrls ?? [])].map(url => new URL(url).hostname))
 
-function hostname(url: string): string | null {
+function parseUrl(url: string): URL | null {
   try {
-    return new URL(url.trim()).hostname
+    return new URL(url.trim())
   } catch {
     return null
   }
 }
 
-// 只看 provider 不够：作者可能把硅基流动档案的地址改成了代理，Key 不能跟着去那里。
+// 只看 provider 不够：作者可能把硅基流动档案的地址改成了代理、http 或别的端口，Key 不能跟着去那里。
+// URL 会把 https 的 :443 规范成空端口。
 function isSiliconflowEndpoint(embedding: EmbeddingEndpoint): boolean {
-  const host = hostname(embedding.baseUrl)
-  return embedding.provider === SILICONFLOW.provider && host !== null && SILICONFLOW_HOSTS.has(host)
+  const url = parseUrl(embedding.baseUrl)
+  return embedding.provider === SILICONFLOW.provider
+    && url?.protocol === 'https:'
+    && url.port === ''
+    && SILICONFLOW_HOSTS.has(url.hostname)
 }
 
 /** 显式选了重排档案就只用它；否则只有硅基流动检索档案可以把同一端点和 Key 借给重排。 */
