@@ -16,7 +16,7 @@ import { ReviewCycleRepository } from '../../repositories/review-cycle-repositor
 import { createHumanConfirmedReviewSnapshot, renderHumanConfirmedReviewBrief, serializeHumanConfirmedReviewSnapshot } from '../../../src/shared/human-confirmed-review'
 import { getProjectDb } from '../../database'
 import { textHash } from '../../repositories/generation-run-repository'
-import { DEFAULT_MATERIAL_ADMISSION, generationOutputContract, type BeginGenerationRequest } from '../../../src/shared/generation-owner-contract'
+import { generationOutputContract, type BeginGenerationRequest } from '../../../src/shared/generation-owner-contract'
 import type { ModelProfile } from '../../../src/shared/ipc-channels'
 import type { GenerationRunServiceDependencies } from '../generation-run-service'
 import type { PrepareReviewRevisionRequest } from '../../../src/shared/review-revision-generation'
@@ -192,10 +192,10 @@ describe('review and revision generation through the actual owner and SQLite', (
       '【后续蓝图/计划｜非既定历史】', JSON.stringify(context.blueprints.filter(item => item.chapterNumber !== context.source.chapterNumber), null, 2),
     ].join('\n\n'), ['【当前及未来蓝图/计划｜非既定历史】', JSON.stringify(context.blueprints, null, 2)].join('\n\n')))
     const f = fixture(), prepared = f.prepare(), selection = f.selection(prepared)
-    const admission = await selectFrozenReviewRevisionMaterials(prepared.context, { projectId: 'project', epoch: 'epoch-1' }, DEFAULT_MATERIAL_ADMISSION, 0)
+    const view = f.owner.begin(selection)
+    const admission = await selectFrozenReviewRevisionMaterials(prepared.context, { projectId: 'project', epoch: 'epoch-1' }, f.owner.readContext(view.handle).materialAdmission!, 0)
     const prompt = admission.admitted.map(item => item.text).join('\n\n')
     expect(prompt).toContain('【当前及未来蓝图/计划｜非既定历史】')
-    const view = f.owner.begin(selection)
     f.owner.bindMaterialDecision(view.handle, { ...admission.decision, promptHash: textHash(prompt) })
     await f.owner.execute({ handle: view.handle, invocationNonce: 'old-material', task: { purpose: 'review-chapter', output: 'structured-data', messages: [{ role: 'user', content: prompt }] } })
     const artifact = f.owner.read(view.handle).artifacts[0]!
@@ -296,11 +296,12 @@ describe('review and revision generation through the actual owner and SQLite', (
   })
   it('admits the renderer author-material receipt through main and retains the frozen recovery context', async () => {
     const f = fixture(), prepared = f.prepare(), selection = f.selection(prepared)
-    const admission = await selectFrozenReviewRevisionMaterials(prepared.context, { projectId: 'project', epoch: 'epoch-1' }, DEFAULT_MATERIAL_ADMISSION, 0)
-    const prompt = admission.admitted.map(material => material.text).join('\n\n')
     const view = f.owner.begin(selection)
     // 审修先开运行、后选材：收据绑定前额度来自运行冻结的模型。
-    expect(f.owner.readContext(view.handle).materialAdmission).toMatchObject({ kind: 'budget', budget: { reservedOutputTokens: expect.any(Number) } })
+    const frozenAdmission = f.owner.readContext(view.handle).materialAdmission!
+    expect(frozenAdmission).toMatchObject({ kind: 'budget', budget: { reservedOutputTokens: expect.any(Number) } })
+    const admission = await selectFrozenReviewRevisionMaterials(prepared.context, { projectId: 'project', epoch: 'epoch-1' }, frozenAdmission, 0)
+    const prompt = admission.admitted.map(material => material.text).join('\n\n')
     f.owner.bindMaterialDecision(view.handle, { ...admission.decision, promptHash: textHash(prompt) })
     await f.owner.execute({ handle: view.handle, invocationNonce: 'materials', task: { purpose: 'review-chapter',
       output: 'structured-data', messages: [{ role: 'user', content: prompt }] } })

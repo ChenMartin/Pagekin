@@ -41,7 +41,7 @@ import {
   type GenerateDraftCommandDependencies,
 } from '../generate-draft.command'
 import { assembleChapterMaterials } from '../../chapter-materials'
-import { DEFAULT_MATERIAL_ADMISSION, MATERIAL_DECISION_MAX_INPUT_UNITS, materialBudgetFrom, type BeginGenerationRequest, type MaterialBudget } from '../../../../shared/generation-owner-contract'
+import { MATERIAL_DECISION_MAX_INPUT_UNITS, materialBudgetFrom, type BeginGenerationRequest, type MaterialBudget } from '../../../../shared/generation-owner-contract'
 import { WorkflowCancelledError } from '../../workflow-cancellation'
 
 // 默认原样透传真实装配；只有个别测试用 mockImplementationOnce 改写一次返回值，
@@ -50,6 +50,8 @@ vi.mock('../../chapter-materials', async importOriginal => {
   const actual = await importOriginal<typeof import('../../chapter-materials')>()
   return { ...actual, assembleChapterMaterials: vi.fn(actual.assembleChapterMaterials) }
 })
+
+const PREPARED_MATERIAL_BUDGET = materialBudgetFrom({ contextWindowTokens: 32_768, contextWindowSource: 'default', reservedOutputTokens: 4_096, safetyMarginTokens: 512 })
 
 describe('generate draft command text cleanup', () => {
   it('主进程正文投影保持旧续接规则且不改原始片段', () => {
@@ -530,7 +532,7 @@ describe('GenerateDraftCommand generation runtime boundary', () => {
           : null
       }
       if (channel === 'generation:prepare-draft-context') return {
-        preparationId: '合成准备', materialBudget: options.materialBudget ?? DEFAULT_MATERIAL_ADMISSION.budget, selectedDrafts: (options.selectedCandidateDrafts ?? []).map(candidate => ({
+        preparationId: '合成准备', materialBudget: options.materialBudget ?? PREPARED_MATERIAL_BUDGET, selectedDrafts: (options.selectedCandidateDrafts ?? []).map(candidate => ({
           chapterNumber: candidate.chapterNumber, draftId: candidate.draftId,
           version: candidate.version, content: candidate.content,
         })),

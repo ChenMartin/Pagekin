@@ -8,7 +8,7 @@ import {
   type HumanConfirmedReviewSnapshotInput,
 } from '../../../../shared/human-confirmed-review'
 import type { ModelExecutionLeaseReceipt } from '../../../../shared/ipc-channels'
-import { MATERIAL_DECISION_MAX_INPUT_UNITS } from '../../../../shared/generation-owner-contract'
+import { MATERIAL_DECISION_MAX_INPUT_UNITS, materialBudgetFrom } from '../../../../shared/generation-owner-contract'
 import { useEditorStore } from '../../../../stores/editor-store'
 import { useProjectStore } from '../../../../stores/project-store'
 import type { StepCallbacks, WorkflowContext } from '../../../../stores/workflow-store'
@@ -1518,11 +1518,15 @@ describe('ReviewChapterCommand reasoning stage', () => {
   })
 })
 
+const TIGHT_WINDOW_CONTEXT = { materialAdmission: { kind: 'budget', budget: materialBudgetFrom({
+  contextWindowTokens: 12_000, contextWindowSource: 'manual', reservedOutputTokens: 4_096, safetyMarginTokens: 512 }) } }
+
 describe('审稿/审稿修稿走同一条准入（S10B-2）', () => {
   const HUGE_HISTORY = '长'.repeat(9_000)
 
   function reviewHistoryIpc(projections: unknown[]) {
     return vi.fn(async (channel: string) => {
+      if (channel === 'generation:read-context') return TIGHT_WINDOW_CONTEXT
       if (channel === 'db:continuity-list-before') return projections
       if (channel === 'kb:search' || channel === 'db:character-get-all') return []
       if (channel === 'db:blueprint-get-all' || channel === 'db:consistency-exemption-list') return []
@@ -1610,6 +1614,7 @@ describe('修稿路径不再整段拼接（S10B-2）', () => {
 
   function historyIpc(projections: unknown[], chapterNumber: number) {
     return vi.fn(async (channel: string) => {
+      if (channel === 'generation:read-context') return TIGHT_WINDOW_CONTEXT
       if (channel === 'db:continuity-list-before') return projections
       if (channel === 'db:draft-get-meta') return { id: 1, chapterNumber, version: 1, status: 'draft', source: 'write' }
       if (channel === 'db:revision-replace-pending') return { success: true, id: 9, revisionIndex: 2 }
