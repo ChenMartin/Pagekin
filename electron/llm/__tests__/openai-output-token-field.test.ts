@@ -34,6 +34,7 @@ interface WireRequest { url: string; headers: IncomingHttpHeaders; raw: string; 
 interface WireReply { status: number; body: string }
 
 const servers: Server[] = []
+let upstreamSerial = 0
 
 afterEach(async () => {
   vi.unstubAllGlobals()
@@ -60,7 +61,7 @@ async function upstream(reply: (request: WireRequest, index: number) => WireRepl
   servers.push(server)
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
   const { port } = server.address() as AddressInfo
-  return { requests, baseUrl: `http://127.0.0.1:${port}/v1` }
+  return { requests, baseUrl: `http://127.0.0.1:${port}/relay-${++upstreamSerial}/v1` }
 }
 
 const relayModel = (baseUrl: string, modelName = 'gpt-6.1'): ModelProfile => ({ id: 'relay', name: '中转站', provider: 'custom', protocol: 'openai',
@@ -126,6 +127,17 @@ describe('中转站拒收当前输出上限字段时换字段重发一次', () =
     expect(onDone).toHaveBeenCalledWith('正文', undefined, 'stop')
     expect(relay.requests.map(outputField)).toEqual([['max_completion_tokens'], ['max_tokens']])
     expect(relay.requests[1].body.max_tokens).toBe(512)
+  })
+
+  it.each([
+    ['只有 param 和文案，没有错误码', 'max_tokens', { message: 'max_tokens is not supported by this deployment', param: 'max_tokens', code: null }],
+    ['没有 param，只有错误码和文案', 'max_tokens', { message: "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.", param: null, code: 'unsupported_parameter' }],
+    ['未知参数写法', 'max_completion_tokens', { message: 'Unrecognized request argument supplied: max_completion_tokens', param: null, code: null }],
+  ] as const)('错误体变体（%s）也算明确拒收', async (_name, field, error) => {
+    const relay = await upstream(request => field in request.body ? { status: 400, body: JSON.stringify({ error }) } : success(request))
+    const sent = field === 'max_tokens' ? {} : { outputTokenParameter: 'max_completion_tokens' as const }
+    expect(await new OpenAIProvider().generate(relayModel(relay.baseUrl), messages, options(sent))).toMatchObject({ success: true })
+    expect(relay.requests.map(outputField)).toEqual([[field], [other(field)]])
   })
 
   it('两个字段都被拒时只重发一次，报第二次的真实错误', async () => {
@@ -201,7 +213,7 @@ describe('中转站拒收当前输出上限字段时换字段重发一次', () =
     const relay = await upstream(refusing('max_tokens'))
     await new OpenAIProvider().generate(relayModel(relay.baseUrl), messages, options())
     const [first, second] = relay.requests
-    expect(second.url).toBe('/v1/chat/completions')
+    expect(second.url).toMatch(/\/v1\/chat\/completions$/u)
     expect(second.url).toBe(first.url)
     expect(first.headers.authorization).toBe('Bearer sk-relay-key')
     const exceptBodyLength = (headers: IncomingHttpHeaders) => Object.entries(headers).filter(([name]) => name !== 'content-length')
@@ -230,6 +242,7 @@ describe('其他失败不重发，错误与原来相同', () => {
     ['其他参数不支持', error({ message: "Unsupported parameter: 'temperature' is not supported with this model.", param: 'temperature', code: 'unsupported_parameter' })],
     ['字段值过大', error({ message: 'max_tokens is too large: 100000. This model\'s maximum value is 4096.', param: 'max_tokens' })],
     ['字段值超范围', error({ message: "Invalid 'max_tokens': integer above maximum value. Expected a value <= 4096, but got 100000 instead.", param: 'max_tokens', code: 'integer_above_max_value' })],
+    ['字段值非法', error({ message: 'Invalid value for max_tokens', param: 'max_tokens', code: 'invalid_value' })],
     ['上游只把另一字段当作替代写法', error({ message: "Unsupported parameter: 'max_completion_tokens' is not supported. Use 'max_tokens' instead.", code: 'unsupported_parameter' })],
     ['错误体不是 JSON', '<html>bad request</html>'],
   ]
