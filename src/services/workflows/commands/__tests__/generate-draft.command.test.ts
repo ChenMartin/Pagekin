@@ -41,7 +41,7 @@ import {
   type GenerateDraftCommandDependencies,
 } from '../generate-draft.command'
 import { assembleChapterMaterials } from '../../chapter-materials'
-import { MATERIAL_DECISION_MAX_INPUT_UNITS } from '../../../../shared/generation-owner-contract'
+import { MATERIAL_DECISION_MAX_INPUT_UNITS, materialBudgetFrom, type BeginGenerationRequest, type MaterialBudget } from '../../../../shared/generation-owner-contract'
 import { WorkflowCancelledError } from '../../workflow-cancellation'
 
 // 默认原样透传真实装配；只有个别测试用 mockImplementationOnce 改写一次返回值，
@@ -50,6 +50,8 @@ vi.mock('../../chapter-materials', async importOriginal => {
   const actual = await importOriginal<typeof import('../../chapter-materials')>()
   return { ...actual, assembleChapterMaterials: vi.fn(actual.assembleChapterMaterials) }
 })
+
+const PREPARED_MATERIAL_BUDGET = materialBudgetFrom({ contextWindowTokens: 32_768, contextWindowSource: 'default', reservedOutputTokens: 4_096, safetyMarginTokens: 512 })
 
 describe('generate draft command text cleanup', () => {
   it('主进程正文投影保持旧续接规则且不改原始片段', () => {
@@ -428,6 +430,7 @@ describe('GenerateDraftCommand generation runtime boundary', () => {
       required?: boolean
     }>
     knowledgeResults?: Array<{ text: string; score: number; fileName: string }>
+    materialBudget?: MaterialBudget
     keyEvents?: string
     suspenseHook?: string
     knowledgeQueryHint?: string
@@ -529,7 +532,7 @@ describe('GenerateDraftCommand generation runtime boundary', () => {
           : null
       }
       if (channel === 'generation:prepare-draft-context') return {
-        preparationId: '合成准备', selectedDrafts: (options.selectedCandidateDrafts ?? []).map(candidate => ({
+        preparationId: '合成准备', materialBudget: options.materialBudget ?? PREPARED_MATERIAL_BUDGET, selectedDrafts: (options.selectedCandidateDrafts ?? []).map(candidate => ({
           chapterNumber: candidate.chapterNumber, draftId: candidate.draftId,
           version: candidate.version, content: candidate.content,
         })),
@@ -703,6 +706,23 @@ describe('GenerateDraftCommand generation runtime boundary', () => {
     expect(f.invoke.mock.calls.some(([channel]) => channel === 'db:draft-create' || channel === 'db:draft-next-version' || channel === 'db:recovery-candidate-record')).toBe(false)
   })
 
+  it('新开写用主进程算好的额度选材，并把额度写进收据', async () => {
+    const materialBudget = materialBudgetFrom({ contextWindowTokens: 64_000, contextWindowSource: 'preset', reservedOutputTokens: 4_096, safetyMarginTokens: 512 })
+    const f = setup({ runtime: fakeOutcomes(), wordsTarget: 900, mainDefault: true, materialBudget })
+    f.context.generationModelId = '合成模型'
+    let begun: BeginGenerationRequest | undefined
+    const original = f.invoke.getMockImplementation()!
+    f.invoke.mockImplementation(async (channel, ...args) => {
+      if (channel === 'generation:begin') { begun = args[0] as BeginGenerationRequest; throw new Error('STOP_AFTER_BEGIN') }
+      return original(channel, ...args)
+    })
+
+    await expect(f.command.execute({ step: {}, context: f.context, callbacks: f.callbacks })).rejects.toThrow('STOP_AFTER_BEGIN')
+
+    expect(vi.mocked(assembleChapterMaterials).mock.calls.at(-1)?.[0].admission).toEqual({ kind: 'budget', budget: materialBudget })
+    expect(begun?.materialDecision?.budget).toEqual(materialBudget)
+  })
+
   it('没有显式模型时按写稿环节的模型准备上下文并开跑', async () => {
     const f = setup({ runtime: fakeOutcomes(), wordsTarget: 900, mainDefault: true })
     const originalLLM = useLLMStore.getState()
@@ -861,13 +881,14 @@ describe('GenerateDraftCommand generation runtime boundary', () => {
     const seed = '潮'.repeat(state === 'saved-ack-lost' ? 1350 : finishReason === 'stop' ? 900 : 500)
     const addition = (state === 'legacy-length' ? `二十年后。\n\n${seed}\n\n` : '') + '灯'.repeat(500) + '。'
     const expected = finishReason === 'stop' ? seed : composeDraftVisibleContinuation(seed, addition, algorithm)
+    const frozenAdmission = { kind: 'budget', budget: materialBudgetFrom({ contextWindowTokens: 20_000, contextWindowSource: 'endpoint', reservedOutputTokens: 4_096, safetyMarginTokens: 512 }) } as const
     const hash = (text: string) => createHash('sha256').update(text).digest('hex')
     const view: MainGenerationRunView = { handle, status: 'running', nonReplayable: false, artifacts: [],
       budget: { maxAttempts: 32, maxRequestedOutputTokens: 2000000, maxRequestedOutputTokensPerAttempt: 32768, deadlineAt: Date.now() + 3600000 } }
     const original = f.invoke.getMockImplementation()!
     f.invoke.mockImplementation(async (channel, ...args) => {
       if (channel === 'generation:read') return view
-      if (channel === 'generation:read-context') return { draftSave: { kind: 'absent' }, handle, operation: 'chapter-draft', chapterNumber: 1,
+      if (channel === 'generation:read-context') return { draftSave: { kind: 'absent' }, handle, operation: 'chapter-draft', chapterNumber: 1, materialAdmission: frozenAdmission,
         authorInputs: [
           { id: 'draft:chapter-info', text: JSON.stringify({ chapterNumber: 1, title: '第一章', role: '开端', purpose: '建立冲突', characters: [], keyEvents: '开端' }) },
           { id: 'draft:author-config', text: JSON.stringify(useProjectStore.getState().currentProject!.novelConfig) },
@@ -897,6 +918,7 @@ describe('GenerateDraftCommand generation runtime boundary', () => {
     await expect(f.command.execute({ step: {}, context: f.context, callbacks: f.callbacks })).resolves.toBe(expected)
     expect(f.invoke.mock.calls.filter(([channel]) => channel === 'generation:execute')).toHaveLength(finishReason === 'stop' ? 0 : 1)
     expect(f.invoke.mock.calls.some(([channel]) => channel === 'generation:begin' || channel === 'db:draft-create')).toBe(false)
+    if (state !== 'saved-ack-lost') expect(vi.mocked(assembleChapterMaterials).mock.calls.at(-1)?.[0].admission).toEqual(frozenAdmission)
     if (state === 'saved-ack-lost') {
       expect(f.invoke.mock.calls.some(([channel]) => channel === 'generation:read' || channel === 'generation:resume')).toBe(false)
       expect(f.invoke.mock.calls.some(([channel]) => ['generation:commit-draft', 'generation:prepare-draft-context', 'kb:search-writing-context', 'db:draft-get-latest'].includes(channel))).toBe(false)
@@ -2138,7 +2160,7 @@ describe('GenerateDraftCommand generation runtime boundary', () => {
 
   it('binds the final provider request to only the finalized prose that reached that request', async () => {
     const runtime = fakeRuntime(() => outcome('新章正文。'.repeat(125), 'stop'))
-    const overBudget = `林岚把钥匙藏进钟楼。${'过长段落'.repeat(2_000)}`
+    const overBudget = `林岚把钥匙藏进钟楼。${'过长段落'.repeat(9_000)}`
     const included = '周砚守住码头，林岚折返仓库。'
     const { invoke, context, callbacks, command } = setup({
       runtime,
@@ -2208,7 +2230,7 @@ describe('GenerateDraftCommand generation runtime boundary', () => {
     const blueprints = Array.from({ length: 5 }, (_, index) => ({
       chapterNumber: chapterNumber + index + 1,
       title: `后续计划${index + 1}`,
-      keyEvents: '后续事件说明。'.repeat(260) + `TAIL_TIMING_${index}_只能在第${chapterNumber + index + 1}章交出钥匙。`,
+      keyEvents: '后续事件说明。'.repeat(1_040) + `TAIL_TIMING_${index}_只能在第${chapterNumber + index + 1}章交出钥匙。`,
     }))
     const worldSetting = 'GLOBAL_FACT_铜钥匙只有一把。'
     const previousFinalizedContent = '上一章仍在港口。'.repeat(100) + 'PREVIOUS_TAIL_钥匙仍由林舟保管。'
@@ -3502,7 +3524,7 @@ ${headingPrefix}第3章：潮门
       chapterNumber: 5,
       wordsTarget: 500,
       characters: ['林岚'],
-      characterCards: [{ name: '林岚', role: 'protagonist', personality: '谨慎'.repeat(4_500), currentState: {} }],
+      characterCards: [{ name: '林岚', role: 'protagonist', personality: '谨慎'.repeat(18_000), currentState: {} }],
       previousFinalizedContent: '第四章定稿原文。',
       narrativeThreads: [threadView(1, '青铜钥匙', 1, 2)],
     })

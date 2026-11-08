@@ -79,29 +79,34 @@ export class RefineFromReviewCommand extends ReviewRevisionCommand {
     const template = await resolvePromptTemplate('refine_from_review', projectSession, frozen.writingLanguage)
     if (!template) throw new Error(workflowUiText(params.context, '未找到审稿修复模板', 'The review-based revision template was not found.'))
     const current = { projectId: projectSession.projectId, epoch: projectSession.leaseId }
+    const aiReviewSourceId = `review:confirmed:${frozen.confirmation!.reviewSourceId}`
+    const render = (admitted: ReviewRevisionMaterialAdmission['admitted']) => {
+      const basis = admitted.filter(material => material.identity.sourceId !== aiReviewSourceId)
+        .map(material => material.text).join('\n\n')
+      const builder = new ChapterPromptBuilder(template, frozen.writingLanguage)
+        .withReviewReport(admitted.filter(material => material.identity.sourceId === aiReviewSourceId)
+          .map(material => material.text).join('\n\n'))
+        .withDraftContent(frozen.source.content)
+        .withGlobalGuidance(frozen.config.globalGuidance || '')
+        .withUserRefinePrompt('')
+      return { systemRole: builder.getSystemRole(), prompt: appendCompleteRevisionContract([
+        promptLanguageText(frozen.writingLanguage, '【修稿依据｜作者材料与前驱原文】', '[Revision sources | author material and predecessor prose]'),
+        basis, builder.build(),
+      ].join('\n\n'), frozen.source.content, frozen.writingLanguage) }
+    }
+    const bare = render([])
     let admission: ReviewRevisionMaterialAdmission
     try {
-      admission = await selectFrozenReviewRevisionMaterials(frozen, current)
+      admission = await selectFrozenReviewRevisionMaterials(frozen, current, await this.materialAdmission(params),
+        this.nonMaterialUnits(params, bare.prompt, bare.systemRole))
     } catch (error) {
       if (!(error instanceof ChapterMaterialCapacityError)) throw error
       throw new Error(workflowUiText(params.context,
         '审稿修稿必需材料超出上下文容量，已停止修稿。请精简必需材料后重试。',
         'The confirmed review checklist exceeds the context capacity, so the revision stopped. Trim the review items and try again.'))
     }
-    const aiReviewSourceId = `review:confirmed:${frozen.confirmation!.reviewSourceId}`
-    const basis = admission.admitted.filter(material => material.identity.sourceId !== aiReviewSourceId)
-      .map(material => material.text).join('\n\n')
-    const builder = new ChapterPromptBuilder(template, frozen.writingLanguage)
-      .withReviewReport(admission.admitted.filter(material => material.identity.sourceId === aiReviewSourceId)
-        .map(material => material.text).join('\n\n'))
-      .withDraftContent(frozen.source.content)
-      .withGlobalGuidance(frozen.config.globalGuidance || '')
-      .withUserRefinePrompt('')
-    const prompt = appendCompleteRevisionContract([
-      promptLanguageText(frozen.writingLanguage, '【修稿依据｜作者材料与前驱原文】', '[Revision sources | author material and predecessor prose]'),
-      basis, builder.build(),
-    ].join('\n\n'), frozen.source.content, frozen.writingLanguage)
+    const { prompt, systemRole } = render(admission.admitted)
     await this.bindMaterialDecision(params, admission.decision, prompt)
-    return this.generateRevision(prepared, params, prompt, builder.getSystemRole())
+    return this.generateRevision(prepared, params, prompt, systemRole)
   }
 }

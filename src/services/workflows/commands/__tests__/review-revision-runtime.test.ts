@@ -11,7 +11,7 @@ import { useLLMStore } from '../../../../stores/llm-store'
 import type { WorkflowContext } from '../../../../stores/workflow-store'
 import type { LLMFinishReason } from '../../../../shared/ipc-channels'
 import { reviewRevisionAiBrief, reviewRevisionAuthorMaterial, type ReviewRevisionOperation } from '../../../../shared/review-revision-generation'
-import { MATERIAL_DECISION_MAX_INPUT_UNITS } from '../../../../shared/generation-owner-contract'
+import { MATERIAL_DECISION_MAX_INPUT_UNITS, estimateMaterialTokens, materialBudgetFrom } from '../../../../shared/generation-owner-contract'
 import type { ReviewRevisionCommandSource } from '../review-revision-command'
 import { createHumanConfirmedReviewSnapshot, serializeHumanConfirmedReviewSnapshot } from '../../../../shared/human-confirmed-review'
 import { clearProjectCustomPrompts, getBuiltinPromptTemplate, getPromptSource } from '../../../prompt-templates'
@@ -45,6 +45,7 @@ function setup(responses: Response[], projections: FinalizedContinuityProjection
       writes += 1
       return { success: true, id: 9, revisionIndex: 2, reviewIndex: 2 }
     }
+    if (channel === 'generation:read-context') return {}
     throw new Error(`unexpected IPC: ${channel}`)
   })
   const fixture = new ReviewRevisionRuntimeFixture(backend)
@@ -252,6 +253,32 @@ describe('review/revision consumers using the main contract (synthetic transport
       vi.restoreAllMocks()
     }
   })
+  it('修稿把历史渲染成两份时，两份都算进额度', async () => {
+    const f = setup([{ content: revised, finishReason: 'stop' }])
+    const materialBudget = materialBudgetFrom({ contextWindowTokens: 9_000, contextWindowSource: 'manual', reservedOutputTokens: 0, safetyMarginTokens: 0 })
+    const invoke = f.fixture.invoke.bind(f.fixture)
+    vi.spyOn(f.fixture, 'invoke').mockImplementation(async (channel, ...args) => {
+      if (channel === 'generation:read-context') return { materialAdmission: { kind: 'budget', budget: materialBudget } }
+      const result = await invoke(channel, ...args)
+      if (channel === 'review-revision:prepare') {
+        const prepared = result as NonNullable<typeof f.fixture.prepared>
+        prepared.context.history = [2, 3, 4].map(chapterNumber => {
+          const content = `第${chapterNumber}章定稿。`.repeat(300)
+          return { draftId: chapterNumber * 10, chapterNumber, chapterTitle: '', content,
+            identity: { projectId: session.projectId, sourceId: `finalized:${chapterNumber * 10}`, revision: chapterNumber * 10, contentHash: hash(content), provenance: 'finalized' as const } }
+        })
+        f.fixture.prepared = structuredClone(prepared)
+      }
+      return result
+    })
+
+    await f.command('refine-draft').execute(f.args)
+
+    const sent = f.provider.mock.calls[0]![0].map(message => message.content).join('')
+    expect(estimateMaterialTokens(new TextEncoder().encode(sent).length)).toBeLessThanOrEqual(materialBudget.inputTokens)
+    expect(f.fixture.materialDecisions[0]?.included.filter(item => item.sourceId.startsWith('finalized:'))).toHaveLength(2)
+  })
+
   it.each(['review-chapter', 'refine-draft', 'refine-from-review'] as const)('passes the complete required set beyond 24k to the actual %s request', async operation => {
     const f = setup([{ content: operation === 'review-chapter' ? review : revised, finishReason: 'stop' }])
     const setting = '独有作者事实。'.repeat(900)
