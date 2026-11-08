@@ -30,17 +30,14 @@ type OutputTokenField = 'max_tokens' | 'max_completion_tokens'
 
 const acceptedOutputTokenFields = new Map<string, OutputTokenField>()
 
-// 值太大、超范围时 param 同样指向该字段，但换字段救不了，错误要原样交给作者。
-const OUTPUT_TOKEN_VALUE_ERROR = /integer|too large|maximum|minimum|range|must be/iu
-
 function upstreamRejectsOutputTokenField(responseBody: string, sent: OutputTokenField): boolean {
   let error: { param?: unknown; code?: unknown; message?: unknown } | undefined
   try { error = JSON.parse(responseBody).error } catch { return false }
   const message = typeof error?.message === 'string' ? error.message : ''
-  if (OUTPUT_TOKEN_VALUE_ERROR.test(message)) return false
   // 拒收文案常把两个字段都写上（Use 'x' instead），排在前面的才是被拒的那个。
-  return error?.param === sent
-    || error?.code === 'unsupported_parameter' && /max_(?:completion_)?tokens/u.exec(message)?.[0] === sent
+  const namesSentField = error?.param === sent || /max_(?:completion_)?tokens/u.exec(message)?.[0] === sent
+  // 值太大或非法时 param 同样指向该字段，但换字段救不了，错误要原样交给作者。
+  return namesSentField && (error?.code === 'unsupported_parameter' || /unsupported|not supported|unrecognized|unknown parameter/iu.test(message))
 }
 
 export class OpenAIProvider implements ILLMProvider {
