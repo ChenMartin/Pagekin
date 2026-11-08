@@ -1155,7 +1155,7 @@ export interface CharacterIdentityCommitRequest {
   changes: CharacterIdentityChange[]
   creations: { selectionKey: string; fields: CharacterIdentityChange['fields'] & { name: string } }[]
   retireIds: string[]
-  relationships: { sourceCharacterId?: string; sourceSelectionKey?: string; targetCharacterId?: string; targetSelectionKey?: string; relation: string }[]
+  relationships: { sourceCharacterId?: string; sourceSelectionKey?: string; targetCharacterId?: string; targetSelectionKey?: string; relation: string; effectiveChapter?: number }[]
   resolutions: { proposalId: string; characterId: string }[]
 }
 export interface CharacterIdentityCommitReceipt {
@@ -1251,7 +1251,7 @@ export function commitCharacterIdentities(
       if (!relationship.relation.trim() || fromId === toId || relationKeys.has(relationKey)) throw new Error('CHARACTER_RELATIONSHIP_INVALID')
       relationKeys.add(relationKey)
       insertCharacterRelationship(db, { relationshipId: randomUUIDForIdentity(), sourceId: fromId, sourceName: from.name as string, targetId: toId, targetName: to.name as string,
-        relation: relationship.relation, provenanceJson: source }, request.approval)
+        relation: relationship.relation, provenanceJson: source }, request.approval, relationship.effectiveChapter)
     }
     for (const resolution of request.resolutions) {
       active(resolution.characterId)

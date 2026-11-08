@@ -231,6 +231,19 @@ describe('关系写入追加时间线节点', () => {
     expect(f.events()).toEqual([])
   })
 
+  it('删除高章后，同一对角色另一条关系的删除节点不被钳到更晚的章', () => {
+    const f = fixture()
+    f.save(entries => f.setRelations(entries, f.lin, f.zhou, ['早结的盟']))
+    f.finalize(1, 1); f.finalize(2, 2)
+    f.save(entries => f.setRelations(entries, f.lin, f.zhou, ['早结的盟', '晚结的仇']))
+    expect(relationEvents(f).map(event => event.effective_chapter)).toEqual([1, 3])
+    f.db.prepare('DELETE FROM drafts_all WHERE id=2').run()
+    f.save(entries => f.setRelations(entries, f.lin, f.zhou, ['晚结的仇']))
+    expect(relationEvents(f).at(-1)).toMatchObject({ value: '', effective_chapter: 2 })
+    expect(f.now(2).relations).toEqual([])
+    expect(f.now(3).relations[0].lines.map(line => line.value)).toEqual(['晚结的仇'])
+  })
+
   it('基线里同一对角色的冲突关系都读得到，删掉一条后只剩另一条', () => {
     const f = fixture()
     f.db.exec("INSERT INTO character_identity_approvals VALUES('op-1','h','{}'),('op-2','h','{}')")

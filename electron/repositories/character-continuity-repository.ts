@@ -46,7 +46,7 @@ interface NodeWrite {
   effectiveChapter: number
   provenance: ContinuityProvenance
   draftId: number | null
-  evidence: Record<string, unknown>
+  evidence: { quote?: FinalizedCharacterEvidence; relationshipId?: string }
 }
 
 /** 业务写入和节点要一起成败，放在写业务列之前检查。 */
@@ -59,7 +59,8 @@ function appendNode(db: BetterSqlite3.Database, node: NodeWrite): void {
       MAX(CASE WHEN e.draft_id IS NULL OR d.status='finalized' THEN e.effective_chapter END) AS chapter,
       COALESCE(MAX(json_extract(e.evidence_json,'$.seq')),0) AS seq
     FROM character_continuity_events e LEFT JOIN drafts d ON d.id=e.draft_id
-    WHERE e.subject_id=? AND e.aspect=? AND e.target_id IS ?`).get(node.subjectId, node.aspect, node.target?.id ?? null) as { chapter: number | null; seq: number }
+    WHERE e.subject_id=? AND e.aspect=? AND e.target_id IS ? AND json_extract(e.evidence_json,'$.relationshipId') IS ?`)
+    .get(node.subjectId, node.aspect, node.target?.id ?? null, node.evidence.relationshipId ?? null) as { chapter: number | null; seq: number }
   // 不早于同系列已有节点：否则按章折叠会读到更早写入的值，与当前列分叉。
   const effectiveChapter = Math.max(node.effectiveChapter, series.chapter ?? 0)
   db.prepare(`INSERT INTO character_continuity_events(event_id,subject_id,subject_name,target_id,target_name,aspect,value,effective_chapter,provenance_json,draft_id,evidence_json)
@@ -96,12 +97,12 @@ const RELATION_ORIGIN: Readonly<Record<CharacterApproval['action'], 'author' | '
 })
 
 export function insertCharacterRelationship(db: BetterSqlite3.Database, line: CharacterRelationshipLine & { relation: string; provenanceJson: string },
-  approval: Pick<CharacterApproval, 'operationId' | 'action'>): void {
+  approval: Pick<CharacterApproval, 'operationId' | 'action'>, effectiveChapter = nextChapter(db)): void {
   requireTransaction(db)
   db.prepare('INSERT INTO character_relationships VALUES(?,?,?,?,?,?,?,?)').run(line.relationshipId, line.sourceId, line.targetId, line.relation,
     line.sourceName, line.targetName, line.provenanceJson, approval.operationId)
   appendNode(db, { eventId: `relation:add:${line.relationshipId}`, subjectId: line.sourceId, subjectName: line.sourceName, target: { id: line.targetId, name: line.targetName },
-    aspect: 'relation', value: line.relation, effectiveChapter: nextChapter(db), provenance: { kind: RELATION_ORIGIN[approval.action], operationId: approval.operationId },
+    aspect: 'relation', value: line.relation, effectiveChapter, provenance: { kind: RELATION_ORIGIN[approval.action], operationId: approval.operationId },
     draftId: null, evidence: { relationshipId: line.relationshipId } })
 }
 
