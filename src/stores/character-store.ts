@@ -203,6 +203,8 @@ interface CharacterState {
   commitAvatarDrafts: (session: ProjectSessionContext) => Promise<void>
   /** IPC-verified display grant; raw cards remain the author edit and history source. */
   currentDerivedFields: Record<string, CharacterStateTextField[]>
+  stateEffectiveChapter: number | undefined
+  setStateEffectiveChapter: (chapter: number | undefined) => void
   selectedId: string | null
   /** Display-only compatibility; writes always receive characterId. */
   selectedName: string | null
@@ -246,7 +248,6 @@ interface CharacterState {
     projectPath?: string,
     expectedProjectSession?: ProjectSessionContext,
     operationKind?: 'delete',
-    stateEffectiveChapter?: number,
   ) => Promise<void>
 
   // 兼容旧接口
@@ -284,6 +285,8 @@ export const useCharacterStore = create<CharacterState>()((set, get) => ({
     }
   },
   currentDerivedFields: {},
+  stateEffectiveChapter: undefined,
+  setStateEffectiveChapter: chapter => set({ stateEffectiveChapter: chapter }),
   selectedId: null, selectedName: null,
   saving: false,
   identityBusy: false,
@@ -305,6 +308,7 @@ export const useCharacterStore = create<CharacterState>()((set, get) => ({
         avatarDrafts: {},
         characters: [],
         currentDerivedFields: {},
+        stateEffectiveChapter: undefined,
         selectedId: null, selectedName: null,
         loaded: false,
         dataProjectKey: null,
@@ -417,6 +421,7 @@ export const useCharacterStore = create<CharacterState>()((set, get) => ({
       avatarDrafts: {},
       characters: [],
       currentDerivedFields: {},
+      stateEffectiveChapter: undefined,
       selectedId: null, selectedName: null,
       saving: false,
       identityBusy: false,
@@ -436,6 +441,7 @@ export const useCharacterStore = create<CharacterState>()((set, get) => ({
       avatarDrafts: {},
       characters: [],
       currentDerivedFields: {},
+      stateEffectiveChapter: undefined,
       selectedId: null, selectedName: null,
       saving: false,
       identityBusy: false,
@@ -657,7 +663,7 @@ export const useCharacterStore = create<CharacterState>()((set, get) => ({
     ))
   },
 
-  saveAll: (projectPath, expectedProjectSession, operationKind, stateEffectiveChapter) => {
+  saveAll: (projectPath, expectedProjectSession, operationKind) => {
     const projectSession = currentCharacterProjectSession(projectPath, expectedProjectSession)
     const projectKey = projectSession?.projectPath
     if (
@@ -685,7 +691,7 @@ export const useCharacterStore = create<CharacterState>()((set, get) => ({
     ) {
       return Promise.reject(new Error(useLocaleStore.getState().text('角色身份操作正在进行，请稍后再保存', 'Another character change is in progress. Save again in a moment.')))
     }
-    const { characters } = get()
+    const { characters, stateEffectiveChapter } = get()
     const expectedRevision = get().rosterRevision
     const expectedIdentityRevision = get().identityRevision
     if (expectedRevision === null) {

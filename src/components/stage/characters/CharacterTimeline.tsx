@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { ChevronRight } from 'lucide-react'
 import { resolveStateEffectiveChapter, type CharacterTimelineChange, type CharacterTimelineSource, type StateChapterRange } from '../../../shared/character-continuity'
 import { pluralEn } from '../../../shared/plural-en'
@@ -71,11 +71,9 @@ export default function CharacterTimeline({ timeline, open, onOpenChange }: { ti
   )
 }
 
-/** 卸载时清掉所选章，否则下一次保存会写到界面上看不到的章。 */
 export function StateChapterNote({ range, disabled, onChange }: { range: StateChapterRange; disabled: boolean; onChange: (chapter: number | undefined) => void }) {
   const text = useLocaleStore(state => state.text)
   const [draft, setDraft] = useState<string | null>(null)
-  useEffect(() => () => onChange(undefined), [onChange])
   const requested = draft?.trim() ? Number(draft) : undefined
   const chapter = resolveStateEffectiveChapter(requested, range)
   const update = (value: string) => {
@@ -85,7 +83,7 @@ export function StateChapterNote({ range, disabled, onChange }: { range: StateCh
   }
   return (
     <div className="cast-view-note cast-state-chapter">
-      <span>{text(`手改的状态从第 ${chapter} 章起生效`, `Hand edits to state apply from chapter ${chapter}`)}</span>
+      <span>{text(`手改的状态从第 ${chapter} 章起生效，早于已有记录时顺延`, `Hand edits to state apply from chapter ${chapter}, or later if that field already has a later record`)}</span>
       {draft === null
         ? <Button variant="text" size="sm" onClick={() => setDraft('')}>{text('改章号', 'Change chapter')}</Button>
         : <label>{text('章号', 'Chapter')}<input className="pi-input" type="number" min={1} max={range.last} placeholder={String(range.next)} disabled={disabled} value={draft} onChange={event => update(event.target.value)} /></label>}

@@ -1,4 +1,4 @@
-import { useId, useState, type ReactNode } from 'react'
+import { useEffect, useId, useState, type ReactNode } from 'react'
 import { Ellipsis, Save, UserRound } from 'lucide-react'
 import { CHARACTER_ROLES, getCharacterRoleLabels } from '../../../shared/character-role'
 import { relationshipStorageFromEditor } from '../../../shared/relationship-presentation'
@@ -50,6 +50,12 @@ export default function CharacterProfile({ projectKey }: { projectKey: string })
     return text(zhCN, enUS)
   }
   const name = card?.name || text('未命名', 'Untitled')
+  const chapterNoteShown = view === 'state' && profile.stateDirty && timeline.status === 'ready'
+  const { setStateEffectiveChapter } = profile
+  // 说明条不显示时清掉所选章，否则保存会写到界面上看不到的章。卸载时不清：离开角色页后退出前保存还要用它。
+  useEffect(() => {
+    if (!chapterNoteShown) setStateEffectiveChapter(undefined)
+  }, [chapterNoteShown, setStateEffectiveChapter])
 
   const confirmDelete = async () => {
     const scope = confirming
@@ -133,8 +139,8 @@ export default function CharacterProfile({ projectKey }: { projectKey: string })
 
       <div className="cast-view-switch">
         <SegmentedControl label={text('档案视图', 'Profile view')} options={viewOptions} value={view} onChange={setView} />
-        {view === 'state' && card && (profile.stateDirty && timeline.status === 'ready'
-          ? <StateChapterNote range={timeline.chapterRange} disabled={profile.saving} onChange={profile.setStateEffectiveChapter} />
+        {view === 'state' && card && (chapterNoteShown
+          ? <StateChapterNote range={timeline.chapterRange} disabled={profile.saving} onChange={setStateEffectiveChapter} />
           : <span className="cast-view-note">{text('定稿后由 AI 按章节更新，也可以手动修正', 'Updated by AI after each finalized chapter; you can correct it by hand')}</span>)}
       </div>
 

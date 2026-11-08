@@ -37,7 +37,7 @@ export function useCharacterProfile(projectKey: string) {
   })
   const [saveOutcome, setSaveOutcome] = useState<SaveOutcome>('idle')
   const [saveError, setSaveError] = useState('')
-  const [stateEffectiveChapter, setStateEffectiveChapter] = useState<number>()
+  const setStateEffectiveChapter = useCharacterStore(s => s.setStateEffectiveChapter)
   const identityBusy = useCharacterStore(s => s.identityBusy)
   const renameCharacter = useCharacterStore(s => s.renameCharacter)
   const updateField = useCharacterStore(s => s.updateField)
@@ -91,7 +91,7 @@ export function useCharacterProfile(projectKey: string) {
     setSaveOutcome('idle')
     setSaveError('')
     try {
-      await saveAll(projectKey, undefined, undefined, stateEffectiveChapter)
+      await saveAll(projectKey)
       if (!isProjectSessionCurrent(projectSession)) return
       addLog('info', text(`已保存 ${characters.length} 个角色卡`, `Saved ${characters.length} character cards`))
       const stillDirty = useEditorStore.getState().tabs.some(

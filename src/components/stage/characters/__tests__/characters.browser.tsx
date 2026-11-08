@@ -215,7 +215,7 @@ describe('角色名单', () => {
 
     expect(host!.querySelectorAll('.pi-btn--primary')).toHaveLength(1)
     await click('保存角色')
-    expect(store.saveAll).toHaveBeenCalledWith(session.projectPath, undefined, undefined, undefined)
+    expect(store.saveAll).toHaveBeenCalledWith(session.projectPath)
   })
 
   it('删除角色先出危险确认，取消不删；确认后删除选中的那位', async () => {
