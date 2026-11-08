@@ -32,7 +32,7 @@ import type { BlueprintRangeCommitReceipt } from '../repositories/blueprint-repo
 import type { GenerationKnowledgeSnapshot } from '../../src/shared/generation-knowledge'
 import { withKnowledgeSourceGate } from '../services/knowledge-source-gate'
 import { KnowledgeBaseUnavailableError, knowledgeBaseLoader } from '../services/knowledge-base-loader'
-import { getEmbeddingConfig } from './kb-controller'
+import { getEmbeddingConfig, getRerankConfig } from './kb-controller'
 
 type Owner = ReturnType<typeof createMainGenerationOwner>
 type OwnerChannels = LegacyRosterGenerationChannels & GraphGenerationChannels & GenerationOwnerChannels & CharacterProposalChannels & FinalizedCharacterGenerationChannels & ReviewRevisionGenerationInvokeChannels & AgentGenerationChannels & ImportGenerationChannels & EditorInlineGenerationChannels & FinalizationGenerationChannels
@@ -209,7 +209,7 @@ export function registerGenerationController(options: {
     const baseline = owner.draftPreparationBinding(request)
     const session = ownerSessions.get(owner)!
     const kb = await knowledgeBaseLoader.load()
-    const knowledge = await kb.captureWritingKnowledgeSnapshot(request.query, session.projectPath, getEmbeddingConfig(), [...laterFinalizedDocuments(request.chapterNumber)])
+    const knowledge = await kb.captureWritingKnowledgeSnapshot(request.query, session.projectPath, getEmbeddingConfig(), [...laterFinalizedDocuments(request.chapterNumber)], getRerankConfig())
     return guardKnowledge(owner, knowledge, () => owner.prepareDraftContext(request, knowledge, baseline))
   })
   register('generation:begin', 1, (owner, request) => {

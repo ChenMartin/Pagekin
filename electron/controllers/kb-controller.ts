@@ -8,6 +8,7 @@ import { isProjectSessionContext } from '../../src/shared/project-session-contex
 import { hasRequiredApiKey } from '../../src/shared/provider-presets'
 import type { EmbeddingModel } from '../../src/shared/embedding-options'
 import { resolveRerankConfig, type RerankConfig } from '../../src/shared/rerank-config'
+import { rankPassages, rerankRecallCount } from '../rerank'
 import type { ImportRunExecutionAuthority } from '../../src/shared/import-run'
 import { knowledgeBaseLoader } from '../services/knowledge-base-loader'
 import { mainText } from '../i18n'
@@ -219,6 +220,14 @@ export function getRerankConfig(): RerankConfig {
   })
 }
 
+async function searchRanked<Unavailable>(query: string, topK: number | undefined,
+  search: (recall: number) => Promise<Array<{ text: string; score: number; fileName: string }> | Unavailable>) {
+  const limit = topK ?? 5
+  const rerank = getRerankConfig()
+  const results = await search(rerankRecallCount(rerank, limit))
+  return Array.isArray(results) ? (await rankPassages(query, results, rerank, limit)).items : results
+}
+
 function hasUsableEmbeddingConfig(
   config: ReturnType<typeof getEmbeddingConfig>,
 ): config is NonNullable<ReturnType<typeof getEmbeddingConfig>> {
@@ -416,31 +425,31 @@ export function registerKBController(
     const projectPath = requireProjectPath(expectedProjectPath)
     const embConfig = getEmbeddingConfig()
 
-    return knowledgeBaseLoader.run((kb) => {
+    return searchRanked(query, topK, recall => knowledgeBaseLoader.run((kb) => {
       if (embConfig) {
-        return kb.searchKnowledge(query, projectPath, embConfig.protocol, embConfig.model, topK ?? 5)
+        return kb.searchKnowledge(query, projectPath, embConfig.protocol, embConfig.model, recall)
       }
-      return kb.searchKnowledgeFTS(query, projectPath, topK ?? 5)
-    })
+      return kb.searchKnowledgeFTS(query, projectPath, recall)
+    }))
   })
 
   ipcMain.handle('kb:search-writing-context', async (_event, query: string, topK: number | undefined, expectedProjectPath: string) => {
     const projectPath = requireProjectPath(expectedProjectPath)
     const embConfig = getEmbeddingConfig()
 
-    return knowledgeBaseLoader.run((kb) => {
+    return searchRanked(query, topK, recall => knowledgeBaseLoader.run((kb) => {
       if (embConfig) {
         return kb.searchKnowledge(
           query,
           projectPath,
           embConfig.protocol,
           embConfig.model,
-          topK ?? 5,
+          recall,
           ['reference'],
         )
       }
-      return kb.searchKnowledgeFTS(query, projectPath, topK ?? 5, ['reference'])
-    })
+      return kb.searchKnowledgeFTS(query, projectPath, recall, ['reference'])
+    }))
   })
 
   ipcMain.handle('kb:list-documents', async (_event, expectedProjectPath: string) => {
