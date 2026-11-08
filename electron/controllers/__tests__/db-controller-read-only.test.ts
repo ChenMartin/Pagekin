@@ -82,3 +82,11 @@ describe('db:draft-update-content 对带定稿收据的稿', () => {
     expect(DraftRepository.getFull(draftId)?.content).toBe('改稿')
   })
 })
+
+describe('数据库控制器注册的通道', () => {
+  it('不再提供无人调用的全局角色状态快照读写通道', () => {
+    expect(handlers.has('db:draft-update-content')).toBe(true)
+    expect(handlers.has('db:save-summary-snapshot')).toBe(false)
+    expect(handlers.has('db:get-latest-summary')).toBe(false)
+  })
+})

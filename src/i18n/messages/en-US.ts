@@ -28,6 +28,7 @@ export const enUS = {
   'error.projectDeleteFailed': 'Could not delete the project folder. Close any program that is using files in it, then try again.',
   'error.projectRecentListUpdateFailed': 'The recent project list was not updated. The project itself is unaffected.',
   'error.projectArchiveTargetExists': 'The target file already exists. Choose another file name; project archives never overwrite existing files.',
+  'error.portableUnsafeProjection': 'Your book is unchanged. One piece of data could not be packaged safely, so no archive was created. Please report this message to us.',
   'error.externalFileGrantExpired': 'Access to the selected file or folder has expired. Choose it again.',
   'error.unknown': 'Something went wrong: {message}',
   'error.generationRequestFailed': 'The generation request failed before its result was saved. Try again. If it keeps happening, report this message and when it occurred.',

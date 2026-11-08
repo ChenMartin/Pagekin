@@ -272,8 +272,9 @@ describe('finalized continuity projection', () => {
     })).toThrow('CONTINUITY_SOURCE_STALE')
   })
 
-  it('does not let a continuity projection shadow the latest character-state snapshot', () => {
-    SummaryRepository.saveSnapshot(1, '角色状态仍需保留')
+  it('does not let a continuity projection overwrite a legacy character-state snapshot', () => {
+    getProjectDb()!.prepare('INSERT INTO summary_snapshots_all (chapter_number, character_states) VALUES (?, ?)')
+      .run(1, '角色状态仍需保留')
     const content = '定稿正文'
     const receipt = FinalizedDraftImportRepository.commit(projectRoot, {
       operationId: 'continuity-does-not-shadow-character-state',
@@ -297,10 +298,9 @@ describe('finalized continuity projection', () => {
       },
     })
 
-    expect(SummaryRepository.getLatestSnapshot()).toEqual({
-      chapterNumber: 1,
-      characterStates: '角色状态仍需保留',
-    })
+    expect(getProjectDb()!.prepare(
+      'SELECT chapter_number, character_states FROM summary_snapshots WHERE draft_id IS NULL',
+    ).all()).toEqual([{ chapter_number: 1, character_states: '角色状态仍需保留' }])
   })
 
   it('marks an invalidated suffix stale while preserving raw finalized prose for deterministic fallback', () => {

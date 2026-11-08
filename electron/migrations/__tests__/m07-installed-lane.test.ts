@@ -59,7 +59,7 @@ describe('installed M07 lane', () => {
         receipts: rows(db, 'SELECT * FROM chapter_deletion_operations'),
       }
       const result = migrateSchema(new SqliteSchemaAdapter(db), getDesktopMigrationRegistry(), 8)
-      expect(CURRENT_DESKTOP_SCHEMA_VERSION).toBe(8)
+      expect(CURRENT_DESKTOP_SCHEMA_VERSION).toBe(9)
       expect(result.completedSteps).toEqual(['M07'])
       const v8 = getDesktopMigrationRegistry().recognizedSchemas.filter(schema => schema.version === 8).map(schema => schema.fingerprint)
       expect(v8).toContain(sqliteSchemaFingerprint(db))
@@ -130,6 +130,7 @@ describe('M07 deletion columns and live views', () => {
 
   it('gives a new project the same tables, views, foreign keys and triggers as an upgraded v7 project', () => {
     const upgraded = v8(), created = new Database(':memory:')
+    migrateSchema(new SqliteSchemaAdapter(upgraded), getDesktopMigrationRegistry(), CURRENT_DESKTOP_SCHEMA_VERSION)
     try {
       created.pragma('foreign_keys=ON')
       created.transaction(() => initializeLegacyBaselineSchema(created))()
@@ -204,6 +205,8 @@ const LIVE_VIEW_EXEMPT_TABLES: Readonly<Record<string, string>> = {
   review_cycles: '按 cycle、review、revision 的 id 读，挂在 reviews 与 revisions 之下；getByReviewId 只认父稿还在的审稿',
   review_findings: '只按 cycle_id 读，挂在 review_cycles 之下',
   review_cycle_merges: '只按 cycle_id 读，挂在 review_cycles 之下',
+  character_continuity_events: '只有派生节点挂稿，作者、采用与基线节点 draft_id 为空。派生节点要绑当前定稿，读取须 JOIN drafts 视图并限 status=finalized，比 live 视图更严，回收站章的派生节点随之读不出',
+  blueprint_continuity_suggestions: '挂在触发它的替换定稿上；读取须 JOIN finalization_outbox 视图，替换章进回收站后建议读不出，接受前还要比对蓝图哈希',
 }
 
 /** 从 drafts_all 与 contents 沿外键反向闭包出的表里，既没有 live 视图也没有豁免理由的。 */

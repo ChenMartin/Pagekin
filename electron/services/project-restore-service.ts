@@ -784,7 +784,7 @@ export async function restorePortableProject(input: RestorePortableProjectInput)
     const freeze = parsePortableRuntimeFreeze(freezeBytes)
     const sourceSchemaVersion = extracted.manifest.sourceSchemaVersion
     if (sourceSchemaVersion !== PORTABLE_SOURCE_SCHEMA_VERSION) {
-      // M07 之前导出的包：先按它自己的版本校验，再在解出的副本上迁到当前版本；包里的原件不动。
+      // 旧版本导出的包：先按它自己的版本校验，再在解出的副本上迁到当前版本；包里的原件不动。
       verifyProjectSqlite({ databasePath, targetVersion: sourceSchemaVersion })
       const source = new BetterSqlite(databasePath, { readonly: true, fileMustExist: true })
       try { assertPortableSourceSchema(source, sourceSchemaVersion) } finally { source.close() }

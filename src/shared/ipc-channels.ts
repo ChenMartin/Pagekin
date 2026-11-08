@@ -193,6 +193,8 @@ export interface GlobalConfig {
   locale?: Locale
   defaultModelId: string | null
   defaultEmbeddingModelId?: string | null
+  /** 显式选定的重排档案；缺省时按检索档案自动复用。 */
+  defaultRerankModelId?: string | null
   stageModelIds?: StageModelIds
   /** 定稿与后处理成功后，打开下一章的创作窗口（默认关闭）。 */
   autoOpenNextChapterAfterFinalize?: boolean
@@ -588,6 +590,7 @@ export interface LLMChannels {
       error?: string
       defaultModelId?: string | null
       defaultEmbeddingModelId?: string | null
+      defaultRerankModelId?: string | null
       stageModelIds?: StageModelIds
     }
   }
@@ -841,7 +844,7 @@ export interface ModelProfile {
   capabilitySources?: Partial<Record<keyof ModelCapabilities, 'endpoint' | 'preset' | 'manual' | 'unknown'>>
   /** 旧配置和当前执行路径使用的输出 token 上限，保持兼容。 */
   maxTokens: number
-  purposes: Array<'generation' | 'refinement' | 'summary' | 'embedding'>
+  purposes: Array<'generation' | 'refinement' | 'summary' | 'embedding' | 'rerank'>
   /** Profile-scoped advanced request; `auto` defers to project strategy and purpose. */
   reasoningOverride?: ReasoningOverride
   /** Explicit advanced wire mapping; omitted profiles use endpoint metadata. */
@@ -1194,8 +1197,6 @@ export interface DatabaseChannels {
     }
   }
   'db:get-llm-history': { args: [limit: number | undefined, expectedProjectPath: string]; return: unknown[] }
-  'db:save-summary-snapshot': { args: [chapterNumber: number, characterStates: string, expectedProjectPath: string]; return: { success: boolean } }
-  'db:get-latest-summary': { args: [expectedProjectPath: string]; return: { characterStates: string; chapterNumber: number } | null }
 }
 
 // ===== 知识库频道 =====

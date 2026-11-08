@@ -61,10 +61,9 @@ describe('summary continuity migration', () => {
     expect(getProjectDb()!.prepare(
       "SELECT generation, stale_from_chapter FROM continuity_projection_meta WHERE id = 'main'",
     ).get()).toEqual({ generation: 0, stale_from_chapter: null })
-    expect(SummaryRepository.getLatestSnapshot()).toEqual({
-      chapterNumber: 3,
-      characterStates: 'legacy character state',
-    })
+    expect(getProjectDb()!.prepare(
+      'SELECT chapter_number, character_states, draft_id FROM summary_snapshots',
+    ).all()).toEqual([{ chapter_number: 3, character_states: 'legacy character state', draft_id: null }])
   })
 
   it('cascades a migrated finalized continuity snapshot when its draft is deleted', () => {

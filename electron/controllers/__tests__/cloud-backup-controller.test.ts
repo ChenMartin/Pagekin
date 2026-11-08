@@ -14,6 +14,10 @@ import {
 } from '../cloud-backup-controller'
 import { removeDirectoryWithWindowsRetry } from '../../utils/remove-directory'
 import { exportPortableProject } from '../../services/project-archive-service'
+import { restorePortableProject } from '../../services/project-restore-service'
+import { closeProjectDatabase, getProjectDb, initProjectDatabase } from '../../database'
+import { CURRENT_DESKTOP_SCHEMA_VERSION } from '../../migrations/desktop-registry'
+import { continuityBaseline, SCHEMA8_CONTINUITY_ARCHIVE, SCHEMA8_EXPECTED_BASELINE } from '../../../test/helpers/schema8-continuity-archive'
 import { createPortableProjectAssetProvider } from '../../services/portable-project-assets'
 import { createProjectArchiveRoundtripFixture } from '../../../test/desktop/project-archive.fixture'
 import { WINDOWS_RUNNER_IO_STALL_TIMEOUT_MS } from '../../../test/helpers/windows-runner-io-stall'
@@ -348,6 +352,28 @@ describe('registerCloudBackupController', () => {
       expect(result).toMatchObject({ success: true, state: 'backup-complete', operationId: OPERATION })
       expect(f.deps.webDav.appendGeneration).toHaveBeenCalledWith(expect.objectContaining({ originProjectId: project.sourceProjectId }))
     } finally { project.dispose() }
+  })
+
+  it('restores a backup uploaded before M08 as a current project with its continuity baseline', { timeout: WINDOWS_RUNNER_IO_STALL_TIMEOUT_MS }, async () => {
+    const f = fixture({ restorePortableProject })
+    vi.mocked(f.deps.webDav.downloadGeneration).mockImplementation(async input => {
+      fs.copyFileSync(SCHEMA8_CONTINUITY_ARCHIVE, input.targetArchivePath)
+      return { generationId: GENERATION, targetArchivePath: input.targetArchivePath, archiveSha256: 'a'.repeat(64), archiveByteSize: 1 }
+    })
+    const target = f.restoreTarget('restored')
+
+    const result = await f.invoke('cloud-backup:restore-copy', {
+      operationId: OPERATION, localEndpointAccountId: ACCOUNT, cloudBookId: BOOK, generationId: GENERATION, targetGrantId: target.grantId,
+    })
+
+    expect(result).toMatchObject({ success: true })
+    initProjectDatabase(target.path)
+    try {
+      expect(getProjectDb()!.pragma('user_version', { simple: true })).toBe(CURRENT_DESKTOP_SCHEMA_VERSION)
+      expect(continuityBaseline(getProjectDb()!)).toEqual(SCHEMA8_EXPECTED_BASELINE)
+      expect(getProjectDb()!.prepare('SELECT stable_fact_key,chapter_number,reason,revoked FROM consistency_exemptions').all())
+        .toEqual([{ stable_fact_key: 'death:老周', chapter_number: null, reason: '作者安排：老周假死', revoked: 0 }])
+    } finally { closeProjectDatabase() }
   })
 
   it('requires disclosure before export and resolves the upload secret only after export', async () => {
