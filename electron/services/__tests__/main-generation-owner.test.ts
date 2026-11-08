@@ -3799,7 +3799,7 @@ describe('规划恢复稿是否还列为可恢复（#608）', () => {
     expect(f.owner.readContext(run.handle).planningDraft).toMatchObject({ requestedRange: { from: 1, to: 2 }, standing: 'superseded' })
   })
 
-  it('大纲一批中断后，作者只给缺的章加了空标题：照常列出；写了这一章的内容才不再列出', async () => {
+  it('大纲一批中断后，作者给缺的章加了空标题，或手写补齐了这一章：都照常列出', async () => {
     const dispatch = vi.fn<GenerationRunServiceDependencies['dispatch']>(async (request, options) => {
       options.onVisible({ kind: 'delta', text: outlineEntry(Number((request as { task: GenerationTask }).task.purpose.split(':')[2])) })
       return { finishReason: 'stop', usage: null }
@@ -3813,6 +3813,46 @@ describe('规划恢复稿是否还列为可恢复（#608）', () => {
     f.db.prepare('UPDATE project_core SET synopsis=?').run(`${outlineEntry(1)}\n\n## 第2章：待定\n`)
     expect(f.owner.listRecovery().planning.map(item => item.handle.runId)).toEqual([run.handle.runId])
     f.db.prepare('UPDATE project_core SET synopsis=?').run(`${outlineEntry(1)}\n\n## 第2章：待定\n作者自己写了第 2 章的行动与结果。`)
+    expect(f.owner.listRecovery().planning.map(item => item.handle.runId)).toEqual([run.handle.runId])
+    expect(f.owner.readContext(run.handle).planningDraft?.standing).toBe('open')
+  })
+
+  it('重新生成已有的一章大纲，写完了但没存进正式大纲，作者只改了这一章的标题：照常列出', async () => {
+    const dispatch = vi.fn<GenerationRunServiceDependencies['dispatch']>(async (_request, options) => {
+      options.onVisible({ kind: 'delta', text: outlineEntry(1) })
+      return { finishReason: 'stop', usage: null }
+    })
+    const f = fixture(dispatch)
+    const original = renderPlotOutlineSynopsis('## 第1章：旧的一夜\n林岚第一次到旧港。', 1, { totalChapters: 1, writingLanguage: 'zh-CN' })
+    f.db.prepare('UPDATE project_core SET total_chapters=?, synopsis=?').run(1, original)
+    const run = f.owner.begin(outlineSelection(f, 1))
+    await f.owner.execute({ handle: run.handle, invocationNonce: 'outline-1', task: outlineTask(f.owner.read(run.handle).plotOutline!) })
+    acceptOutline(f.owner, run.handle)
+    expect(f.owner.readContext(run.handle).plotOutline!.cursor).toEqual({ kind: 'complete' })
+    f.db.prepare('UPDATE project_core SET synopsis=?').run(original.replace('旧的一夜', '旧港初夜'))
+    expect(f.owner.listRecovery().planning.map(item => item.handle.runId)).toEqual([run.handle.runId])
+    expect(f.owner.readContext(run.handle).planningDraft?.standing).toBe('open')
+  })
+
+  it('升级前正式写入、运行上没有这一笔的大纲：这一批原样还在正式大纲里就不列出，作者改过其中一章后照常列出', async () => {
+    const dispatch = vi.fn<GenerationRunServiceDependencies['dispatch']>(async (request, options) => {
+      options.onVisible({ kind: 'delta', text: outlineEntry(Number((request as { task: GenerationTask }).task.purpose.split(':')[2])) })
+      return { finishReason: 'stop', usage: null }
+    })
+    const f = fixture(dispatch)
+    f.db.prepare('UPDATE project_core SET total_chapters=?').run(2)
+    const run = f.owner.begin(outlineSelection(f, 2))
+    for (const chapter of [1, 2]) {
+      await f.owner.execute({ handle: run.handle, invocationNonce: `outline-${chapter}`, task: outlineTask(f.owner.read(run.handle).plotOutline!) })
+      acceptOutline(f.owner, run.handle)
+    }
+    const progress = f.owner.readContext(run.handle).plotOutline!
+    const synopsis = renderPlotOutlineRange(progress.composition!.text, progress.range, progress.sourceExpected)
+    f.db.transaction(() => f.owner.assertSynopsisCommit(run.handle, synopsis, progress.sourceExpected)
+      || ProjectCoreRepository.commitSynopsis({ synopsis, expected: progress.sourceExpected, generationRunHandle: run.handle }, f.db)).immediate()
+    f.db.exec("UPDATE project_core SET premise='作者已修改前提' WHERE id='main'")
     expect(f.owner.listRecovery().planning).toEqual([])
+    f.db.prepare('UPDATE project_core SET synopsis=?').run(synopsis.replace('林岚确认第1份证词', '作者改写了第 1 章'))
+    expect(f.owner.listRecovery().planning.map(item => item.handle.runId)).toEqual([run.handle.runId])
   })
 })
