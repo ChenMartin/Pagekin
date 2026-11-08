@@ -67,12 +67,16 @@ export type SourceSelection =
   | { decision: 'capacity-conflict'; blockingSourceId: string; blockingReason: SourceOmissionReason
       omissions: readonly SourceOmission[]; coverage: RequiredCoverage }
 
+/** 可选材料的准入规则，必需材料不受它约束。ceiling 比的是已纳入总量（含必需）加本条。 */
+export type OptionalMaterialRule =
+  | { kind: 'ceiling'; maxUnits: number }
+  | { kind: 'frozen'; contentHashes: ReadonlySet<string> }
+
 export interface SourceSelectionInput {
   current: ProjectEpoch
   candidates: readonly MaterialCandidate[]
   capacity: { maxInputUnits: number; methodVersion: string }
-  /** Optional material may enter only while total included units stay below this local ceiling. */
-  optionalMaterialCeiling?: number
+  optionalMaterial?: OptionalMaterialRule
   relevanceTerms: readonly string[]
 }
 
@@ -212,8 +216,10 @@ export function selectChapterSources(input: SourceSelectionInput): SourceSelecti
       continue
     }
     const cost = blocks.reduce((sum, piece) => sum + unitOf(piece.text), 0)
-    if (cost > remaining || !candidate.required && input.optionalMaterialCeiling !== undefined
-      && input.capacity.maxInputUnits - remaining + cost > input.optionalMaterialCeiling) {
+    const rule = candidate.required ? undefined : input.optionalMaterial
+    if (cost > remaining || rule && (rule.kind === 'frozen'
+      ? !rule.contentHashes.has(candidate.ref.contentHash)
+      : input.capacity.maxInputUnits - remaining + cost > rule.maxUnits)) {
       block(candidate, 'budget')
       continue
     }

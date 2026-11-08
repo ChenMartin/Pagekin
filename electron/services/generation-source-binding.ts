@@ -12,7 +12,7 @@ import type { WritingLanguage } from '../../src/shared/writing-language';
 import { CURRENT_DRAFT_STATUS_SQL, WORKING_DRAFT_STATUSES } from '../../src/shared/draft-status';
 import type { RunBinding } from '../repositories/generation-run-repository';
 import type { GenerationAuthorInput, GenerationBatchIntent, MaterialDecisionIncludedSource, MaterialDecisionOmittedSource, MaterialDecisionReceipt } from '../../src/shared/generation-owner-contract';
-import { MATERIAL_DECISION_CATEGORIES, MATERIAL_DECISION_MAX_INPUT_UNITS, MATERIAL_DECISION_MAX_SOURCES,
+import { MATERIAL_BUDGET_WINDOW_SOURCES, MATERIAL_DECISION_CATEGORIES, MATERIAL_DECISION_MAX_INPUT_UNITS, MATERIAL_DECISION_MAX_SOURCES,
     MATERIAL_DECISION_OMISSION_REASONS, MATERIAL_DECISION_RECEIPT_VERSION, MATERIAL_DECISION_SOURCE_ID,
     MATERIAL_DECISION_UNIT_METHOD_VERSION } from '../../src/shared/generation-owner-contract';
 import type { GenerationKnowledgeSnapshot } from '../../src/shared/generation-knowledge';
@@ -245,7 +245,8 @@ function compareDecisionIdentity(left: { sourceId: string; revision: number; con
 function freezeMaterialDecision(value: unknown): MaterialDecisionReceipt {
     const reconciled = !!value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'reconciliationPromptHash');
     const outlined = !!value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'shortOutlinePromptHash');
-    const record = decisionFields(value, ['version', 'verdict', 'promptHash', ...(reconciled ? ['reconciliationPromptHash'] : []), ...(outlined ? ['shortOutlinePromptHash'] : []), 'capacity', 'coverage', 'included', 'omitted']);
+    const budgeted = !!value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'budget');
+    const record = decisionFields(value, ['version', 'verdict', 'promptHash', ...(reconciled ? ['reconciliationPromptHash'] : []), ...(outlined ? ['shortOutlinePromptHash'] : []), 'capacity', ...(budgeted ? ['budget'] : []), 'coverage', 'included', 'omitted']);
     if (record.version !== MATERIAL_DECISION_RECEIPT_VERSION || record.verdict !== 'admitted')
         fail('GENERATION_MATERIAL_DECISION_INVALID');
     if (typeof record.promptHash !== 'string' || !isContentHash(record.promptHash)
@@ -254,6 +255,7 @@ function freezeMaterialDecision(value: unknown): MaterialDecisionReceipt {
         fail('GENERATION_MATERIAL_DECISION_INVALID');
     const capacity = decisionFields(record.capacity, ['maxInputUnits', 'methodVersion', 'admittedUnits']);
     const coverage = decisionFields(record.coverage, ['required', 'included', 'complete']);
+    const budget = budgeted ? decisionFields(record.budget, ['inputTokens', 'contextWindowTokens', 'contextWindowSource', 'reservedOutputTokens', 'safetyMarginTokens']) : undefined;
     const frozen: MaterialDecisionReceipt = {
         version: MATERIAL_DECISION_RECEIPT_VERSION, verdict: 'admitted', promptHash: record.promptHash,
         ...(reconciled ? { reconciliationPromptHash: record.reconciliationPromptHash as string } : {}),
@@ -261,6 +263,9 @@ function freezeMaterialDecision(value: unknown): MaterialDecisionReceipt {
         capacity: { maxInputUnits: decisionCount(capacity.maxInputUnits, 1, MATERIAL_DECISION_MAX_INPUT_UNITS),
             methodVersion: decisionEnum(capacity.methodVersion, [MATERIAL_DECISION_UNIT_METHOD_VERSION]),
             admittedUnits: decisionCount(capacity.admittedUnits, 0, MATERIAL_DECISION_MAX_INPUT_UNITS) },
+        ...(budget ? { budget: { inputTokens: decisionCount(budget.inputTokens), contextWindowTokens: decisionCount(budget.contextWindowTokens, 1),
+            contextWindowSource: decisionEnum(budget.contextWindowSource, MATERIAL_BUDGET_WINDOW_SOURCES),
+            reservedOutputTokens: decisionCount(budget.reservedOutputTokens), safetyMarginTokens: decisionCount(budget.safetyMarginTokens) } } : {}),
         coverage: { required: decisionCount(coverage.required), included: decisionCount(coverage.included),
             complete: coverage.complete === true },
         included: decisionSources(record.included, 'included') as MaterialDecisionIncludedSource[],

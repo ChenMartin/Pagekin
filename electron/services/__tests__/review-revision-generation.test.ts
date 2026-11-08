@@ -16,7 +16,7 @@ import { ReviewCycleRepository } from '../../repositories/review-cycle-repositor
 import { createHumanConfirmedReviewSnapshot, renderHumanConfirmedReviewBrief, serializeHumanConfirmedReviewSnapshot } from '../../../src/shared/human-confirmed-review'
 import { getProjectDb } from '../../database'
 import { textHash } from '../../repositories/generation-run-repository'
-import { generationOutputContract, type BeginGenerationRequest } from '../../../src/shared/generation-owner-contract'
+import { DEFAULT_MATERIAL_ADMISSION, generationOutputContract, type BeginGenerationRequest } from '../../../src/shared/generation-owner-contract'
 import type { ModelProfile } from '../../../src/shared/ipc-channels'
 import type { GenerationRunServiceDependencies } from '../generation-run-service'
 import type { PrepareReviewRevisionRequest } from '../../../src/shared/review-revision-generation'
@@ -192,7 +192,7 @@ describe('review and revision generation through the actual owner and SQLite', (
       '【后续蓝图/计划｜非既定历史】', JSON.stringify(context.blueprints.filter(item => item.chapterNumber !== context.source.chapterNumber), null, 2),
     ].join('\n\n'), ['【当前及未来蓝图/计划｜非既定历史】', JSON.stringify(context.blueprints, null, 2)].join('\n\n')))
     const f = fixture(), prepared = f.prepare(), selection = f.selection(prepared)
-    const admission = await selectFrozenReviewRevisionMaterials(prepared.context, { projectId: 'project', epoch: 'epoch-1' })
+    const admission = await selectFrozenReviewRevisionMaterials(prepared.context, { projectId: 'project', epoch: 'epoch-1' }, DEFAULT_MATERIAL_ADMISSION, 0)
     const prompt = admission.admitted.map(item => item.text).join('\n\n')
     expect(prompt).toContain('【当前及未来蓝图/计划｜非既定历史】')
     const view = f.owner.begin(selection)
@@ -236,6 +236,7 @@ describe('review and revision generation through the actual owner and SQLite', (
           return f.owner.commitRevision(input as Parameters<typeof f.owner.commitRevision>[0])
         case 'generation:begin': return f.owner.begin(input as BeginGenerationRequest)
         case 'generation:read': return f.owner.read(input as typeof original.handle)
+        case 'generation:read-context': return f.owner.readContext((input as { handle: typeof original.handle }).handle)
         case 'generation:resume': return f.owner.resume(input as typeof original.handle)
         case 'generation:execute':
           if (failDispatch) { failDispatch = false; throw new Error('SYNTHETIC_BEFORE_DISPATCH') }
@@ -295,7 +296,7 @@ describe('review and revision generation through the actual owner and SQLite', (
   })
   it('admits the renderer author-material receipt through main and retains the frozen recovery context', async () => {
     const f = fixture(), prepared = f.prepare(), selection = f.selection(prepared)
-    const admission = await selectFrozenReviewRevisionMaterials(prepared.context, { projectId: 'project', epoch: 'epoch-1' })
+    const admission = await selectFrozenReviewRevisionMaterials(prepared.context, { projectId: 'project', epoch: 'epoch-1' }, DEFAULT_MATERIAL_ADMISSION, 0)
     const prompt = admission.admitted.map(material => material.text).join('\n\n')
     const view = f.owner.begin(selection)
     f.owner.bindMaterialDecision(view.handle, { ...admission.decision, promptHash: textHash(prompt) })

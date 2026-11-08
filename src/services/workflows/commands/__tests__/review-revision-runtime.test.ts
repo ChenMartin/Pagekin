@@ -45,6 +45,7 @@ function setup(responses: Response[], projections: FinalizedContinuityProjection
       writes += 1
       return { success: true, id: 9, revisionIndex: 2, reviewIndex: 2 }
     }
+    if (channel === 'generation:read-context') return {}
     throw new Error(`unexpected IPC: ${channel}`)
   })
   const fixture = new ReviewRevisionRuntimeFixture(backend)

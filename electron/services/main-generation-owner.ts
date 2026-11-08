@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
-import type { BeginGenerationRequest, ExecuteGenerationRequest, BeginGenerationBatchRequest, GenerationDraftCommitRequest, GenerationRecoveryContext, MaterialDecisionReceipt, VisibleCompositionAlgorithm, GenerationOwnerChannels, GenerationRecoveryList, ShortOutlineRetry, PlanningContinuation, PlanningDraftStanding } from '../../src/shared/generation-owner-contract'
+import type { BeginGenerationRequest, ExecuteGenerationRequest, BeginGenerationBatchRequest, GenerationDraftCommitRequest, GenerationRecoveryContext, MaterialAdmission, MaterialDecisionReceipt, VisibleCompositionAlgorithm, GenerationOwnerChannels, GenerationRecoveryList, ShortOutlineRetry, PlanningContinuation, PlanningDraftStanding } from '../../src/shared/generation-owner-contract'
 import { planningRecoverable } from '../../src/shared/planning-recovery'
 import { isDraftVisibleTextVersion } from '../../src/shared/draft-visible-text'
 import { generationOutputContract, type GenerationAuthorInput } from '../../src/shared/generation-owner-contract'
@@ -16,7 +16,8 @@ import { getCurrentProjectPath } from '../database'
 import { ModelExecutionLeaseRegistry, createModelExecutionLeaseReceipt } from './model-execution-lease'
 import { createGenerationRunService, GENERATION_STOPPED, type GenerationRunServiceDependencies } from './generation-run-service'
 import { LLMHistoryRepository } from '../repositories/llm-repository'
-import { assertSemanticGenerationTask, buildMainGenerationPlan, MAIN_GENERATION_POLICY, newMainGenerationPolicy, planningGenerationScope, readMainGenerationPolicy, type MainGenerationPlan, type MainGenerationPolicy } from './main-generation-plan'
+import { REVIEW_REVISION_OPERATIONS } from './review-revision-context'
+import { assertSemanticGenerationTask, buildMainGenerationPlan, MAIN_GENERATION_POLICY, newMainGenerationPolicy, planningGenerationScope, readMainGenerationPolicy, resolveMaterialBudget, type MainGenerationPlan, type MainGenerationPolicy } from './main-generation-plan'
 import { LLMFactory } from '../llm/llm-factory'
 import type { GenerationAttemptReceipt, GenerationTask } from '../../src/services/generation/generation-harness'
 import type { ProviderUsageEvidence } from '../llm/provider.interface'
@@ -404,10 +405,11 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
       })
       return { binding, selectedDrafts }
     })()
+    const materialBudget = resolveMaterialBudget(deps.loadModel(request.modelId)!, (binding.sourceManifest.policy as MainGenerationPolicy).budget.maxOutputPerRequest)
     const preparationId = randomUUID()
     if (preparations.size >= 64) preparations.delete(preparations.keys().next().value!)
     preparations.set(preparationId, { binding, knowledgeSnapshot: structuredClone(knowledgeSnapshot) })
-    return { preparationId, knowledgeSnapshot: structuredClone(knowledgeSnapshot), selectedDrafts }
+    return { preparationId, knowledgeSnapshot: structuredClone(knowledgeSnapshot), selectedDrafts, materialBudget }
   }
   const begin = (selection: (BeginGenerationRequest | AgentBeginSelection) & { editorInlineInput?: EditorInlineInput; finalizationGenerationSlot?: FinalizationGenerationSlot; graphGenerationInput?: GraphGenerationInput; graphGenerationKey?: string; legacyRosterKey?: string }, batchInitialization = false, agentInitialization = false, editorInitialization = false, finalizationInitialization = false, graphInitialization = false, legacyInitialization = false): MainGenerationRunView => {
     assertCurrent()
@@ -945,6 +947,15 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
     assertSourcesCurrent(handle)
     return false
   }
+  /** 已绑收据的运行沿用收据；审修在选材之前才开运行，尚无收据时按运行冻结的模型现算。 */
+  const materialAdmissionOf = (run: DurableGenerationRun): MaterialAdmission | undefined => {
+    const manifest = run.binding.sourceManifest, decision = manifest.materialDecision as MaterialDecisionReceipt | undefined
+    if (decision) return decision.budget ? { kind: 'budget', budget: decision.budget }
+      : { kind: 'frozen', optionalContentHashes: decision.included.filter(item => !item.required).map(item => item.contentHash) }
+    if (!REVIEW_REVISION_OPERATIONS.includes(manifest.operation as ReviewRevisionContext['operation'])) return undefined
+    const model = deps.loadModel(modelReceipt(run.binding).modelId)
+    return model ? { kind: 'budget', budget: resolveMaterialBudget(model, (manifest.policy as MainGenerationPolicy).budget.maxOutputPerRequest) } : undefined
+  }
   const readContext = (handle: MainGenerationRunHandle): GenerationRecoveryContext => {
     const run = requireRun(handle), manifest = run.binding.sourceManifest, composition = repository.isPrivatePlanningHistory(run.runId) ? null : repository.readVisibleComposition(run.runId)
     const plotOutline = repository.readPlotOutline(run.runId)
@@ -954,6 +965,7 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
     const blueprintSaved = blueprint?.kind === 'available' ? blueprint.authorEdit : null
     const draftSave = draftEffects.readRecovery(run.runId)
     const materialDecision = manifest.materialDecision as MaterialDecisionReceipt | undefined
+    const materialAdmission = materialAdmissionOf(run)
     const requiredCandidateDraftIds = new Set((materialDecision?.included ?? [])
       .filter(item => item.required && /^candidate:\d+$/u.test(item.sourceId))
       .map(item => Number(item.sourceId.slice('candidate:'.length))))
@@ -996,7 +1008,8 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
       draftSave,
       ...(manifest.knowledgeSnapshot ? { knowledgeSnapshot: structuredClone(manifest.knowledgeSnapshot) as GenerationKnowledgeSnapshot } : {}),
       ...(selectedDrafts.every(item => item !== null) ? { selectedDrafts } : {}),
-      ...(manifest.batchId ? { batchId: manifest.batchId as string } : {}) }
+      ...(manifest.batchId ? { batchId: manifest.batchId as string } : {}),
+      ...(materialAdmission ? { materialAdmission } : {}) }
   }
   const readBatch = (batchId: string) => { assertCurrent(); return draftEffects.readBatch(batchId, deps.projectId) }
   const characters = new CharacterProposalService(deps.database, deps.projectId, (source, forWrite, version) => {

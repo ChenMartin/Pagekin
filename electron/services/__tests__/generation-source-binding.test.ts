@@ -14,7 +14,7 @@ import { currentDerivedCharacterFields } from '../current-character-projection';
 import { readPortableCurrentAuthority } from '../portable-current-authority';
 import { createPortableTransferAuthority, mapPortableTransferAuthority, serializePortableTransferAuthority } from '../portable-transfer-authority';
 import { SummaryRepository, invalidateContinuityProjectionFrom } from '../../repositories/summary-repository';
-import { MATERIAL_DECISION_MAX_INPUT_UNITS, MATERIAL_DECISION_RECEIPT_VERSION, type MaterialDecisionReceipt } from '../../../src/shared/generation-owner-contract';
+import { DEFAULT_MATERIAL_ADMISSION, MATERIAL_DECISION_MAX_INPUT_UNITS, MATERIAL_DECISION_RECEIPT_VERSION, type MaterialDecisionReceipt } from '../../../src/shared/generation-owner-contract';
 import { captureReviewRevisionContext } from '../review-revision-context';
 import { textHash } from '../../repositories/generation-run-repository';
 import type { PrepareReviewRevisionRequest } from '../../../src/shared/review-revision-generation';
@@ -638,7 +638,7 @@ describe('material decision receipt binding (S10B step 3)', () => {
         const context = captureReviewRevisionContext(f.db, { operation: 'review-chapter', draftId: 1,
             expectedDraft: { chapterNumber: 2, version: 1, status: 'draft', contentHash: textHash('原文\r\n汉字。') },
             authorInputs: [], uiLocale: 'zh-CN' }, f.input.projectId);
-        const admission = await selectFrozenReviewRevisionMaterials(context, { projectId: f.input.projectId, epoch: f.input.epoch });
+        const admission = await selectFrozenReviewRevisionMaterials(context, { projectId: f.input.projectId, epoch: f.input.epoch }, DEFAULT_MATERIAL_ADMISSION, 0);
         expect(admission.decision.capacity.admittedUnits).toBeGreaterThan(24_000);
         expect(admission.decision.capacity.maxInputUnits).toBe(MATERIAL_DECISION_MAX_INPUT_UNITS);
         expect(admission.decision.coverage.complete).toBe(true);

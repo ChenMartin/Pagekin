@@ -41,7 +41,7 @@ import {
   type GenerateDraftCommandDependencies,
 } from '../generate-draft.command'
 import { assembleChapterMaterials } from '../../chapter-materials'
-import { MATERIAL_DECISION_MAX_INPUT_UNITS } from '../../../../shared/generation-owner-contract'
+import { DEFAULT_MATERIAL_ADMISSION, MATERIAL_DECISION_MAX_INPUT_UNITS, materialBudgetFrom, type MaterialBudget } from '../../../../shared/generation-owner-contract'
 import { WorkflowCancelledError } from '../../workflow-cancellation'
 
 // 默认原样透传真实装配；只有个别测试用 mockImplementationOnce 改写一次返回值，
@@ -428,6 +428,7 @@ describe('GenerateDraftCommand generation runtime boundary', () => {
       required?: boolean
     }>
     knowledgeResults?: Array<{ text: string; score: number; fileName: string }>
+    materialBudget?: MaterialBudget
     keyEvents?: string
     suspenseHook?: string
     knowledgeQueryHint?: string
@@ -529,7 +530,7 @@ describe('GenerateDraftCommand generation runtime boundary', () => {
           : null
       }
       if (channel === 'generation:prepare-draft-context') return {
-        preparationId: '合成准备', selectedDrafts: (options.selectedCandidateDrafts ?? []).map(candidate => ({
+        preparationId: '合成准备', materialBudget: options.materialBudget ?? DEFAULT_MATERIAL_ADMISSION.budget, selectedDrafts: (options.selectedCandidateDrafts ?? []).map(candidate => ({
           chapterNumber: candidate.chapterNumber, draftId: candidate.draftId,
           version: candidate.version, content: candidate.content,
         })),
@@ -2138,7 +2139,7 @@ describe('GenerateDraftCommand generation runtime boundary', () => {
 
   it('binds the final provider request to only the finalized prose that reached that request', async () => {
     const runtime = fakeRuntime(() => outcome('新章正文。'.repeat(125), 'stop'))
-    const overBudget = `林岚把钥匙藏进钟楼。${'过长段落'.repeat(2_000)}`
+    const overBudget = `林岚把钥匙藏进钟楼。${'过长段落'.repeat(9_000)}`
     const included = '周砚守住码头，林岚折返仓库。'
     const { invoke, context, callbacks, command } = setup({
       runtime,
@@ -2208,7 +2209,7 @@ describe('GenerateDraftCommand generation runtime boundary', () => {
     const blueprints = Array.from({ length: 5 }, (_, index) => ({
       chapterNumber: chapterNumber + index + 1,
       title: `后续计划${index + 1}`,
-      keyEvents: '后续事件说明。'.repeat(260) + `TAIL_TIMING_${index}_只能在第${chapterNumber + index + 1}章交出钥匙。`,
+      keyEvents: '后续事件说明。'.repeat(1_040) + `TAIL_TIMING_${index}_只能在第${chapterNumber + index + 1}章交出钥匙。`,
     }))
     const worldSetting = 'GLOBAL_FACT_铜钥匙只有一把。'
     const previousFinalizedContent = '上一章仍在港口。'.repeat(100) + 'PREVIOUS_TAIL_钥匙仍由林舟保管。'
@@ -3502,7 +3503,7 @@ ${headingPrefix}第3章：潮门
       chapterNumber: 5,
       wordsTarget: 500,
       characters: ['林岚'],
-      characterCards: [{ name: '林岚', role: 'protagonist', personality: '谨慎'.repeat(4_500), currentState: {} }],
+      characterCards: [{ name: '林岚', role: 'protagonist', personality: '谨慎'.repeat(18_000), currentState: {} }],
       previousFinalizedContent: '第四章定稿原文。',
       narrativeThreads: [threadView(1, '青铜钥匙', 1, 2)],
     })
