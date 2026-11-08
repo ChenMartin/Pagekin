@@ -1,6 +1,14 @@
 import { getProjectDb } from '../database'
+import { parseChapterGoalReview, type ChapterGoalReview } from '../../src/shared/chapter-goal-review'
+import {
+  narrativeThreadReviewCandidates,
+  type NarrativeThreadReviewCandidate,
+  type ReviewedFinalDraft,
+} from '../../src/shared/narrative-thread-review-candidates'
 import {
   compareNarrativeThreadSchedules,
+  NARRATIVE_EVENT_EVIDENCE_MAX_LENGTH,
+  NARRATIVE_EVENT_REASON_MAX_LENGTH,
   narrativeEvidenceInText,
   narrativeThreadSchedule,
   narrativeThreadView,
@@ -31,6 +39,14 @@ function validatePlan(input: NarrativeThreadPlanInput): NarrativeThreadPlanInput
     throw new Error('NARRATIVE_THREAD_RANGE_INVALID')
   }
   return { ...input, title, type, authorIntent }
+}
+
+function savedGoalReview(reportBody: string): ChapterGoalReview | null {
+  try {
+    return parseChapterGoalReview((JSON.parse(reportBody) as { goalReview?: unknown } | null)?.goalReview)
+  } catch {
+    return null
+  }
 }
 
 function rowToPlan(row: Record<string, unknown>): NarrativeThreadPlanRecord {
@@ -84,7 +100,8 @@ export class NarrativeThreadRepository {
     const evidence = input.evidence.trim()
     const reason = input.reason.trim()
     if (!['planted', 'progressing', 'resolved', 'abandoned'].includes(input.type)
-      || !evidence || evidence.length > 240 || !reason || reason.length > 500) {
+      || !evidence || evidence.length > NARRATIVE_EVENT_EVIDENCE_MAX_LENGTH
+      || !reason || reason.length > NARRATIVE_EVENT_REASON_MAX_LENGTH) {
       throw new Error('NARRATIVE_THREAD_EVENT_INVALID')
     }
     const source = db.prepare(`
@@ -169,6 +186,26 @@ export class NarrativeThreadRepository {
       `).all(plan.id) as NarrativeThreadEvent[]
       return narrativeThreadView(plan, events, currentFinalizedChapter)
     })
+  }
+
+  static listReviewCandidates(db = requireDb()): NarrativeThreadReviewCandidate[] {
+    const rows = db.prepare(`
+      SELECT drafts.id AS draftId, drafts.chapter_number AS chapterNumber,
+             finalization_outbox.content_snapshot AS content, contents.body AS reportBody
+      FROM drafts
+      JOIN finalization_outbox ON finalization_outbox.draft_id = drafts.id
+      JOIN reviews ON reviews.base_draft_id = drafts.id
+      JOIN contents ON contents.id = reviews.content_id
+      WHERE drafts.status = 'finalized'
+      ORDER BY drafts.chapter_number ASC, reviews.review_index DESC
+    `).all() as Array<Omit<ReviewedFinalDraft, 'goalReview'> & { reportBody: string }>
+    const latestByDraft = new Map<number, ReviewedFinalDraft>()
+    for (const { reportBody, ...draft } of rows) {
+      if (latestByDraft.has(draft.draftId)) continue
+      const goalReview = savedGoalReview(reportBody)
+      if (goalReview) latestByDraft.set(draft.draftId, { ...draft, goalReview })
+    }
+    return narrativeThreadReviewCandidates(this.list(db), [...latestByDraft.values()])
   }
 
   /** 写第 N 章参考的线索：逾期、到期、区间内的必选，区间未到的只在名字命中时选；逾期最久的排最前。 */

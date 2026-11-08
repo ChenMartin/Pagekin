@@ -20,6 +20,9 @@ export function narrativeEvidenceInText(evidence: string, content: string): bool
   return needle.length > 0 && content.replace(/\s+/gu, '').includes(needle)
 }
 
+export const NARRATIVE_EVENT_EVIDENCE_MAX_LENGTH = 240
+export const NARRATIVE_EVENT_REASON_MAX_LENGTH = 500
+
 export interface NarrativeThreadPlanInput {
   title: string
   type: string

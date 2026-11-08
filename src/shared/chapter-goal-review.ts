@@ -1,4 +1,4 @@
-import { writingLanguageText, type WritingLanguage } from './writing-language'
+import { WRITING_LANGUAGES, writingLanguageText, type WritingLanguage } from './writing-language'
 import type { ChapterThreadTask } from './narrative-thread'
 
 export interface ChapterGoalEvidence { quote: string; start: number; end: number }
@@ -46,8 +46,12 @@ export function freezeChapterGoals(chapterNumber: number, keyEvents: string | nu
   })
 }
 
-const THREAD_GOAL_ID = /^ch\d+:thread:\d+$/u
+const THREAD_GOAL_ID = /^ch\d+:thread:(\d+)$/u
 export function isChapterThreadGoalId(id: string): boolean { return THREAD_GOAL_ID.test(id) }
+export function chapterThreadGoalPlanId(id: string): number | null {
+  const match = THREAD_GOAL_ID.exec(id)
+  return match ? Number(match[1]) : null
+}
 
 /** 写稿时冻结的线索任务追加成目标；覆盖率只描述作者配置的目标，不随它变化。 */
 export function withChapterThreadGoals(goals: FrozenChapterGoals, tasks: readonly ChapterThreadTask[],
@@ -68,6 +72,12 @@ function threadOutcomeLabel(outcome: ChapterThreadOutcome, language: WritingLang
     advanced: writingLanguageText(language, '结论：有推进，未收束。', 'Outcome: advanced, not resolved. '),
     unaddressed: writingLanguageText(language, '结论：未处理。', 'Outcome: not addressed. '),
   }[outcome]
+}
+
+export function withoutResolvedOutcomeLabel(description: string): string {
+  const label = WRITING_LANGUAGES.map(language => threadOutcomeLabel('resolved', language))
+    .find(candidate => description.startsWith(candidate))
+  return label ? description.slice(label.length) : description
 }
 
 function threadGoalReviewRules(language: WritingLanguage): string {
