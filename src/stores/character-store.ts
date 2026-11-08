@@ -83,10 +83,11 @@ function normalizeCharacterState(value: unknown): CharacterCurrentState | undefi
   }
 }
 
-function readCharacterDraftLedger(projectKey: string) {
-  const ledger = parseProjectEditorDraftLedger<unknown>(
-    useEditorStore.getState().draftLedgers[CHARACTER_DRAFT_TAB.id],
-  )
+export function readCharacterDraftLedger(
+  projectKey: string,
+  content = useEditorStore.getState().draftLedgers[CHARACTER_DRAFT_TAB.id],
+) {
+  const ledger = parseProjectEditorDraftLedger<unknown>(content)
   return {
     version: 1 as const,
     projects: ledger.projects.map(project => (
@@ -202,6 +203,8 @@ interface CharacterState {
   commitAvatarDrafts: (session: ProjectSessionContext) => Promise<void>
   /** IPC-verified display grant; raw cards remain the author edit and history source. */
   currentDerivedFields: Record<string, CharacterStateTextField[]>
+  stateEffectiveChapter: number | undefined
+  setStateEffectiveChapter: (chapter: number | undefined) => void
   selectedId: string | null
   /** Display-only compatibility; writes always receive characterId. */
   selectedName: string | null
@@ -282,6 +285,8 @@ export const useCharacterStore = create<CharacterState>()((set, get) => ({
     }
   },
   currentDerivedFields: {},
+  stateEffectiveChapter: undefined,
+  setStateEffectiveChapter: chapter => set({ stateEffectiveChapter: chapter }),
   selectedId: null, selectedName: null,
   saving: false,
   identityBusy: false,
@@ -303,6 +308,7 @@ export const useCharacterStore = create<CharacterState>()((set, get) => ({
         avatarDrafts: {},
         characters: [],
         currentDerivedFields: {},
+        stateEffectiveChapter: undefined,
         selectedId: null, selectedName: null,
         loaded: false,
         dataProjectKey: null,
@@ -415,6 +421,7 @@ export const useCharacterStore = create<CharacterState>()((set, get) => ({
       avatarDrafts: {},
       characters: [],
       currentDerivedFields: {},
+      stateEffectiveChapter: undefined,
       selectedId: null, selectedName: null,
       saving: false,
       identityBusy: false,
@@ -434,6 +441,7 @@ export const useCharacterStore = create<CharacterState>()((set, get) => ({
       avatarDrafts: {},
       characters: [],
       currentDerivedFields: {},
+      stateEffectiveChapter: undefined,
       selectedId: null, selectedName: null,
       saving: false,
       identityBusy: false,
@@ -683,7 +691,7 @@ export const useCharacterStore = create<CharacterState>()((set, get) => ({
     ) {
       return Promise.reject(new Error(useLocaleStore.getState().text('角色身份操作正在进行，请稍后再保存', 'Another character change is in progress. Save again in a moment.')))
     }
-    const { characters } = get()
+    const { characters, stateEffectiveChapter } = get()
     const expectedRevision = get().rosterRevision
     const expectedIdentityRevision = get().identityRevision
     if (expectedRevision === null) {
@@ -711,6 +719,7 @@ export const useCharacterStore = create<CharacterState>()((set, get) => ({
         expectedRevision, expectedIdentityRevision: expectedIdentityRevision ?? undefined,
         schemaVersion: 1 as const, intent: 'manual_edit' as const,
         entries: characterRosterEntriesFromCards(savedCharacters),
+        ...(stateEffectiveChapter === undefined ? {} : { stateEffectiveChapter }),
       }
       const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify({ projectSession, payload })))
       const operationId = `manual-character-save-${Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('')}`

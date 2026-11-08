@@ -1,4 +1,4 @@
-import { useId, useState, type ReactNode } from 'react'
+import { useEffect, useId, useState, type ReactNode } from 'react'
 import { Ellipsis, Save, UserRound } from 'lucide-react'
 import { CHARACTER_ROLES, getCharacterRoleLabels } from '../../../shared/character-role'
 import { relationshipStorageFromEditor } from '../../../shared/relationship-presentation'
@@ -14,6 +14,8 @@ import { EmptyState } from '../../ui/EmptyState'
 import { Menu } from '../../ui/Menu'
 import { SegmentedControl } from '../../ui/SegmentedControl'
 import { pluralEn } from '../../../shared/plural-en'
+import CharacterTimeline, { StateChapterNote } from './CharacterTimeline'
+import { useCharacterTimeline } from './use-character-timeline'
 
 type ProfileView = 'edit' | 'state' | 'graph'
 type TextField = Exclude<keyof CharacterCard, 'name' | 'characterId' | 'role' | 'currentState'>
@@ -39,12 +41,21 @@ export default function CharacterProfile({ projectKey }: { projectKey: string })
   const { characters, selectedId, selectedCard: card, dataReady, identityBusy } = profile
   const [view, setView] = useState<ProfileView>('edit')
   const [confirming, setConfirming] = useState<'selected' | 'all' | null>(null)
+  // 保存后名单重读时档案会重新挂载，展开状态放在这里才不会被收起。
+  const [timelineOpen, setTimelineOpen] = useState(false)
   const avatar = useCharacterAvatar(card?.characterId ?? null, dataReady && view === 'edit')
+  const timeline = useCharacterTimeline(card?.characterId, dataReady && view === 'state')
   const roleText = (role: unknown) => {
     const { zhCN, enUS } = getCharacterRoleLabels(role)
     return text(zhCN, enUS)
   }
   const name = card?.name || text('未命名', 'Untitled')
+  const chapterNoteShown = view === 'state' && profile.stateDirty && timeline.status === 'ready'
+  const { setStateEffectiveChapter } = profile
+  // 说明条不显示时清掉所选章，否则保存会写到界面上看不到的章。
+  useEffect(() => {
+    if (!chapterNoteShown) setStateEffectiveChapter(undefined)
+  }, [chapterNoteShown, setStateEffectiveChapter])
 
   const confirmDelete = async () => {
     const scope = confirming
@@ -128,7 +139,9 @@ export default function CharacterProfile({ projectKey }: { projectKey: string })
 
       <div className="cast-view-switch">
         <SegmentedControl label={text('档案视图', 'Profile view')} options={viewOptions} value={view} onChange={setView} />
-        {view === 'state' && card && <span className="cast-view-note">{text('定稿后由 AI 按章节更新，也可以手动修正', 'Updated by AI after each finalized chapter; you can correct it by hand')}</span>}
+        {view === 'state' && card && (chapterNoteShown
+          ? <StateChapterNote range={timeline.chapterRange} disabled={profile.saving} onChange={setStateEffectiveChapter} />
+          : <span className="cast-view-note">{text('定稿后由 AI 按章节更新，也可以手动修正', 'Updated by AI after each finalized chapter; you can correct it by hand')}</span>)}
       </div>
 
       <div className="cast-profile-body">
@@ -151,6 +164,8 @@ export default function CharacterProfile({ projectKey }: { projectKey: string })
             action={<Button variant="secondary" disabled={identityBusy || !dataReady} onClick={() => useCharacterStore.getState().addCharacter()}>{text('新建角色', 'New character')}</Button>}
           />
         ) : view === 'state' ? (
+          <>
+          <CharacterTimeline timeline={timeline} open={timelineOpen} onOpenChange={setTimelineOpen} />
           <div className="cast-grid">
             {CHARACTER_STATE_FIELDS.map(([field, zh, en]) => {
               const state = stateFieldView(card, field, currentDerivedFields)
@@ -173,6 +188,7 @@ export default function CharacterProfile({ projectKey }: { projectKey: string })
               )
             })}
           </div>
+          </>
         ) : (
           <div className="cast-grid">
             <div className="cast-row-fields">

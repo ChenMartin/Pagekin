@@ -10,9 +10,9 @@ import { getProjectDb } from '../../database'
 import { FinalizationRepository } from '../finalization-repository'
 import { SummaryRepository } from '../summary-repository'
 import { CharacterRosterRepository, commitCharacterIdentities, refreshCharacterIdentityProjection, type CharacterIdentityCommitRequest } from '../character-roster-repository'
-import { CHARACTER_STATE_COLUMNS, readCharacterContinuityNodes } from '../character-continuity-repository'
+import { CHARACTER_STATE_COLUMNS, readCharacterContinuityNodes, readCharacterContinuityTimeline } from '../character-continuity-repository'
 import { commitAuthorCharacterRoster } from '../../services/character-roster-author'
-import { latestNodesBefore } from '../../../src/shared/character-continuity'
+import { characterTimeline, latestNodesBefore } from '../../../src/shared/character-continuity'
 import { CHARACTER_STATE_TEXT_FIELDS, type CharacterRosterEntry, type CharacterRosterCharacterState } from '../../../src/shared/character-roster'
 import { parseFinalizedCharacterStateResponse } from '../../../src/shared/finalized-continuity'
 import { registerAsReopenDraft } from '../../../test/helpers/reopened-draft'
@@ -67,11 +67,11 @@ function fixture() {
     return SummaryRepository.decideFinalizedCharacterStateCandidate({ draftId, candidateKey: candidate.candidateKey, characterId: candidate.characterId, field: candidate.field,
       expectedFieldRevision: candidate.expectedFieldRevision, expectedFieldValueHash: candidate.expectedFieldValueHash, operationId, decision: 'accept' }, db)
   }
-  const save = (mutate: (entries: CharacterRosterEntry[]) => void) => {
+  const save = (mutate: (entries: CharacterRosterEntry[]) => void, stateEffectiveChapter?: unknown) => {
     const read = CharacterRosterRepository.read(db), entries = structuredClone(read.entries)
     mutate(entries)
     return commitAuthorCharacterRoster(db, { operationId: `save-${++operations}`, schemaVersion: 1, intent: 'manual_edit',
-      expectedRevision: read.revision, expectedIdentityRevision: read.identityRevision!, entries }, scope, () => {})
+      expectedRevision: read.revision, expectedIdentityRevision: read.identityRevision!, entries, stateEffectiveChapter: stateEffectiveChapter as number }, scope, () => {})
   }
   const setState = (entries: CharacterRosterEntry[], characterId: string, patch: Partial<CharacterRosterCharacterState>) => {
     const entry = entries.find(item => item.characterId === characterId)!
@@ -378,5 +378,130 @@ describe('定稿后处理重试与重开替换', () => {
     f.derive(1, { location: '北塔' })
     f.finalize(2, 1, `${prose}新定稿。`, 2)
     expect(f.column(f.lin, 'location')).toBe('北塔')
+  })
+})
+
+describe('角色时间线的读取', () => {
+  const timeline = (f: ReturnType<typeof fixture>, id = f.lin) => characterTimeline(readCharacterContinuityTimeline(f.db, id).nodes)
+  const rows = (f: ReturnType<typeof fixture>, id = f.lin) =>
+    timeline(f, id).flatMap(group => group.changes.map(change => [group.chapter, change.node.aspect, change.value, change.source]))
+  const chapterOf = (f: ReturnType<typeof fixture>, aspect: string) => timeline(f).find(group => group.changes.some(change => change.node.aspect === aspect))?.chapter
+  const plan = (f: ReturnType<typeof fixture>, chapters: number) => {
+    for (let chapter = 1; chapter <= chapters; chapter += 1) f.db.prepare('INSERT OR IGNORE INTO blueprints(chapter_number,title) VALUES(?,?)').run(chapter, '合成章节')
+  }
+
+  it('派生、作者、采用、升级前节点按章显示，章号和值正确', () => {
+    const f = fixture()
+    f.db.prepare("UPDATE characters SET cs_location='旧站' WHERE character_id=?").run(f.lin)
+    f.db.transaction(() => insertContinuityBaseline(f.db))()
+    f.finalize(1, 1); f.derive(1, { powerLevel: '练气' })
+    f.save(entries => f.setState(entries, f.lin, { keyItems: '玉佩', physicalState: '轻伤' }))
+    f.finalize(2, 2); f.saveNotes(2, 2)
+    expect(f.derive(2, { physicalState: '重伤' }).candidates).toHaveLength(1)
+    f.accept(2)
+    expect(rows(f)).toEqual([
+      [2, 'physicalState', '重伤', 'author'],
+      [2, 'keyItems', '玉佩', 'author'],
+      [1, 'powerLevel', '练气', 'finalized'],
+      [0, 'location', '旧站', 'legacy'],
+    ])
+  })
+
+  it('派生节点带着原文证据', () => {
+    const f = fixture()
+    f.finalize(1, 1); f.derive(1, { location: '北塔' })
+    expect(timeline(f)[0].changes[0].node.quote).toEqual(evidence)
+  })
+
+  it('只读这个角色的节点', () => {
+    const f = fixture()
+    f.finalize(1, 1); f.derive(1, { location: '北塔' })
+    expect(rows(f, f.zhou)).toEqual([])
+  })
+
+  it('第 N 章被替换后旧稿的节点不再显示，作者节点还在', () => {
+    const f = fixture()
+    f.finalize(1, 1); f.derive(1, { location: '北塔' })
+    f.save(entries => f.setState(entries, f.lin, { keyItems: '玉佩' }))
+    expect(rows(f).map(row => row[1]).sort()).toEqual(['keyItems', 'location'])
+    f.finalize(2, 1, prose, 2)
+    expect(rows(f)).toEqual([[2, 'keyItems', '玉佩', 'author']])
+  })
+
+  it('关系的新增、修改、解除都显示，解除带出原来的关系，同一对角色多条不丢', () => {
+    const f = fixture()
+    const sorted = (chapter: number) => timeline(f).find(group => group.chapter === chapter)!.changes
+      .map(change => JSON.stringify([change.node.aspect === 'relation' && change.node.targetName, change.value, change.removed])).sort()
+    f.save(entries => f.setRelations(entries, f.lin, f.zhou, ['盟友', '同门']))
+    f.finalize(1, 1)
+    f.save(entries => f.setRelations(entries, f.lin, f.zhou, ['死敌', '同门']))
+    f.finalize(2, 2)
+    f.save(entries => f.setRelations(entries, f.lin, f.zhou, ['同门']))
+    const zhou = (value: string, removed: boolean) => JSON.stringify(['周研', value, removed])
+    expect(sorted(1)).toEqual([zhou('同门', false), zhou('盟友', false)].sort())
+    expect(sorted(2)).toEqual([zhou('死敌', false), zhou('盟友', true)].sort())
+    expect(sorted(3)).toEqual([zhou('死敌', true)])
+  })
+
+  it('作者不动章号：落在下一章，读取给出同样的默认章', () => {
+    const f = fixture()
+    plan(f, 40); f.finalize(1, 1); f.finalize(2, 2)
+    expect(readCharacterContinuityTimeline(f.db, f.lin).chapterRange).toEqual({ next: 3, last: 40 })
+    f.save(entries => f.setState(entries, f.lin, { keyItems: '玉佩' }))
+    expect(chapterOf(f, 'keyItems')).toBe(3)
+  })
+
+  it('没有蓝图时可选章的上限就是下一章', () => {
+    const f = fixture()
+    expect(readCharacterContinuityTimeline(f.db, f.lin).chapterRange).toEqual({ next: 1, last: 1 })
+  })
+
+  it('作者改了生效章：节点按所选章号写入', () => {
+    const f = fixture()
+    plan(f, 40); f.finalize(1, 1); f.finalize(2, 2)
+    f.save(entries => f.setState(entries, f.lin, { keyItems: '玉佩' }), 8)
+    expect(chapterOf(f, 'keyItems')).toBe(8)
+    expect(f.column(f.lin, 'keyItems')).toBe('玉佩')
+    expect(f.now(7).states).toEqual([])
+    expect(f.now(8).states.map(node => node.value)).toEqual(['玉佩'])
+    f.assertFoldMatchesCurrent()
+  })
+
+  it('同一次保存还删除了别的角色：节点仍按所选章号写入', () => {
+    const f = fixture()
+    plan(f, 40); f.finalize(1, 1); f.finalize(2, 2)
+    f.save(entries => {
+      entries.splice(entries.findIndex(entry => entry.characterId === f.zhou), 1)
+      f.setState(entries, f.lin, { keyItems: '玉佩' })
+    }, 12)
+    expect(chapterOf(f, 'keyItems')).toBe(12)
+    expect(CharacterRosterRepository.read(f.db).entries.map(entry => entry.characterId)).toEqual([f.lin])
+  })
+
+  it.each([[0], [-1], [1.5], [41], ['八']])('章号 %s 不合法：不报错，退回下一章', requested => {
+    const f = fixture()
+    plan(f, 40); f.finalize(1, 1)
+    expect(() => f.save(entries => f.setState(entries, f.lin, { keyItems: '玉佩' }), requested)).not.toThrow()
+    expect(chapterOf(f, 'keyItems')).toBe(2)
+  })
+
+  it('选的章早于这个字段已有的记录：按已有的记录往后放，折叠结果仍等于当前值', () => {
+    const f = fixture()
+    plan(f, 40); f.finalize(1, 1); f.finalize(2, 2); f.finalize(3, 3)
+    f.derive(3, { location: '北塔' })
+    f.save(entries => f.setState(entries, f.lin, { location: '南港' }), 2)
+    expect(rows(f)[0]).toEqual([3, 'location', '南港', 'author'])
+    f.assertFoldMatchesCurrent()
+  })
+
+  it('同一次保存重放时生效章不变，节点不重复', () => {
+    const f = fixture()
+    plan(f, 40); f.finalize(1, 1)
+    const read = CharacterRosterRepository.read(f.db), entries = structuredClone(read.entries)
+    f.setState(entries, f.lin, { keyItems: '玉佩' })
+    const request = { operationId: 'replay', schemaVersion: 1 as const, intent: 'manual_edit' as const, expectedRevision: read.revision, expectedIdentityRevision: read.identityRevision!, entries, stateEffectiveChapter: 9 }
+    commitAuthorCharacterRoster(f.db, request, scope, () => {})
+    expect(commitAuthorCharacterRoster(f.db, request, scope, () => {}).idempotent).toBe(true)
+    expect(stateEvents(f).map(event => event.effective_chapter)).toEqual([9])
   })
 })

@@ -1,6 +1,6 @@
 import type BetterSqlite3 from 'better-sqlite3'
 import type { CharacterApproval } from '../../src/shared/character-identity'
-import type { ContinuityNode, ContinuityProvenance } from '../../src/shared/character-continuity'
+import type { CharacterContinuityTimeline, ContinuityNode, ContinuityProvenance, StateChapterRange } from '../../src/shared/character-continuity'
 import type { CharacterStateTextField } from '../../src/shared/character-roster'
 import type { FinalizedCharacterEvidence, FinalizedSourceIdentity } from '../../src/shared/finalized-continuity'
 
@@ -10,7 +10,7 @@ export const CHARACTER_STATE_COLUMNS: Readonly<Record<CharacterStateTextField, s
 })
 
 export type StateWriteOrigin =
-  | { kind: 'author'; operationId: string }
+  | { kind: 'author'; operationId: string; effectiveChapter: number }
   | { kind: 'adopted'; operationId: string; source: FinalizedSourceIdentity; quote?: FinalizedCharacterEvidence }
   /** fieldRevision 进节点号：同一份定稿重跑时模型可能给出新值，那是一个新节点，不是重复。 */
   | { kind: 'derived'; source: FinalizedSourceIdentity; quote: FinalizedCharacterEvidence; fieldRevision: number }
@@ -34,6 +34,12 @@ export interface CharacterRelationshipLine {
 /** 作者的改动从下一章开始算，下一章指已定稿的最大章之后。 */
 function nextChapter(db: BetterSqlite3.Database): number {
   return (db.prepare("SELECT COALESCE(MAX(chapter_number),0) FROM drafts WHERE status='finalized'").pluck().get() as number) + 1
+}
+
+export function readStateChapterRange(db: BetterSqlite3.Database): StateChapterRange {
+  const next = nextChapter(db)
+  const planned = db.prepare('SELECT COALESCE(MAX(chapter_number),0) FROM blueprints').pluck().get() as number
+  return { next, last: Math.max(next, planned) }
 }
 
 interface NodeWrite {
@@ -68,11 +74,11 @@ function appendNode(db: BetterSqlite3.Database, node: NodeWrite): void {
     node.aspect, node.value, effectiveChapter, JSON.stringify(node.provenance), node.draftId, JSON.stringify({ ...node.evidence, seq: series.seq + 1 }))
 }
 
-function stateNodePlacement(db: BetterSqlite3.Database, write: CharacterStateWrite): Pick<NodeWrite, 'eventId' | 'effectiveChapter' | 'provenance' | 'draftId' | 'evidence'> {
+function stateNodePlacement(write: CharacterStateWrite): Pick<NodeWrite, 'eventId' | 'effectiveChapter' | 'provenance' | 'draftId' | 'evidence'> {
   const { origin, characterId, field } = write
   switch (origin.kind) {
     case 'author':
-      return { eventId: `author:${origin.operationId}:${characterId}:${field}`, effectiveChapter: nextChapter(db),
+      return { eventId: `author:${origin.operationId}:${characterId}:${field}`, effectiveChapter: origin.effectiveChapter,
         provenance: { kind: 'author', operationId: origin.operationId }, draftId: null, evidence: {} }
     case 'adopted':
       return { eventId: `adopted:${origin.operationId}:${characterId}:${field}`, effectiveChapter: origin.source.chapterNumber,
@@ -88,7 +94,7 @@ export function writeCharacterStateField(db: BetterSqlite3.Database, write: Char
   requireTransaction(db)
   const updated = db.prepare(`UPDATE characters SET ${CHARACTER_STATE_COLUMNS[write.field]}=? WHERE character_id=? AND retired=0`).run(write.value, write.characterId)
   if (updated.changes !== 1) return false
-  appendNode(db, { subjectId: write.characterId, subjectName: write.characterName, target: null, aspect: write.field, value: write.value, ...stateNodePlacement(db, write) })
+  appendNode(db, { subjectId: write.characterId, subjectName: write.characterName, target: null, aspect: write.field, value: write.value, ...stateNodePlacement(write) })
   return true
 }
 
@@ -132,9 +138,13 @@ function parseNode(row: NodeRow): ContinuityNode {
  * 读有效节点，喂给 latestNodesBefore。挂稿的节点要求稿仍是定稿，被替换和进回收站的稿不再算数。
  * 退休角色不产生删除节点，这里统一排除，迁移基线里早已退休的角色也一并覆盖。
  */
-export function readCharacterContinuityNodes(db: BetterSqlite3.Database): ContinuityNode[] {
+export function readCharacterContinuityNodes(db: BetterSqlite3.Database, subjectId: string | null = null): ContinuityNode[] {
   return (db.prepare(`SELECT e.* FROM character_continuity_events e LEFT JOIN drafts d ON d.id=e.draft_id
-    WHERE (e.draft_id IS NULL OR d.status='finalized')
+    WHERE (e.draft_id IS NULL OR d.status='finalized') AND (@subjectId IS NULL OR e.subject_id=@subjectId)
       AND NOT EXISTS (SELECT 1 FROM characters c WHERE c.retired=1 AND c.character_id IN (e.subject_id,e.target_id))
-    ORDER BY e.subject_id,e.aspect,e.effective_chapter,e.event_id`).all() as NodeRow[]).map(parseNode)
+    ORDER BY e.subject_id,e.aspect,e.effective_chapter,e.event_id`).all({ subjectId }) as NodeRow[]).map(parseNode)
+}
+
+export function readCharacterContinuityTimeline(db: BetterSqlite3.Database, characterId: string): CharacterContinuityTimeline {
+  return { nodes: readCharacterContinuityNodes(db, characterId), chapterRange: readStateChapterRange(db) }
 }

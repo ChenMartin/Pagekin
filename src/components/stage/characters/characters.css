@@ -489,6 +489,123 @@
   font-size: var(--fs-12);
 }
 
+.cast-timeline,
+.cast-timeline-empty {
+  flex: none;
+  margin: 0 0 var(--s-5);
+  color: var(--ink-3);
+  font-size: var(--fs-12);
+}
+
+.cast-timeline-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--s-1);
+  width: fit-content;
+  color: var(--ink-2);
+  cursor: pointer;
+  list-style: none;
+}
+
+.cast-timeline-summary::-webkit-details-marker {
+  display: none;
+}
+
+.cast-timeline-chevron {
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.cast-timeline[open] > .cast-timeline-summary > .cast-timeline-chevron {
+  transform: rotate(90deg);
+}
+
+.cast-timeline-list {
+  max-height: 360px;
+  margin: var(--s-2) 0 0;
+  padding: 0 var(--s-3) 0 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  list-style: none;
+}
+
+.cast-timeline-chapter {
+  padding: var(--s-2) 0;
+  border-top: 1px solid var(--rule);
+}
+
+.cast-timeline-chapter > h3 {
+  margin: 0 0 var(--s-1);
+  color: var(--ink);
+  font: 500 var(--fs-12)/1.5 var(--font-ui);
+}
+
+.cast-timeline-legacy {
+  margin: 0 0 var(--s-1);
+}
+
+.cast-timeline-changes {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cast-timeline-row {
+  display: grid;
+  grid-template-columns: minmax(0, 11em) minmax(0, 1fr) auto;
+  gap: 2px var(--s-3);
+  padding: 2px 0;
+  line-height: 1.6;
+}
+
+.cast-timeline-value {
+  min-width: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.cast-timeline-value[data-removed] {
+  color: var(--ink-3);
+}
+
+.cast-timeline-quote {
+  grid-column: 2 / -1;
+}
+
+.cast-timeline-quote > summary {
+  width: fit-content;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+
+.cast-timeline-quote > blockquote {
+  margin: var(--s-1) 0;
+  padding-left: var(--s-2);
+  border-left: 2px solid var(--rule);
+  color: var(--ink-2);
+  font-family: var(--font-prose);
+  overflow-wrap: anywhere;
+}
+
+.cast-state-chapter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--s-2);
+}
+
+.cast-state-chapter input {
+  width: 72px;
+  height: 26px;
+  padding: 0 var(--s-2);
+}
+
+.cast-state-chapter label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+}
+
 .cast-import-source {
   width: 100%;
   height: auto;

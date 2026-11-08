@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { resolveStateEffectiveChapter } from '../../src/shared/character-continuity'
 import type Database from 'better-sqlite3'
 import { isDeepStrictEqual } from 'node:util'
 import { CHARACTER_ROSTER_SCHEMA_VERSION, CHARACTER_STATE_TEXT_FIELDS,
@@ -7,7 +8,7 @@ import { CHARACTER_ROSTER_SCHEMA_VERSION, CHARACTER_STATE_TEXT_FIELDS,
 import { CharacterRosterRepository, commitCharacterIdentities, normalizeAuthorRosterEntry,
   refreshCharacterIdentityProjection, type CharacterIdentityCommitRequest } from '../repositories/character-roster-repository'
 import { hasCharacterIdentitySchema } from '../repositories/character-repository'
-import { deleteCharacterRelationship, writeCharacterStateField } from '../repositories/character-continuity-repository'
+import { deleteCharacterRelationship, readStateChapterRange, writeCharacterStateField } from '../repositories/character-continuity-repository'
 
 const fields = ['name', 'role', 'gender', 'age', 'appearance', 'personality', 'background', 'abilities', 'motivation', 'arc', 'notes'] as const
 const draftId = /^draft:[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/iu
@@ -15,7 +16,7 @@ const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 const nonempty = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0
 const revision = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0
 type AuthorEntry = CharacterRosterEntry & { characterId: string }
-interface AuthorRequest { operationId: string; expectedRevision: number; expectedIdentityRevision: number; entries: AuthorEntry[] }
+interface AuthorRequest { operationId: string; expectedRevision: number; expectedIdentityRevision: number; entries: AuthorEntry[]; stateEffectiveChapter?: unknown }
 interface Envelope { version: 1; kind: 'author-roster'; requestHash: string; receipt: CharacterRosterCommitReceipt;
   receiptHash: string; approvalId: string; approvalPayloadHash: string; approvalReceiptHash: string }
 
@@ -55,7 +56,7 @@ function normalize(candidate: CharacterRosterCommitRequest): AuthorRequest {
   if (candidate.renames !== undefined && (!Array.isArray(candidate.renames) || candidate.renames.some(rename =>
     !rename || !nonempty(rename.characterId) || !byId.has(rename.characterId) || byId.get(rename.characterId)!.name !== rename.newName))) throw new Error('CHARACTER_ID_WRITE_REQUIRED')
   return { operationId: candidate.operationId, expectedRevision: candidate.expectedRevision,
-    expectedIdentityRevision: candidate.expectedIdentityRevision, entries }
+    expectedIdentityRevision: candidate.expectedIdentityRevision, entries, stateEffectiveChapter: candidate.stateEffectiveChapter }
 }
 
 /** Called only by the captured main project-session author IPC. No generation or name-only admission. */
@@ -112,6 +113,7 @@ export function commitAuthorCharacterRoster(db: Database.Database, candidate: Ch
     }
     const committed = commitCharacterIdentities(db, identity, () => { assertCurrent(); return true })
     const created = new Map(committed.created.map(item => [item.selectionKey, item.characterId]))
+    const effectiveChapter = resolveStateEffectiveChapter(request.stateEffectiveChapter, readStateChapterRange(db))
     for (const entry of request.entries) {
       const id = created.get(entry.characterId) ?? entry.characterId, before = original.get(entry.characterId)
       // 有结构化关系时卡片不显示旧原文；作者没改关系就不能借普通保存清掉这份看不到的原文。
@@ -128,7 +130,7 @@ export function commitAuthorCharacterRoster(db: Database.Database, candidate: Ch
           const provenance = { ...oldState?.provenance }
           for (const field of changed) provenance[field] = { kind: 'author', chapterNumber: state.updatedAtChapter }
           for (const field of changed) if (state[field] !== (oldState?.[field] ?? ''))
-            writeCharacterStateField(db, { characterId: id, characterName: entry.name, field, value: state[field], origin: { kind: 'author', operationId: approvalId } })
+            writeCharacterStateField(db, { characterId: id, characterName: entry.name, field, value: state[field], origin: { kind: 'author', operationId: approvalId, effectiveChapter } })
           db.prepare('UPDATE characters SET cs_updated_at_chapter=?,cs_provenance=? WHERE character_id=?').run(state.updatedAtChapter, JSON.stringify(provenance), id)
         }
       }

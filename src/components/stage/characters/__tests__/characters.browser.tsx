@@ -7,14 +7,16 @@ import type { StoreApi } from 'zustand'
 import '../../../../index.css'
 import '../../../../styles/paper-ink/index.css'
 import '../../stage.css'
+import type { CharacterContinuityTimeline, ContinuityNode, ContinuityProvenance } from '../../../../shared/character-continuity'
 import type { PendingFinalizedCharacterStateCandidate } from '../../../../shared/finalized-continuity'
 import type { ProjectData } from '../../../../shared/ipc-channels'
 import { setActiveProjectSessionContext } from '../../../../shared/project-session-context'
 import { EMPTY_CARD, useCharacterStore, type CharacterCard } from '../../../../stores/character-store'
-import { useEditorStore } from '../../../../stores/editor-store'
+import { saveDirtyEditorChangesForExit, useEditorStore } from '../../../../stores/editor-store'
 import { useLLMStore } from '../../../../stores/llm-store'
 import { useLocaleStore } from '../../../../stores/locale-store'
 import { useStageStore } from '../../../../stores/navigation/stage-store'
+import { CHARACTER_DRAFT_TAB } from '../../../../stores/project-editor-draft-ledger'
 import { useProjectStore } from '../../../../stores/project-store'
 import { useWorkflowStore } from '../../../../stores/workflow-store'
 import StageCharacters from '../StageCharacters'
@@ -36,6 +38,8 @@ function snapshot<T>(store: StoreApi<T>): () => void {
   const state = store.getState()
   return () => store.setState(state, true)
 }
+const realSaveAll = useCharacterStore.getState().saveAll
+const realDeleteCharacter = useCharacterStore.getState().deleteCharacter
 const restores = [useProjectStore, useWorkflowStore, useStageStore, useLocaleStore, useEditorStore, useCharacterStore, useLLMStore]
   .map(store => snapshot(store as StoreApi<unknown>))
 
@@ -44,6 +48,7 @@ let host: HTMLDivElement | undefined
 let invoke: ReturnType<typeof vi.fn<(channel: string, ...args: unknown[]) => Promise<unknown>>>
 let pendingStates: PendingFinalizedCharacterStateCandidate[]
 let pendingDecisions: number
+let timeline: CharacterContinuityTimeline | Error
 let store: {
   saveAll: ReturnType<typeof vi.fn>
   deleteCharacter: ReturnType<typeof vi.fn>
@@ -84,7 +89,12 @@ beforeEach(async () => {
   await page.viewport(1280, 960)
   pendingStates = []
   pendingDecisions = 0
+  timeline = { nodes: [], chapterRange: { next: 1, last: 1 } }
   invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
+    if (channel === 'db:character-continuity-timeline') {
+      if (timeline instanceof Error) throw timeline
+      return timeline
+    }
     if (channel === 'character-proposal:list-pending-finalized') return Array.from({ length: pendingDecisions }, (_, index) =>
       ({ proposalBatchId: `cpb-${index}`, revision: 1, finalizationId: `final-${index}` }))
     if (channel === 'finalized-character:list-state-candidates') return pendingStates.map(candidate => ({
@@ -508,5 +518,323 @@ describe('角色名单', () => {
     await click('AI 提取并预览')
     await click('发送并提取')
     await vi.waitFor(() => expect(startWorkflow).toHaveBeenCalledTimes(1))
+  })
+})
+
+describe('角色时间线', () => {
+  const author: ContinuityProvenance = { kind: 'author', operationId: '保存' }
+  const derived: ContinuityProvenance = { kind: 'derived', source: { finalizationId: '定稿七', draftId: 7, chapterNumber: 7, contentHash: 'c'.repeat(64) } as never }
+  let order = 0
+  const base = (value: string, effectiveChapter: number, provenance: ContinuityProvenance) => {
+    order += 1
+    return { eventId: `e${order}`, subjectId: linzhou.characterId!, subjectName: '林舟', value, effectiveChapter, provenance, draftId: null, seq: order, quote: null }
+  }
+  const stateNode = (value: string, chapter: number, provenance: ContinuityProvenance = author, quote: string | null = null): ContinuityNode =>
+    ({ ...base(value, chapter, provenance), aspect: 'location', quote: quote === null ? null : { start: 0, end: quote.length, text: quote } })
+  const relationNode = (value: string, chapter: number, relationshipId = 'r1'): ContinuityNode =>
+    ({ ...base(value, chapter, author), aspect: 'relation', targetId: shenyan.characterId!, targetName: '沈砚', relationshipId })
+  const openState = async () => { await render(); await click('当前状态') }
+  const section = () => host!.querySelector<HTMLDetailsElement>('.cast-timeline')
+  const expand = async () => {
+    const summary = section()!.querySelector<HTMLElement>('summary')!
+    await act(async () => summary.click())
+  }
+  const chapters = () => [...host!.querySelectorAll('.cast-timeline-chapter')].map(group => group.querySelector('h3')!.textContent)
+  const rowText = () => [...host!.querySelectorAll('.cast-timeline-row')].map(row => row.textContent)
+
+  it('默认收起成一行摘要，展开后按章倒序，写明字段、值和来历', async () => {
+    timeline = { nodes: [stateNode('北塔', 3), stateNode('旧站', 7, derived, '他走回旧站。')], chapterRange: { next: 8, last: 20 } }
+    await openState()
+    expect(section()!.open).toBe(false)
+    expect(section()!.querySelector('summary')!.textContent).toBe('时间线 · 2 处变化')
+    await expand()
+    expect(section()!.open).toBe(true)
+    expect(chapters()).toEqual(['第 7 章', '第 3 章'])
+    expect(rowText()[0]).toContain('当前位置/阵营')
+    expect(rowText()[0]).toContain('旧站')
+    expect(rowText()[0]).toContain('定稿记录')
+    expect(rowText()[1]).toContain('作者设定')
+  })
+
+  it('定稿记录可以看原文证据，作者设定没有原文入口', async () => {
+    timeline = { nodes: [stateNode('旧站', 7, derived, '他走回旧站。'), stateNode('北塔', 3)], chapterRange: { next: 8, last: 20 } }
+    await openState()
+    await expand()
+    const [finalized, authored] = [...host!.querySelectorAll('.cast-timeline-row')]
+    expect(authored.querySelector('.cast-timeline-quote')).toBeNull()
+    const quote = finalized.querySelector<HTMLDetailsElement>('.cast-timeline-quote')!
+    expect(quote.open).toBe(false)
+    await act(async () => quote.querySelector('summary')!.click())
+    expect(quote.open).toBe(true)
+    expect(quote.textContent).toContain('他走回旧站。')
+  })
+
+  it('解除关系写成解除并带出原来的关系，同一对角色多条都在', async () => {
+    timeline = { nodes: [relationNode('盟友', 2, 'r1'), relationNode('同门', 2, 'r2'), relationNode('', 6, 'r1')], chapterRange: { next: 7, last: 20 } }
+    await openState()
+    await expand()
+    expect(chapters()).toEqual(['第 6 章', '第 2 章'])
+    expect(rowText()[0]).toContain('沈砚')
+    expect(rowText()[0]).toContain('解除「盟友」')
+    expect(rowText().slice(1).join()).toContain('盟友')
+    expect(rowText().slice(1).join()).toContain('同门')
+  })
+
+  it('升级前已有的节点写明之前的变化没有记录，只写一次', async () => {
+    const legacy: ContinuityProvenance = { kind: 'legacy' }
+    timeline = { nodes: [stateNode('旧站', 5, legacy), relationNode('盟友', 5)].map((node, index) => index ? { ...node, provenance: legacy } : node), chapterRange: { next: 6, last: 6 } }
+    await openState()
+    await expand()
+    expect(rowText()[0]).toContain('升级前已有')
+    expect(section()!.textContent!.match(/升级前的变化没有记录/gu)).toHaveLength(1)
+  })
+
+  it('没有节点时只有一行说明，档案其余照常', async () => {
+    await openState()
+    expect(section()).toBeNull()
+    expect(host!.querySelector('.cast-timeline-empty')!.textContent).toBe('时间线 · 还没有逐章记录')
+    expect(host!.querySelectorAll('.cast-grid textarea')).toHaveLength(6)
+  })
+
+  it('读取失败时只有一行说明，不挡档案', async () => {
+    timeline = new Error('读不出来')
+    await openState()
+    expect(host!.querySelector('[role="alert"]')).toBeNull()
+    expect(host!.querySelector('.cast-timeline-empty')!.textContent).toBe('时间线暂时读不出来')
+    expect(host!.querySelectorAll('.cast-grid textarea')).toHaveLength(6)
+  })
+
+  it('200 条展开后在自己的区域里滚动，不把字段推出版面', async () => {
+    timeline = { nodes: Array.from({ length: 200 }, (_, index) => stateNode(`地点${index}`.repeat(index % 7 + 1), index + 1)), chapterRange: { next: 201, last: 201 } }
+    await openState()
+    await expand()
+    const list = host!.querySelector<HTMLElement>('.cast-timeline-list')!
+    expect(chapters()).toHaveLength(200)
+    expect(list.getBoundingClientRect().height).toBeLessThanOrEqual(400)
+    expect(list.scrollHeight).toBeGreaterThan(list.clientHeight)
+    expect(list.scrollWidth).toBeLessThanOrEqual(list.clientWidth)
+  })
+
+  it('英文界面的摘要、章号、来历与解除都是英文', async () => {
+    useLocaleStore.setState({ locale: 'en-US' })
+    timeline = { nodes: [relationNode('盟友', 2), relationNode('', 6)], chapterRange: { next: 7, last: 20 } }
+    await render()
+    await click('Current state')
+    expect(section()!.querySelector('summary')!.textContent).toBe('Timeline · 2 changes')
+    await expand()
+    expect(chapters()).toEqual(['Chapter 6', 'Chapter 2'])
+    expect(rowText()[0]).toContain('Ended: 盟友')
+    expect(rowText()[0]).toContain('Set by author')
+  })
+
+  const typeLocation = async () => {
+    const field = host!.querySelector<HTMLTextAreaElement>('.cast-grid textarea')!
+    await userEvent.fill(field, '新地点')
+  }
+  const note = () => host!.querySelector('.cast-state-chapter')
+
+  it('没改状态时不出现生效章说明；改了以后默认下一章起，不弹窗', async () => {
+    timeline = { nodes: [], chapterRange: { next: 8, last: 20 } }
+    await openState()
+    expect(note()).toBeNull()
+    await typeLocation()
+    expect(note()!.textContent).toContain('手改的状态从第 8 章起生效')
+    expect(host!.querySelector('.cast-state-chapter input')).toBeNull()
+    expect(document.querySelector('[role="dialog"]')).toBeNull()
+  })
+
+  it.each([
+    ['zh-CN', '当前状态', '手改的状态从第 8 章起生效，早于已有记录时顺延'],
+    ['en-US', 'Current state', 'Hand edits to state apply from chapter 8, or later if that field already has a later record'],
+  ] as const)('说明条写明可能顺延：%s', async (locale, viewName, copy) => {
+    useLocaleStore.setState({ locale })
+    timeline = { nodes: [], chapterRange: { next: 8, last: 20 } }
+    await render()
+    await click(viewName)
+    await typeLocation()
+    expect(note()!.querySelector('span')!.textContent).toBe(copy)
+  })
+
+  it.each([
+    ['基线', { baseValue: '损坏', draftValue: [linzhou] }],
+    ['草稿', { baseValue: [linzhou], draftValue: { 损坏: true } }],
+  ])('账本里的%s不是角色数组：档案页照常显示，不出现章号说明', async (_, values) => {
+    useEditorStore.setState({
+      draftLedgers: {
+        [CHARACTER_DRAFT_TAB.id]: JSON.stringify({ version: 1, projects: [{ projectKey: session.projectPath, ...values }] }),
+      },
+    })
+    await openState()
+    expect(host!.querySelector('.cast-grid textarea')).not.toBeNull()
+    expect(note()).toBeNull()
+  })
+
+  it('点开才能改章号，保存时带上所选章号', async () => {
+    useCharacterStore.setState({ saveAll: realSaveAll } as never)
+    const commit = vi.fn(async () => ({ success: false, error: '夹具不提交' }))
+    const passthrough = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel, ...args) => channel === 'db:character-roster-commit' ? commit(...args as []) : passthrough(channel, ...args))
+    timeline = { nodes: [], chapterRange: { next: 8, last: 20 } }
+    await openState()
+    await typeLocation()
+    await click('改章号')
+    await userEvent.fill(host!.querySelector<HTMLInputElement>('.cast-state-chapter input')!, '12')
+    expect(note()!.textContent).toContain('手改的状态从第 12 章起生效')
+    await click('保存角色')
+    await vi.waitFor(() => expect(commit).toHaveBeenCalled())
+    expect((commit.mock.calls[0] as unknown[])[0]).toMatchObject({ stateEffectiveChapter: 12 })
+  })
+
+  it('章号超出范围：不报错，如实写按默认章算，保存不带这个章号', async () => {
+    useCharacterStore.setState({ saveAll: realSaveAll } as never)
+    const commit = vi.fn(async () => ({ success: false, error: '夹具不提交' }))
+    const passthrough = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel, ...args) => channel === 'db:character-roster-commit' ? commit(...args as []) : passthrough(channel, ...args))
+    timeline = { nodes: [], chapterRange: { next: 8, last: 20 } }
+    await openState()
+    await typeLocation()
+    await click('改章号')
+    await userEvent.fill(host!.querySelector<HTMLInputElement>('.cast-state-chapter input')!, '99')
+    expect(note()!.textContent).toContain('手改的状态从第 8 章起生效')
+    expect(note()!.textContent).toContain('第 99 章不在 1–20 章内')
+    await click('保存角色')
+    await vi.waitFor(() => expect(commit).toHaveBeenCalled())
+    expect((commit.mock.calls[0] as unknown[])[0]).not.toHaveProperty('stateEffectiveChapter')
+  })
+
+  describe('显示的生效章就是保存的生效章', () => {
+    const stubCommit = (gate?: Promise<void>) => {
+      useCharacterStore.setState({ saveAll: realSaveAll } as never)
+      const commit = vi.fn(async (request: { entries: unknown[]; stateEffectiveChapter?: number }) => {
+        await gate
+        return { success: true, receipt: { revision: 2, created: [], snapshot: { entries: request.entries, identityRevision: 2 } } }
+      })
+      const passthrough = invoke.getMockImplementation()!
+      invoke.mockImplementation(async (channel, ...args) => channel === 'db:character-roster-commit'
+        ? commit(args[0] as { entries: unknown[] }) : passthrough(channel, ...args))
+      timeline = { nodes: [], chapterRange: { next: 8, last: 20 } }
+      return commit
+    }
+    const chapterInput = () => host!.querySelector<HTMLInputElement>('.cast-state-chapter input')!
+    const chooseChapter12 = async () => {
+      await click('改章号')
+      await userEvent.fill(chapterInput(), '12')
+    }
+    const savedChapter = (commit: ReturnType<typeof stubCommit>, call: number) => commit.mock.calls[call][0].stateEffectiveChapter
+
+    it('选了章号又放弃改动，再改状态时显示和保存都是默认章', async () => {
+      const commit = stubCommit()
+      await openState()
+      await typeLocation()
+      await chooseChapter12()
+      await act(async () => useCharacterStore.getState().discardDraft(session.projectPath, session))
+      expect(note()).toBeNull()
+      await typeLocation()
+      expect(note()!.textContent).toContain('手改的状态从第 8 章起生效')
+      await click('保存角色')
+      await vi.waitFor(() => expect(commit).toHaveBeenCalled())
+      expect(savedChapter(commit, 0)).toBeUndefined()
+    })
+
+    it('选了章号又切走视图，回来时显示和保存都是默认章', async () => {
+      const commit = stubCommit()
+      await openState()
+      await typeLocation()
+      await chooseChapter12()
+      await click('基础设定')
+      await click('当前状态')
+      expect(note()!.textContent).toContain('手改的状态从第 8 章起生效')
+      await click('保存角色')
+      await vi.waitFor(() => expect(commit).toHaveBeenCalled())
+      expect(savedChapter(commit, 0)).toBeUndefined()
+    })
+
+    it('保存进行中章号输入框不能改', async () => {
+      stubCommit()
+      await openState()
+      await typeLocation()
+      await chooseChapter12()
+      expect(chapterInput().disabled).toBe(false)
+      await act(async () => useCharacterStore.setState({ saving: true }))
+      expect(chapterInput().disabled).toBe(true)
+    })
+
+    it('保存途中又改了状态：保存后说明条还写着所选章，下一次保存也按它', async () => {
+      let release = () => {}
+      const commit = stubCommit(new Promise<void>(resolve => { release = resolve }))
+      await openState()
+      await typeLocation()
+      await chooseChapter12()
+      await click('保存角色')
+      await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(1))
+      await userEvent.fill(host!.querySelector<HTMLTextAreaElement>('.cast-grid textarea')!, '保存途中改的地点')
+      await act(async () => release())
+      await vi.waitFor(() => expect(useCharacterStore.getState().saving).toBe(false))
+      expect(note()!.textContent).toContain('手改的状态从第 12 章起生效')
+      await click('保存角色')
+      await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(2))
+      expect(savedChapter(commit, 1)).toBe(12)
+    })
+
+    it('保存成功后说明条消失，之后再改状态回到默认章', async () => {
+      const commit = stubCommit()
+      await openState()
+      await typeLocation()
+      await chooseChapter12()
+      await click('保存角色')
+      await vi.waitFor(() => expect(note()).toBeNull())
+      expect(savedChapter(commit, 0)).toBe(12)
+      await userEvent.fill(host!.querySelector<HTMLTextAreaElement>('.cast-grid textarea')!, '再改一次')
+      expect(note()!.textContent).toContain('手改的状态从第 8 章起生效')
+      await click('保存角色')
+      await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(2))
+      expect(savedChapter(commit, 1)).toBeUndefined()
+    })
+
+    it('只改名字不出现生效章说明，改了状态才出现', async () => {
+      stubCommit()
+      await render()
+      await userEvent.fill(host!.querySelector<HTMLInputElement>('.cast-row-fields input')!, '林舟改名')
+      await click('当前状态')
+      expect(note()).toBeNull()
+      await typeLocation()
+      expect(note()!.textContent).toContain('手改的状态从第 8 章起生效')
+    })
+
+    it('退出前保存按说明条上的章号写入', async () => {
+      const commit = stubCommit()
+      await openState()
+      await typeLocation()
+      await chooseChapter12()
+      await act(async () => saveDirtyEditorChangesForExit(session.projectPath))
+      expect(savedChapter(commit, 0)).toBe(12)
+    })
+
+    it('林舟有待保存的状态，在沈砚的档案上选第 12 章再删除沈砚：删除保存按第 12 章写入', async () => {
+      useCharacterStore.setState({ deleteCharacter: realDeleteCharacter } as never)
+      const commit = stubCommit()
+      await openState()
+      await typeLocation()
+      await click(/沈砚/)
+      await vi.waitFor(() => expect(note()).not.toBeNull())
+      await chooseChapter12()
+      expect(note()!.textContent).toContain('手改的状态从第 12 章起生效')
+      await click('角色的更多操作')
+      await click('删除角色「沈砚」…')
+      await click('删除角色')
+      await vi.waitFor(() => expect(commit).toHaveBeenCalled())
+      expect(commit.mock.calls[0][0].entries).toEqual([expect.objectContaining({ characterId: 'c-linzhou', currentState: expect.objectContaining({ location: '新地点' }) })])
+      expect(savedChapter(commit, 0)).toBe(12)
+    })
+
+    it('选了章号后离开角色页，退出前保存仍按所选章号写入', async () => {
+      const commit = stubCommit()
+      await openState()
+      await typeLocation()
+      await chooseChapter12()
+      await act(async () => root!.render(<div />))
+      await act(async () => saveDirtyEditorChangesForExit(session.projectPath))
+      expect(savedChapter(commit, 0)).toBe(12)
+    })
   })
 })

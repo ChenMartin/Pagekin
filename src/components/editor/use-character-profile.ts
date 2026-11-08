@@ -3,7 +3,8 @@ import { useProjectStore } from '../../stores/project-store'
 import { registerEditorExitSaveHandler, useEditorStore } from '../../stores/editor-store'
 import { CHARACTER_DRAFT_TAB, getProjectEditorDraft, parseProjectEditorDraftLedger } from '../../stores/project-editor-draft-ledger'
 import { useWorkflowStore } from '../../stores/workflow-store'
-import { useCharacterStore, characterSelectionKey, type CharacterCard } from '../../stores/character-store'
+import { useCharacterStore, characterSelectionKey, readCharacterDraftLedger, type CharacterCard } from '../../stores/character-store'
+import { rosterStateChanged } from './character-state-fields'
 import { useLocaleStore } from '../../stores/locale-store'
 import { formatRelationshipsForEditor } from '../../shared/relationship-presentation'
 import { captureProjectSession, isProjectSessionCurrent, isProjectSessionPath } from '../project-session-gate'
@@ -30,8 +31,13 @@ export function useCharacterProfile(projectKey: string) {
   ) || Boolean(getProjectEditorDraft(
     parseProjectEditorDraftLedger(state.draftLedgers[CHARACTER_DRAFT_TAB.id]), projectKey,
   )))
+  const stateDirty = useEditorStore(state => {
+    const draft = getProjectEditorDraft(readCharacterDraftLedger(projectKey, state.draftLedgers[CHARACTER_DRAFT_TAB.id]), projectKey)
+    return draft !== undefined && rosterStateChanged(draft.baseValue, draft.draftValue)
+  })
   const [saveOutcome, setSaveOutcome] = useState<SaveOutcome>('idle')
   const [saveError, setSaveError] = useState('')
+  const setStateEffectiveChapter = useCharacterStore(s => s.setStateEffectiveChapter)
   const identityBusy = useCharacterStore(s => s.identityBusy)
   const renameCharacter = useCharacterStore(s => s.renameCharacter)
   const updateField = useCharacterStore(s => s.updateField)
@@ -157,6 +163,7 @@ export function useCharacterProfile(projectKey: string) {
     lastError,
     saving,
     dirty,
+    stateDirty,
     identityBusy,
     saveOutcome,
     saveError,
@@ -166,5 +173,6 @@ export function useCharacterProfile(projectKey: string) {
     deleteAll,
     updateCurrentField,
     renameCurrentCharacter,
+    setStateEffectiveChapter,
   }
 }

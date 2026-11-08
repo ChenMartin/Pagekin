@@ -23,6 +23,7 @@ import {
 } from '../repositories/blueprint-repository'
 import { CharacterRepository, hasCharacterIdentitySchema } from '../repositories/character-repository'
 import { commitAuthorCharacterRoster } from '../services/character-roster-author'
+import { readCharacterContinuityTimeline } from '../repositories/character-continuity-repository'
 import { CharacterRosterRepository } from '../repositories/character-roster-repository'
 import type { CharacterRosterCommitRequest } from '../../src/shared/character-roster'
 import { DraftRepository } from '../repositories/draft-repository'
@@ -685,6 +686,13 @@ export function registerDatabaseController() {
       } catch { /* Missing source proof never makes a derived field current; raw author/history remains readable. */ }
     }
     return { ...roster, currentDerivedFields }
+  })
+
+  ipcMain.handle('db:character-continuity-timeline', async (_event, characterId: string, expectedProjectPath: string) => {
+    assertRequiredExpectedProjectPath(getCurrentProjectPath(), expectedProjectPath)
+    const database = getProjectDb()
+    if (!database) throw new Error('DB_NOT_OPEN')
+    return readCharacterContinuityTimeline(database, characterId)
   })
 
   ipcMain.handle('db:character-roster-commit', async (

@@ -167,6 +167,8 @@ export interface CharacterRosterCommitRequest {
   source?: FinalizedSourceIdentity
   /** 仅 manual_edit 使用；由角色管理的草稿账本明确给出身份映射。 */
   renames?: CharacterRosterRename[]
+  /** 仅 manual_edit 使用。 */
+  stateEffectiveChapter?: number
   /**
    * legacy_repair / legacy_cards_adoption 使用。它是从只读快照回传的原始
    * 证据，用来拒绝把旧 Markdown A 的候选提交到后来已变为 Markdown B 的项目中。
