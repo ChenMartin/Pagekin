@@ -152,6 +152,20 @@ export function parseChapterThreadTasks(value: unknown): ChapterThreadTask[] | n
   return tasks
 }
 
+/** 写稿运行绑定（RunBinding 的 JSON）在作者输入「draft:chapter-info」里冻结的线索任务。没有记录是空列表，记录写坏返回 null。 */
+export function writtenChapterThreadTasks(bindingJson: string): ChapterThreadTask[] | null {
+  try {
+    const inputs = (JSON.parse(bindingJson) as { sourceManifest?: { authorInputs?: { id: string; text: unknown }[] } }).sourceManifest?.authorInputs
+    const info = inputs?.find(input => input.id === 'draft:chapter-info')
+    if (!info) return []
+    if (typeof info.text !== 'string') return null
+    const recorded = (JSON.parse(info.text) as { threadTasks?: unknown }).threadTasks
+    return recorded === undefined ? [] : parseChapterThreadTasks(recorded)
+  } catch {
+    return null
+  }
+}
+
 export function narrativeThreadView(
   plan: NarrativeThreadPlanRecord,
   events: NarrativeThreadEvent[],
