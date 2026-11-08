@@ -11,6 +11,7 @@ import yauzl from 'yauzl'
 import * as stage from './redesign/pages/stage.mjs'
 import { verifyWindowsPackage, verifyPackagedBetterSqliteLoad, verifyPackagedLanceLoad } from './verify-win-package.mjs'
 import { resolvePackagedWindowsExecutable } from './product-identity.mjs'
+import { CURRENT_PROJECT_SCHEMA_VERSION } from './lib/current-project-schema.mjs'
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 if (process.argv.includes('--help')) {
@@ -304,12 +305,12 @@ async function runProfile(profile, endpoint) {
         byteSize: archiveBytes.length })
       assert.deepEqual(completion.archive, manifest.archive)
       const portable = await archiveManifest(archiveBytes)
-      assert.equal(portable.sourceSchemaVersion, 8)
+      assert.equal(portable.sourceSchemaVersion, CURRENT_PROJECT_SCHEMA_VERSION)
       assert.equal(portable.originProjectId, originProjectId)
       assert.equal(portable.semanticCounts['table.drafts'], 1)
       assert.equal(portable.semanticCounts['table.review_cycle_merges'], 0)
       assert(portable.entries.some(entry => entry.path === 'project.db' && entry.disposition === 'portable-database'))
-      pass('a-U16.A05', 'U16.A05', 'Writer uploaded a nonempty schema-8 archive and hash-linked immutable manifest/completion')
+      pass('a-U16.A05', 'U16.A05', `Writer uploaded a nonempty schema-${CURRENT_PROJECT_SCHEMA_VERSION} archive and hash-linked immutable manifest/completion`)
     }
 
     currentStep = `${profile.name}:U16.A06-cloud-list`
