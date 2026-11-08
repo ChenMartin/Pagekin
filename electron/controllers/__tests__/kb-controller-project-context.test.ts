@@ -1,4 +1,4 @@
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 type IpcHandler = (...args: unknown[]) => Promise<unknown>
 
@@ -627,5 +627,71 @@ describe('rerank config from the saved global config', () => {
       profileId: 'rerank',
       endpoint: { baseUrl: 'https://rerank.example/v1', apiKey: 'sk-fake-rerank', modelName: 'my-reranker' },
     })
+  })
+})
+
+describe('kb:search reranking', () => {
+  const siliconflowEmbedding = {
+    id: 'embedding', name: 'Embedding', provider: 'siliconflow', protocol: 'openai', modelName: 'BAAI/bge-m3',
+    apiKey: 'sk-fake-embedding', baseUrl: 'https://api.siliconflow.cn/v1', temperature: 0.7, maxTokens: 0, purposes: ['embedding'],
+  }
+  const candidates = Array.from({ length: 40 }, (_, index) => ({ text: `段落${index}`, score: 1 - index / 100, fileName: `第${index}章.md` }))
+  const searchKnowledge = vi.fn()
+  const searchKnowledgeFTS = vi.fn()
+  const fetchMock = vi.fn()
+  const saved = (models: Record<string, unknown>[]) => mocks.readJsonFile.mockImplementation((file: string, fallback: unknown) =>
+    file === 'global.json' ? { defaultModelId: null, ...(models.length ? { defaultEmbeddingModelId: 'embedding' } : {}) }
+      : file === 'models.json' ? models : fallback)
+
+  beforeEach(() => {
+    searchKnowledge.mockImplementation(async (_query: string, _path: string, _protocol: string, _model: unknown, topK: number) => candidates.slice(0, topK))
+    searchKnowledgeFTS.mockImplementation(async (_query: string, _path: string, topK: number) => candidates.slice(0, topK))
+    mocks.run.mockImplementation(async (operation: (kb: unknown) => unknown) => operation({ searchKnowledge, searchKnowledgeFTS }))
+    fetchMock.mockReset()
+    fetchMock.mockImplementation(async () => new Response(JSON.stringify({
+      results: [39, 7, 21].map((index, rank) => ({ index, relevance_score: 0.9 - rank / 10 })),
+    })))
+    vi.stubGlobal('fetch', fetchMock)
+  })
+
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  it.each([
+    ['kb:search', []],
+    ['kb:search-writing-context', ['reference']],
+  ])('returns the same passages as before for %s when rerank is not configured', async (channel, excluded) => {
+    saved([])
+    await expect(handler(channel)({}, '查询', 3, 'C:/projects/A')).resolves.toEqual(candidates.slice(0, 3))
+    expect(searchKnowledgeFTS).toHaveBeenCalledWith('查询', 'C:/projects/A', 3, ...(excluded.length ? [excluded] : []))
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['kb:search', []],
+    ['kb:search-writing-context', ['reference']],
+  ])('recalls 40 passages for %s and returns the requested count in rerank order', async (channel, excluded) => {
+    saved([siliconflowEmbedding])
+    await expect(handler(channel)({}, '查询', 3, 'C:/projects/A')).resolves.toEqual([candidates[39], candidates[7], candidates[21]])
+    expect(searchKnowledge).toHaveBeenCalledWith('查询', 'C:/projects/A', 'openai', expect.objectContaining({ apiKey: 'sk-fake-embedding' }), 40,
+      ...(excluded.length ? [excluded] : []))
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0]!
+    expect(url).toBe('https://api.siliconflow.cn/v1/rerank')
+    expect(new Headers(init.headers).get('authorization')).toBe('Bearer sk-fake-embedding')
+    expect(JSON.parse(String(init.body))).toMatchObject({ documents: candidates.map(item => item.text), top_n: 3 })
+  })
+
+  it('sends no rerank request when a SiliconFlow retrieval profile points at another host', async () => {
+    saved([{ ...siliconflowEmbedding, baseUrl: 'https://proxy.example/v1' }])
+    await expect(handler('kb:search')({}, '查询', 5, 'C:/projects/A')).resolves.toEqual(candidates.slice(0, 5))
+    expect(searchKnowledge).toHaveBeenCalledWith('查询', 'C:/projects/A', 'openai', expect.anything(), 5)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('returns a request for more than 40 passages in the original order without a rerank request', async () => {
+    saved([siliconflowEmbedding])
+    await handler('kb:search')({}, '查询', 50, 'C:/projects/A')
+    expect(searchKnowledge).toHaveBeenCalledWith('查询', 'C:/projects/A', 'openai', expect.anything(), 50)
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })

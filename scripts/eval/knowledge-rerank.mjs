@@ -3,6 +3,7 @@
 //   node scripts/eval/knowledge-rerank.mjs run --group fts --out <收据.json>
 //   node scripts/eval/knowledge-rerank.mjs run --group vector --out <收据.json>   （需要环境变量 SILICONFLOW_API_KEY）
 //   node scripts/eval/knowledge-rerank.mjs run --group fts --rerank identity --out <收据.json>   （同一组候选上比较重排与原序）
+//   node scripts/eval/knowledge-rerank.mjs run --group fts --rerank bge-reranker-v2-m3 --out <收据.json>   （生产重排请求，需要 SILICONFLOW_API_KEY）
 //   node scripts/eval/knowledge-rerank.mjs compare <基准收据.json> <对照收据.json> --out <比较.json>
 
 import { createHash, randomUUID } from "node:crypto"
@@ -25,6 +26,16 @@ const GROUPS = { fts: { retrieval: "fts" }, vector: { retrieval: "vector" } }
 // 块 id 每次导入都随机，跨运行比较会混入召回差异，所以重排只和同一次运行、同一组候选的原序比。
 const RERANKERS = {
   identity: { model: null, rank: async (_query, candidates) => candidates.slice(0, FINAL) },
+  "bge-reranker-v2-m3": {
+    model: "BAAI/bge-reranker-v2-m3",
+    // 走生产的配置解析与请求：硅基流动检索档案自动复用同一端点和 Key。
+    rank: async (query, candidates, production) => {
+      const config = production.resolveRerankConfig({ defaultRerankModelId: undefined, models: [], embedding: embeddingModel(GROUPS.vector) })
+      const { items, ranking } = await production.rankPassages(query, candidates, config, FINAL)
+      if (ranking.method !== "rerank") fail(`重排没有生效：${ranking.reason}`)
+      return items
+    },
+  },
 }
 
 const DECISION_RULES = {
@@ -123,6 +134,8 @@ async function bundleProduction(workDir) {
     stdin: {
       contents: [
         "export { importText, captureWritingKnowledgeSnapshot } from './electron/knowledge-base.ts'",
+        "export { rankPassages } from './electron/rerank.ts'",
+        "export { resolveRerankConfig } from './src/shared/rerank-config.ts'",
         "export { generateEmbeddings } from './electron/embedding.ts'",
         "export { captureGenerationKnowledge } from './electron/services/generation-knowledge-source.ts'",
         "export { withKnowledgeSourceGate } from './electron/services/knowledge-source-gate.ts'",
@@ -223,7 +236,7 @@ async function runGroup(groupName, rerankName, outPath) {
   const group = GROUPS[groupName]
   if (!group) fail(`未知分组：${groupName}，可选 ${Object.keys(GROUPS).join(", ")}`)
   const reranker = rerankName ? RERANKERS[rerankName] : null
-  if (rerankName && !reranker) fail(`未知重排器：${rerankName}，可选 ${Object.keys(RERANKERS).join(", ")}（BAAI/bge-reranker-v2-m3 等 R2 合入）`)
+  if (rerankName && !reranker) fail(`未知重排器：${rerankName}，可选 ${Object.keys(RERANKERS).join(", ")}`)
   const fixture = await loadFixture()
   const model = embeddingModel(group)
   const configuration = group.retrieval === "vector" ? { protocol: "openai", model } : null
@@ -268,14 +281,14 @@ async function runGroup(groupName, rerankName, outPath) {
         if (!paragraphSha256) fail(`候选块 ${item.chunkId} 不在导入的块里`)
         const judgment = judged.get(paragraphSha256)
         return {
-          paragraphSha256, label: judgment?.label ?? null, grade: judgment?.grade ?? 0, distractor: Boolean(judgment?.distractor),
+          paragraphSha256, text: item.text, label: judgment?.label ?? null, grade: judgment?.grade ?? 0, distractor: Boolean(judgment?.distractor),
           score: item.score, ftsRank: ftsRank(terms, item.text), matchedTerms: terms.filter(term => item.text.toLocaleLowerCase().includes(term.toLocaleLowerCase())),
         }
       })
       if (configuration && candidates.length && candidates.every(item => item.score === 0.5)) fail(`${id} 的候选全是全文检索的固定分 0.5，向量检索可能已回退`)
       const final = candidates.slice(0, FINAL)
       const metrics = scoreQuery(candidates, final, judged)
-      const reranked = reranker ? checkReranked(id, candidates, await reranker.rank(query, candidates)) : null
+      const reranked = reranker ? checkReranked(id, candidates, await reranker.rank(query, candidates, production)) : null
       const rerankMetrics = reranked ? scoreQuery(candidates, reranked, judged) : null
       const wrapper = await production.captureWritingKnowledgeSnapshot(query, projectPath, configuration)
       const wrapperTop = wrapper.items.map(item => chunkToParagraph.get(item.chunkId))
