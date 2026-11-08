@@ -386,7 +386,7 @@ describe('导入旧项目副本被拒时的提示', () => {
   })
 
   it('没登记的错误走兜底说明，异常里的路径不进界面', async () => {
-    answerImport(() => { throw new Error("ENOENT: no such file or directory, lstat 'C:\Users\author\私人稿子'") })
+    answerImport(() => { throw new Error("ENOENT: no such file or directory, lstat 'C:/Users/author/私人稿子'") })
     const thrown = await importAndReadNotice('导入旧项目副本')
     expect(thrown).toContain('没有导入，原文件没有改动。')
     expect(thrown).not.toContain('私人稿子')

@@ -324,6 +324,7 @@ export async function importLegacyProjectCopy(options: {
     if (exists(targetRoot)) fail('LEGACY_IMPORT_TARGET_EXISTS')
     assertProjectStoragePathSupported(targetRoot, options.preflightOptions)
     const legacyRoot = path.join(sourceRoot, '.vela')
+    if (!exists(legacyRoot)) fail('LEGACY_IMPORT_NOT_LEGACY_PROJECT')
     physicalDirectory(legacyRoot)
     if (exists(path.join(sourceRoot, CANONICAL_PROJECT_DIRECTORY)) || exists(path.join(sourceRoot, '.ai-novel-migration'))) fail('LEGACY_IMPORT_UNSUPPORTED_SOURCE')
     const sourceNames = fs.readdirSync(legacyRoot)

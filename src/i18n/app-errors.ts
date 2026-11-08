@@ -43,6 +43,29 @@ const ERROR_KEYS = {
   // 打开作品时，正式连接看到的库与刚校验过的快照字节不一致：校验之后有别的程序改了作品文件。
   SOURCE_CHANGED_SINCE_PROBE: 'error.projectChangedDuringOpen',
   LEGACY_IMPORT_UNSUPPORTED_SOURCE: 'error.legacyImportUnsupportedSource',
+  LEGACY_IMPORT_NOT_LEGACY_PROJECT: 'error.legacyImportNotLegacyProject',
+  LEGACY_IMPORT_PATH_INVALID: 'error.legacyImportChooseAgain',
+  LEGACY_IMPORT_TARGET_EXISTS: 'error.legacyImportTargetExists',
+  LEGACY_IMPORT_PATH_OVERLAP: 'error.legacyImportPathOverlap',
+  LEGACY_IMPORT_UNMAPPED_ASSET: 'error.legacyImportIncompleteSource',
+  LEGACY_IMPORT_INVALID_MANIFEST: 'error.legacyImportIncompleteSource',
+  LEGACY_IMPORT_UNSAFE_PATH: 'error.legacyImportLinkedSource',
+  LEGACY_IMPORT_SOURCE_CHANGED: 'error.legacyImportSourceBusy',
+  LEGACY_IMPORT_COPY_CHANGED: 'error.legacyImportSourceBusy',
+  LEGACY_IMPORT_KNOWLEDGE_ORIGINAL_UNAVAILABLE: 'error.legacyImportKnowledgeOriginal',
+  LEGACY_IMPORT_KNOWLEDGE_ORIGINAL_INVALID: 'error.legacyImportKnowledgeOriginal',
+  LEGACY_IMPORT_IO_FAILED: 'error.legacyImportIoFailed',
+  // 转换后的校验没过：作者没有能照做的修法，和没登记的码用同一条说明。
+  LEGACY_IMPORT_SQLITE_CONTENT_CHANGED: 'error.legacyImportFailed',
+  LEGACY_IMPORT_SQLITE_VERIFICATION_FAILED: 'error.legacyImportFailed',
+  LEGACY_IMPORT_AVATAR_UNRESOLVED: 'error.legacyImportFailed',
+  LEGACY_IMPORT_AVATAR_INVALID: 'error.legacyImportFailed',
+  LEGACY_IMPORT_VECTOR_INVALID: 'error.legacyImportFailed',
+  LEGACY_IMPORT_IDENTITY_INVALID: 'error.legacyImportFailed',
+  LEGACY_IMPORT_HISTORY_INVALID: 'error.legacyImportFailed',
+  LEGACY_IMPORT_HISTORY_FREEZE_INVALID: 'error.legacyImportFailed',
+  LEGACY_IMPORT_HISTORY_AUTHORITY_INVALID: 'error.legacyImportFailed',
+  LEGACY_IMPORT_ROSTER_UNAVAILABLE: 'error.legacyImportFailed',
   PROJECT_DELETE_FAILED: 'error.projectDeleteFailed',
   PROJECT_RECENT_LIST_UPDATE_FAILED: 'error.projectRecentListUpdateFailed',
   PROJECT_ARCHIVE_TARGET_EXISTS: 'error.projectArchiveTargetExists',
@@ -361,6 +384,18 @@ function readMessage(error: unknown): string {
 export function knownAppErrorMessage(locale: Locale, error: unknown): string | undefined {
   const code = readCode(error)
   return code ? translate(locale, ERROR_KEYS[code]) : undefined
+}
+
+/**
+ * 导入旧项目副本被拒时的说明。只认登记过的码，异常原文可能带路径，不进界面。
+ * 路径过深的通用说明让作者挪项目文件夹，这里过深的是还没建出来的副本位置，单独说明。
+ */
+export function legacyImportFailureMessage(locale: Locale, error: unknown): string {
+  const reason = errorCodeOf(error) === 'PROJECT_STORAGE_PATH_UNSUPPORTED'
+    ? translate(locale, 'error.legacyImportTargetTooDeep')
+    : knownAppErrorMessage(locale, error) ?? translate(locale, 'error.legacyImportFailed')
+  const kept = translate(locale, 'error.legacyImportNothingChanged')
+  return localize(locale, `${kept}${reason}`, `${kept} ${reason}`)
 }
 
 const IMPORT_BLOCKED_CODES = new Set(['GENERATION_DISPATCH_BLOCKED', 'GENERATION_DIRECTORY_CONTINUATION_BLOCKED', 'GENERATION_PARENT_INVALID'])
