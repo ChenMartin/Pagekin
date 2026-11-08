@@ -242,6 +242,9 @@ describe('其他失败不重发，错误与原来相同', () => {
     ['字段值过大', error({ message: 'max_tokens is too large: 100000. This model\'s maximum value is 4096.', param: 'max_tokens' })],
     ['字段值超范围', error({ message: "Invalid 'max_tokens': integer above maximum value. Expected a value <= 4096, but got 100000 instead.", param: 'max_tokens', code: 'integer_above_max_value' })],
     ['字段值非法', error({ message: 'Invalid value for max_tokens', param: 'max_tokens', code: 'invalid_value' })],
+    ['字段的值不被支持', error({ message: 'Unsupported value for max_tokens: maximum is 4096', param: 'max_tokens', code: 'invalid_value' })],
+    ['字段的值不被支持，没有错误码', error({ message: 'Unsupported value for max_tokens' })],
+    ['错误码是值错误，文案笼统', error({ message: 'max_tokens is not supported', param: 'max_tokens', code: 'invalid_value' })],
     ['上游只把另一字段当作替代写法', error({ message: "Unsupported parameter: 'max_completion_tokens' is not supported. Use 'max_tokens' instead.", code: 'unsupported_parameter' })],
     ['错误体不是 JSON', '<html>bad request</html>'],
   ]
