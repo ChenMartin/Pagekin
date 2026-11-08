@@ -192,6 +192,22 @@ export default function PlotThreads({ plot, onDelete }: PlotThreadsProps) {
               </div>
             </article>
           ))}
+          {plot.reviewCandidates.length > 0 && <p className="stage-plot-help">{text('审稿认为这些线索已在定稿里回收。确认后才记入线索，不确认不会有变化。', 'Review found these threads resolved in a final. Nothing is recorded until you confirm.')}</p>}
+          {plot.reviewCandidates.map(candidate => (
+            <article key={`${candidate.planId}:${candidate.draftId}`} className="stage-candidate" aria-label={text('审稿发现的回收', 'Resolution found in review')}>
+              <div className="stage-candidate-head">
+                <b>{candidate.threadTitle}</b>
+                <span>{text(`第 ${candidate.chapterNumber} 章审稿`, `Chapter ${candidate.chapterNumber} review`)}</span>
+              </div>
+              <blockquote>{candidate.evidence}</blockquote>
+              <p>{text(`理由：${candidate.reason}`, `Why: ${candidate.reason}`)}</p>
+              <div className="stage-candidate-foot">
+                <Button variant="secondary" size="sm" disabled={plot.busy} onClick={() => void plot.confirmEventCandidate(candidate)}>
+                  <Check size={13} aria-hidden="true" />{text('确认已回收', 'Confirm resolved')}
+                </Button>
+              </div>
+            </article>
+          ))}
         </section>
 
         <section className="stage-threads-card" aria-label={text('AI 建议的伏笔', 'Suggested threads')}>
