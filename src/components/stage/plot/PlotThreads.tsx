@@ -143,7 +143,7 @@ export default function PlotThreads({ plot, onDelete }: PlotThreadsProps) {
           {!eventThread ? (
             <p className="stage-plot-help">{plot.finalizedDrafts.length === 0
               ? text('还没有定稿的章节。', 'No chapter is final yet.')
-              : text('在左边线索的「更多」里选「记录定稿里的变化」。', 'Choose “Record a change from a final” in a thread’s menu on the left.')}</p>
+              : text('在线索的「更多」里选「记录定稿里的变化」。', 'Choose “Record a change from a final” in a thread’s menu.')}</p>
           ) : (
             <div className="stage-threads-form">
               <div className="stage-threads-target">{eventThread.title}</div>
