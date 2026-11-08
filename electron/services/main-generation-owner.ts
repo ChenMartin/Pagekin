@@ -380,7 +380,7 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
     if (!prepared) throw new Error('GENERATION_DRAFT_PREPARATION_REQUIRED')
     return structuredClone(prepared.knowledgeSnapshot)
   }
-  const draftPreparationBinding = (request: PrepareDraftContextRequest, knowledgeSnapshot?: GenerationKnowledgeSnapshot): RunBinding => {
+  const draftPreparation = (request: PrepareDraftContextRequest, knowledgeSnapshot?: GenerationKnowledgeSnapshot): { binding: RunBinding; model: ModelProfile } => {
     assertCurrent()
     if (!request || typeof request.query !== 'string' || knowledgeSnapshot && request.query !== knowledgeSnapshot.query
       || Object.keys(request).some(key => !['chapterNumber', 'modelId', 'promptKeys', 'skillStages', 'authorInputs', 'query', 'selectedDraftIds', 'batchId'].includes(key))) throw new Error('GENERATION_DRAFT_PREPARATION_INVALID')
@@ -393,19 +393,20 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
       ...(request.batchId ? { batchId: request.batchId } : {}), ...(knowledgeSnapshot ? { knowledgeSnapshot: structuredClone(knowledgeSnapshot) } : {}) }
     const policy = request.batchId ? rootPolicy(draftEffects.readBatch(request.batchId, deps.projectId).rootHandle.rootActionId)
       : newMainGenerationPolicy(selection, model)
-    return deps.buildBinding(selection, receipt, policy)
+    return { binding: deps.buildBinding(selection, receipt, policy), model }
   }
+  const draftPreparationBinding = (request: PrepareDraftContextRequest, knowledgeSnapshot?: GenerationKnowledgeSnapshot): RunBinding => draftPreparation(request, knowledgeSnapshot).binding
   const prepareDraftContext = (request: PrepareDraftContextRequest, knowledgeSnapshot: GenerationKnowledgeSnapshot, beforeKnowledgeRead?: RunBinding): PreparedDraftContext => {
-    const { binding, selectedDrafts } = deps.database.transaction(() => {
-      const binding = draftPreparationBinding(request, knowledgeSnapshot)
+    const { binding, model, selectedDrafts } = deps.database.transaction(() => {
+      const { binding, model } = draftPreparation(request, knowledgeSnapshot)
       if (beforeKnowledgeRead && !preparationMatches(beforeKnowledgeRead, binding, true)) throw new Error('GENERATION_DRAFT_PREPARATION_CHANGED')
       const selectedDrafts = request.selectedDraftIds.map(draftId => {
         const row = deps.database.prepare('SELECT d.chapter_number,d.version,c.body FROM drafts d JOIN contents c ON c.id=d.content_id WHERE d.id=?').get(draftId) as { chapter_number: number; version: number; body: string }
         return { draftId, chapterNumber: row.chapter_number, version: row.version, contentHash: textHash(row.body), content: row.body }
       })
-      return { binding, selectedDrafts }
+      return { binding, model, selectedDrafts }
     })()
-    const materialBudget = resolveMaterialBudget(deps.loadModel(request.modelId)!, (binding.sourceManifest.policy as MainGenerationPolicy).budget.maxOutputPerRequest)
+    const materialBudget = resolveMaterialBudget(model, (binding.sourceManifest.policy as MainGenerationPolicy).budget.maxOutputPerRequest)
     const preparationId = randomUUID()
     if (preparations.size >= 64) preparations.delete(preparations.keys().next().value!)
     preparations.set(preparationId, { binding, knowledgeSnapshot: structuredClone(knowledgeSnapshot) })
