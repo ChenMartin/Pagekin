@@ -607,12 +607,10 @@ describe('rerank config from the saved global config', () => {
     expect(getRerankConfig()).toEqual({ kind: 'none', reason: 'not-configured' })
   })
 
-  it('reuses exactly the SiliconFlow retrieval endpoint and key', () => {
+  // R2 参考评估两组都没过判定规则，正式评估证明对写作质量有提升前，不自动借硅基流动检索档案重排。
+  it('does not yet reuse the SiliconFlow retrieval endpoint and key for rerank', () => {
     saved({ defaultModelId: null, defaultEmbeddingModelId: 'embedding' }, [embeddingProfile])
-    expect(getRerankConfig()).toEqual({
-      kind: 'reuse-embedding',
-      endpoint: { baseUrl: 'https://api.siliconflow.cn/v1', apiKey: 'sk-fake-embedding', modelName: 'BAAI/bge-reranker-v2-m3' },
-    })
+    expect(getRerankConfig()).toEqual({ kind: 'none', reason: 'auto-reuse-not-enabled' })
   })
 
   it('refuses reuse when a SiliconFlow profile points at another host', () => {
@@ -638,9 +636,17 @@ describe('kb:search reranking', () => {
   const candidates = Array.from({ length: 40 }, (_, index) => ({ text: `段落${index}`, score: 1 - index / 100, fileName: `第${index}章.md` }))
   const searchKnowledge = vi.fn()
   const searchKnowledgeFTS = vi.fn()
+  const rerankProfile = {
+    id: 'rerank', name: 'Rerank', provider: 'custom', protocol: 'openai', modelName: 'my-reranker',
+    apiKey: 'sk-fake-rerank', baseUrl: 'https://rerank.example/v1', temperature: 0.7, maxTokens: 0, purposes: ['rerank'],
+  }
   const fetchMock = vi.fn()
   const saved = (models: Record<string, unknown>[]) => mocks.readJsonFile.mockImplementation((file: string, fallback: unknown) =>
-    file === 'global.json' ? { defaultModelId: null, ...(models.length ? { defaultEmbeddingModelId: 'embedding' } : {}) }
+    file === 'global.json' ? {
+      defaultModelId: null,
+      ...(models.length ? { defaultEmbeddingModelId: 'embedding' } : {}),
+      ...(models.some(model => model.id === 'rerank') ? { defaultRerankModelId: 'rerank' } : {}),
+    }
       : file === 'models.json' ? models : fallback)
 
   beforeEach(() => {
@@ -669,16 +675,28 @@ describe('kb:search reranking', () => {
   it.each([
     ['kb:search', []],
     ['kb:search-writing-context', ['reference']],
-  ])('recalls 40 passages for %s and returns the requested count in rerank order', async (channel, excluded) => {
-    saved([siliconflowEmbedding])
+  ])('recalls 40 passages for %s and returns the requested count in the explicit rerank order', async (channel, excluded) => {
+    saved([siliconflowEmbedding, rerankProfile])
     await expect(handler(channel)({}, '查询', 3, 'C:/projects/A')).resolves.toEqual([candidates[39], candidates[7], candidates[21]])
     expect(searchKnowledge).toHaveBeenCalledWith('查询', 'C:/projects/A', 'openai', expect.objectContaining({ apiKey: 'sk-fake-embedding' }), 40,
       ...(excluded.length ? [excluded] : []))
     expect(fetchMock).toHaveBeenCalledTimes(1)
     const [url, init] = fetchMock.mock.calls[0]!
-    expect(url).toBe('https://api.siliconflow.cn/v1/rerank')
-    expect(new Headers(init.headers).get('authorization')).toBe('Bearer sk-fake-embedding')
+    expect(url).toBe('https://rerank.example/v1/rerank')
+    expect(new Headers(init.headers).get('authorization')).toBe('Bearer sk-fake-rerank')
     expect(JSON.parse(String(init.body))).toMatchObject({ documents: candidates.map(item => item.text), top_n: 3 })
+  })
+
+  // R2 参考评估两组都没过判定规则，正式评估证明对写作质量有提升前，硅基流动检索档案不自动带上重排。
+  it.each([
+    ['kb:search', []],
+    ['kb:search-writing-context', ['reference']],
+  ])('returns the same passages as before for %s with only a SiliconFlow retrieval profile', async (channel, excluded) => {
+    saved([siliconflowEmbedding])
+    await expect(handler(channel)({}, '查询', 3, 'C:/projects/A')).resolves.toEqual(candidates.slice(0, 3))
+    expect(searchKnowledge).toHaveBeenCalledWith('查询', 'C:/projects/A', 'openai', expect.objectContaining({ apiKey: 'sk-fake-embedding' }), 3,
+      ...(excluded.length ? [excluded] : []))
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('sends no rerank request when a SiliconFlow retrieval profile points at another host', async () => {
@@ -689,14 +707,14 @@ describe('kb:search reranking', () => {
   })
 
   it('returns a request for more than 40 passages in the original order without a rerank request', async () => {
-    saved([siliconflowEmbedding])
+    saved([siliconflowEmbedding, rerankProfile])
     await expect(handler('kb:search')({}, '查询', 50, 'C:/projects/A')).resolves.toEqual(candidates)
     expect(searchKnowledge).toHaveBeenCalledWith('查询', 'C:/projects/A', 'openai', expect.anything(), 50)
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('recalls nothing extra and sends no passages for a request of zero passages', async () => {
-    saved([siliconflowEmbedding])
+    saved([siliconflowEmbedding, rerankProfile])
     await expect(handler('kb:search')({}, '查询', 0, 'C:/projects/A')).resolves.toEqual([])
     expect(searchKnowledge).toHaveBeenCalledWith('查询', 'C:/projects/A', 'openai', expect.anything(), 0)
     expect(fetchMock).not.toHaveBeenCalled()

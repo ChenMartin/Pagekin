@@ -20,11 +20,17 @@ describe('resolveRerankConfig', () => {
       .toEqual({ kind: 'none', reason: 'embedding-not-siliconflow' })
   })
 
+  // R2 参考评估两组都没过开跑前定的判定规则，正式评估证明对写作质量有提升前，硅基流动作者不自动重排。
+  it('does not yet reuse the SiliconFlow retrieval profile for rerank by default', () => {
+    expect(resolveRerankConfig({ defaultRerankModelId: null, models: [], embedding: siliconflowEmbedding }))
+      .toEqual({ kind: 'none', reason: 'auto-reuse-not-enabled' })
+  })
+
   it.each(['https://api.siliconflow.cn/v1', 'https://api.siliconflow.com/v1'])(
     'reuses the SiliconFlow retrieval endpoint and key at %s with the default rerank model',
     (baseUrl) => {
       const embedding = { ...siliconflowEmbedding, baseUrl }
-      expect(resolveRerankConfig({ defaultRerankModelId: null, models: [], embedding })).toEqual({
+      expect(resolveRerankConfig({ defaultRerankModelId: null, models: [], embedding, autoReuseEmbedding: true })).toEqual({
         kind: 'reuse-embedding',
         endpoint: { baseUrl, apiKey: 'sk-fake-embedding', modelName: 'BAAI/bge-reranker-v2-m3' },
       })
@@ -49,7 +55,7 @@ describe('resolveRerankConfig', () => {
 
   it('still reuses the registered endpoint when the default port is written out', () => {
     const baseUrl = 'https://api.siliconflow.cn:443/v1'
-    expect(resolveRerankConfig({ defaultRerankModelId: null, models: [], embedding: { ...siliconflowEmbedding, baseUrl } }))
+    expect(resolveRerankConfig({ defaultRerankModelId: null, models: [], embedding: { ...siliconflowEmbedding, baseUrl }, autoReuseEmbedding: true }))
       .toEqual({ kind: 'reuse-embedding', endpoint: { baseUrl, apiKey: 'sk-fake-embedding', modelName: 'BAAI/bge-reranker-v2-m3' } })
   })
 
@@ -82,7 +88,7 @@ describe('resolveRerankConfig', () => {
   })
 
   it('treats a non-string stored id as no explicit choice', () => {
-    expect(resolveRerankConfig({ defaultRerankModelId: 42, models: [explicitProfile], embedding: siliconflowEmbedding }))
+    expect(resolveRerankConfig({ defaultRerankModelId: 42, models: [explicitProfile], embedding: siliconflowEmbedding, autoReuseEmbedding: true }))
       .toMatchObject({ kind: 'reuse-embedding' })
   })
 })

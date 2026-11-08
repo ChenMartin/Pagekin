@@ -7,7 +7,7 @@ import { captureWritingKnowledgeSnapshot, importText, listDocuments, readDocumen
 import { captureGenerationKnowledge, verifyGenerationKnowledge } from '../services/generation-knowledge-source'
 import { getProjectDataRoot } from '../services/project-data-locator'
 import { closeConnection, getConnection } from '../vector-store'
-import type { RerankConfig } from '../../src/shared/rerank-config'
+import { resolveRerankConfig, type RerankConfig } from '../../src/shared/rerank-config'
 
 const MODEL = { provider: 'siliconflow', baseUrl: 'https://api.siliconflow.cn/v1', apiKey: '', modelName: 'BAAI/bge-m3' }
 const RERANK: RerankConfig = {
@@ -48,6 +48,17 @@ describe('writing knowledge snapshot ranking', () => {
 
     expect(fetchMock).not.toHaveBeenCalled()
     expect(snapshot).toMatchObject({ version: 1, topK: 5, state: 'stored' })
+    expect(snapshot.items.map(item => item.chunkId)).toEqual(expected.map(item => item.chunkId))
+    snapshot.items.forEach((item, index) => expect(item).toMatchObject(expected[index]!))
+  })
+
+  // R2 参考评估两组都没过判定规则，正式评估证明对写作质量有提升前，硅基流动作者写稿不自动重排。
+  it('keeps the same five passages without a rerank request when only a SiliconFlow retrieval profile is saved', async () => {
+    const expected = await masterTopFive()
+    const config = resolveRerankConfig({ defaultRerankModelId: undefined, models: [], embedding: { ...MODEL, apiKey: 'sk-fake-embedding' } })
+    const snapshot = await captureWritingKnowledgeSnapshot('潮位', projectPath, null, [], config)
+
+    expect(fetchMock).not.toHaveBeenCalled()
     expect(snapshot.items.map(item => item.chunkId)).toEqual(expected.map(item => item.chunkId))
     snapshot.items.forEach((item, index) => expect(item).toMatchObject(expected[index]!))
   })
