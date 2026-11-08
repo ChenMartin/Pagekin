@@ -467,6 +467,17 @@ describe('角色时间线的读取', () => {
     f.assertFoldMatchesCurrent()
   })
 
+  it('同一次保存还删除了别的角色：节点仍按所选章号写入', () => {
+    const f = fixture()
+    plan(f, 40); f.finalize(1, 1); f.finalize(2, 2)
+    f.save(entries => {
+      entries.splice(entries.findIndex(entry => entry.characterId === f.zhou), 1)
+      f.setState(entries, f.lin, { keyItems: '玉佩' })
+    }, 12)
+    expect(chapterOf(f, 'keyItems')).toBe(12)
+    expect(CharacterRosterRepository.read(f.db).entries.map(entry => entry.characterId)).toEqual([f.lin])
+  })
+
   it.each([[0], [-1], [1.5], [41], ['八']])('章号 %s 不合法：不报错，退回下一章', requested => {
     const f = fixture()
     plan(f, 40); f.finalize(1, 1)

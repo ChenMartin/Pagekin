@@ -269,6 +269,28 @@ describe('character store project context', () => {
     })
   })
 
+  it.each([
+    ['beginProjectLoad', () => useCharacterStore.getState().beginProjectLoad(PROJECT_B)],
+    ['reset', () => useCharacterStore.getState().reset()],
+    ['load alone', () => {}],
+  ])('does not carry the chosen effective chapter into the next project: %s', async (_, leaveProject) => {
+    invoke
+      .mockResolvedValueOnce([character('A 角色')])
+      .mockResolvedValueOnce([character('B 角色')])
+      .mockResolvedValueOnce({ success: true })
+
+    await useCharacterStore.getState().load(PROJECT_A)
+    useCharacterStore.getState().setStateEffectiveChapter(12)
+    leaveProject()
+    useProjectStore.setState({ currentProject: project(PROJECT_B) })
+    await useCharacterStore.getState().load(PROJECT_B)
+    await useCharacterStore.getState().saveAll(PROJECT_B)
+
+    const [, request] = invoke.mock.calls.find(([channel]) => channel === 'db:character-roster-commit')!
+    expect(request.entries[0].name).toBe('B 角色')
+    expect(request).not.toHaveProperty('stateEffectiveChapter')
+  })
+
   it('keeps A and B ledgers separate and blocks mutations while B data is not loaded', async () => {
     invoke
       .mockResolvedValueOnce([character('A 角色')])

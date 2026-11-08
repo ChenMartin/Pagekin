@@ -39,6 +39,7 @@ function snapshot<T>(store: StoreApi<T>): () => void {
   return () => store.setState(state, true)
 }
 const realSaveAll = useCharacterStore.getState().saveAll
+const realDeleteCharacter = useCharacterStore.getState().deleteCharacter
 const restores = [useProjectStore, useWorkflowStore, useStageStore, useLocaleStore, useEditorStore, useCharacterStore, useLLMStore]
   .map(store => snapshot(store as StoreApi<unknown>))
 
@@ -643,6 +644,18 @@ describe('角色时间线', () => {
   })
 
   it.each([
+    ['zh-CN', '当前状态', '手改的状态从第 8 章起生效，早于已有记录时顺延'],
+    ['en-US', 'Current state', 'Hand edits to state apply from chapter 8, or later if that field already has a later record'],
+  ] as const)('说明条写明可能顺延：%s', async (locale, viewName, copy) => {
+    useLocaleStore.setState({ locale })
+    timeline = { nodes: [], chapterRange: { next: 8, last: 20 } }
+    await render()
+    await click(viewName)
+    await typeLocation()
+    expect(note()!.querySelector('span')!.textContent).toBe(copy)
+  })
+
+  it.each([
     ['基线', { baseValue: '损坏', draftValue: [linzhou] }],
     ['草稿', { baseValue: [linzhou], draftValue: { 损坏: true } }],
   ])('账本里的%s不是角色数组：档案页照常显示，不出现章号说明', async (_, values) => {
@@ -794,6 +807,23 @@ describe('角色时间线', () => {
       await typeLocation()
       await chooseChapter12()
       await act(async () => saveDirtyEditorChangesForExit(session.projectPath))
+      expect(savedChapter(commit, 0)).toBe(12)
+    })
+
+    it('林舟有待保存的状态，在沈砚的档案上选第 12 章再删除沈砚：删除保存按第 12 章写入', async () => {
+      useCharacterStore.setState({ deleteCharacter: realDeleteCharacter } as never)
+      const commit = stubCommit()
+      await openState()
+      await typeLocation()
+      await click(/沈砚/)
+      await vi.waitFor(() => expect(note()).not.toBeNull())
+      await chooseChapter12()
+      expect(note()!.textContent).toContain('手改的状态从第 12 章起生效')
+      await click('角色的更多操作')
+      await click('删除角色「沈砚」…')
+      await click('删除角色')
+      await vi.waitFor(() => expect(commit).toHaveBeenCalled())
+      expect(commit.mock.calls[0][0].entries).toEqual([expect.objectContaining({ characterId: 'c-linzhou', currentState: expect.objectContaining({ location: '新地点' }) })])
       expect(savedChapter(commit, 0)).toBe(12)
     })
 
