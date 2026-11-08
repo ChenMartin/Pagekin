@@ -10,7 +10,6 @@ export type CharacterTimelineView =
   | { status: 'failed' }
   | { status: 'ready'; chapters: CharacterTimelineChapter[]; changeCount: number; chapterRange: StateChapterRange }
 
-/** 保存后修订号前进时重读；重读期间继续显示上一次的结果。 */
 export function useCharacterTimeline(characterId: string | undefined, enabled: boolean): CharacterTimelineView {
   const rosterRevision = useCharacterStore(state => state.rosterRevision)
   const [loaded, setLoaded] = useState<{ characterId: string; timeline: CharacterContinuityTimeline | null } | null>(null)

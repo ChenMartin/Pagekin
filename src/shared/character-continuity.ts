@@ -84,7 +84,7 @@ export function latestNodesBefore(nodes: readonly ContinuityNode[], chapter: num
   return { states, relations: [...pairs.values()] }
 }
 
-/** 作者手改状态时可选的生效章：默认 next，最大 last（下一章或蓝图的最后一章，取大）。 */
+/** last 是下一章和蓝图最后一章里较大的那个。 */
 export interface StateChapterRange { next: number; last: number }
 
 export interface CharacterContinuityTimeline {
@@ -107,7 +107,6 @@ const TIMELINE_SOURCE: Readonly<Record<ContinuityProvenance['kind'], CharacterTi
 export interface CharacterTimelineChange {
   node: ContinuityNode
   source: CharacterTimelineSource
-  /** 这一条是清除字段或解除关系。 */
   removed: boolean
   /** removed 时是被去掉的旧值，其余时候是节点的值。 */
   value: string
@@ -117,7 +116,7 @@ export interface CharacterTimelineChapter { chapter: number; changes: CharacterT
 const aspectRank = (node: ContinuityNode) => node.aspect === 'relation' ? CHARACTER_STATE_TEXT_FIELDS.length : CHARACTER_STATE_TEXT_FIELDS.indexOf(node.aspect)
 const targetOf = (node: ContinuityNode) => node.aspect === 'relation' ? node.targetName : ''
 
-/** 同一章同一字段连改几次，只留这一章最终生效的一条，取舍规则与 latestNodesBefore 相同。 */
+/** 同章同字段的取舍规则与 latestNodesBefore 相同。 */
 export function characterTimeline(nodes: readonly ContinuityNode[]): CharacterTimelineChapter[] {
   const series = new Map<string, ContinuityNode[]>()
   for (const node of nodes) {

@@ -30,7 +30,7 @@ export function stateFieldView(
   }
 }
 
-/** 名单里有没有状态字段的值变了，口径与保存时判定要写节点的字段相同。 */
+/** 口径与保存时判定要写节点的字段相同。 */
 export function rosterStateChanged(base: readonly CharacterCard[], draft: readonly CharacterCard[]): boolean {
   const before = new Map(base.map(card => [card.characterId, card.currentState]))
   return draft.some(card => CHARACTER_STATE_FIELDS.some(([field]) => (card.currentState?.[field] ?? '') !== (before.get(card.characterId)?.[field] ?? '')))

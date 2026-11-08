@@ -45,7 +45,6 @@ function TimelineRow({ change }: { change: CharacterTimelineChange }) {
   )
 }
 
-/** 角色的逐章变化。默认收起成一行，节点再多也只在自己的区域里滚动。 */
 export default function CharacterTimeline({ timeline, open, onOpenChange }: { timeline: CharacterTimelineView; open: boolean; onOpenChange: (open: boolean) => void }) {
   const text = useLocaleStore(state => state.text)
   if (timeline.status === 'loading') return null
@@ -72,7 +71,7 @@ export default function CharacterTimeline({ timeline, open, onOpenChange }: { ti
   )
 }
 
-/** 有未保存的状态改动时替换视图说明：默认下一章起，点开才能改，不改就走默认。卸载时清掉所选章，否则下一次保存会写到界面上看不到的章。 */
+/** 卸载时清掉所选章，否则下一次保存会写到界面上看不到的章。 */
 export function StateChapterNote({ range, disabled, onChange }: { range: StateChapterRange; disabled: boolean; onChange: (chapter: number | undefined) => void }) {
   const text = useLocaleStore(state => state.text)
   const [draft, setDraft] = useState<string | null>(null)
