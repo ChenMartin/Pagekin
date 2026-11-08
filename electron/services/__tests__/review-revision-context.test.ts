@@ -207,4 +207,14 @@ describe('写稿时冻结的线索任务进本章审稿目标', () => {
     writtenBy(f.db, { chapterNumber: 2, title: '第二章' })
     expect(f.capture().frozenGoals.items).toEqual([])
   })
+
+  it('写稿记录里的线索任务段写坏，审稿照常、不加线索目标，并记一行日志', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const f = fixture()
+      writtenBy(f.db, { chapterNumber: 2, title: '第二章', threadTasks: [{ ...task, planId: '坏' }] })
+      expect(f.capture().frozenGoals.items).toEqual([])
+      expect(warn).toHaveBeenCalledTimes(1)
+    } finally { warn.mockRestore() }
+  })
 })

@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { closeProjectDatabase, createProjectDatabase, initProjectDatabase } from '../../database'
 import { BlueprintRepository } from '../../repositories/blueprint-repository'
@@ -1065,6 +1065,64 @@ describe('写稿时冻结的线索任务跟着便携副本走（#623 后续）',
     expect(before.items.map(item => item.id)).toEqual(['ch1:thread:8'])
     const restored = await roundtrip(f, 'restored-thread-tasks')
     expect(reviewGoals(restored, 5)).toEqual(before)
+  })
+
+  it('副本里不带写稿收据的凭据、端点和机器路径，只留找到草稿的编号和任务', async () => {
+    const f = fixture()
+    seedWrittenDraft(f, 5, 1, [task])
+    const restored = await roundtrip(f, 'restored-thread-secrets')
+    const bytes = fs.readFileSync(f.target)
+    expect(bytes.includes(Buffer.from(SECRET, 'utf8'))).toBe(false)
+    expect(bytes.includes(Buffer.from('私有端点', 'utf8'))).toBe(false)
+    expect(bytes.includes(Buffer.from('密钥.txt', 'utf8'))).toBe(false)
+    const db = new Database(restored, { readonly: true })
+    try {
+      expect(JSON.parse(db.prepare("SELECT usage_receipt_json FROM generation_attempts WHERE attempt_id='attempt-draft-5'").pluck().get() as string))
+        .toEqual({ draftCommit: { id: 5, chapterNumber: 1 } })
+      expect(JSON.parse(db.prepare("SELECT binding_json FROM generation_runs WHERE run_id='run-draft-5'").pluck().get() as string))
+        .toEqual({ sourceManifest: { authorInputs: [{ id: 'draft:chapter-info', text: JSON.stringify({ threadTasks: [task] }) }] } })
+    } finally { db.close() }
+  })
+
+  it('恢复出的副本再导出一次，线索任务仍在', async () => {
+    const f = fixture()
+    seedWrittenDraft(f, 5, 1, [task])
+    const before = reviewGoals(f.databasePath, 5)
+    await exportPortableProject(input(f))
+    const onceRoot = path.join(f.base, 'restored-once')
+    const once = await restorePortableProject({ archivePath: f.target, targetProjectRoot: onceRoot })
+    const secondArchive = path.join(f.base, '再导出.ainovel')
+    await exportPortableProject(input(f, provider(), { sourceProjectRoot: onceRoot, targetArchivePath: secondArchive,
+      projectSession: { projectId: once.targetProjectId, projectPath: onceRoot, leaseId: f.session.leaseId } }))
+    const twiceRoot = path.join(f.base, 'restored-twice')
+    await restorePortableProject({ archivePath: secondArchive, targetProjectRoot: twiceRoot })
+    expect(reviewGoals(path.join(twiceRoot, '.ai-novel', 'project.db'), 5)).toEqual(before)
+  })
+
+  it('没有冻结任务的旧稿，导出后的收据与审稿目标都和原来一样', async () => {
+    const f = fixture()
+    seedWrittenDraft(f, 5, 1, undefined)
+    const before = reviewGoals(f.databasePath, 5)
+    const restored = await roundtrip(f, 'restored-old-draft')
+    expect(reviewGoals(restored, 5)).toEqual(before)
+    const db = new Database(restored, { readonly: true })
+    try {
+      expect(db.prepare("SELECT usage_receipt_json FROM generation_attempts WHERE attempt_id='attempt-draft-5'").pluck().get()).toBeNull()
+      expect(db.prepare("SELECT binding_json FROM generation_runs WHERE run_id='run-draft-5'").pluck().get()).toBe('{}')
+    } finally { db.close() }
+  })
+
+  it('一份稿的线索任务段写坏，只这份稿退回无线索目标并记一行日志，导出恢复照常', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const f = fixture()
+      seedWrittenDraft(f, 5, 1, [task])
+      seedWrittenDraft(f, 6, 2, [{ planId: '坏', title: '旧信' }])
+      const restored = await roundtrip(f, 'restored-corrupt-task')
+      expect(reviewGoals(restored, 5).items.map(item => item.id)).toEqual(['ch1:thread:8'])
+      expect(reviewGoals(restored, 6).items).toEqual([])
+      expect(warn.mock.calls.filter(([message]) => String(message).startsWith('[portable-export]'))).toHaveLength(1)
+    } finally { warn.mockRestore() }
   })
 })
 
