@@ -4,7 +4,7 @@ import type { ExpectedDraftSource, NovelConfig } from '../../src/shared/ipc-chan
 import type { PrepareReviewRevisionRequest, ReviewMaterialIdentity, ReviewRevisionContext } from '../../src/shared/review-revision-generation'
 import { parseHumanConfirmedReviewSnapshot, serializeHumanConfirmedReviewSnapshot } from '../../src/shared/human-confirmed-review'
 import { freezeChapterGoals, withChapterThreadGoals } from '../../src/shared/chapter-goal-review'
-import { parseChapterThreadTasks, type ChapterThreadTask } from '../../src/shared/narrative-thread'
+import { writtenChapterThreadTasks, type ChapterThreadTask } from '../../src/shared/narrative-thread'
 import { findBlueprintContinuityRisks } from '../../src/shared/consistency-preflight'
 import { CHARACTER_STATE_TEXT_FIELDS } from '../../src/shared/character-roster'
 import { CURRENT_DRAFT_STATUS_SQL } from '../../src/shared/draft-status'
@@ -29,13 +29,9 @@ function draftThreadTasks(db: Database.Database, draftId: number, chapterNumber:
     WHERE json_valid(a.usage_receipt_json) AND json_extract(a.usage_receipt_json,'$.draftCommit.id')=?
       AND json_extract(a.usage_receipt_json,'$.draftCommit.chapterNumber')=?`).pluck().all(draftId, chapterNumber) as string[]
   if (bindings.length !== 1) return []
-  try {
-    const inputs = (JSON.parse(bindings[0]!) as { sourceManifest?: { authorInputs?: { id: string; text: string }[] } }).sourceManifest?.authorInputs
-    const info = inputs?.find(input => input.id === 'draft:chapter-info')?.text
-    return info ? parseChapterThreadTasks((JSON.parse(info) as { threadTasks?: unknown }).threadTasks ?? []) ?? [] : []
-  } catch {
-    return []
-  }
+  const tasks = writtenChapterThreadTasks(bindings[0]!)
+  if (!tasks) console.warn('[narrative-thread] 写稿记录里的线索任务读不出，这份稿的审稿不加线索目标', { draftId })
+  return tasks ?? []
 }
 
 /** Reconstruct only the original author selection, never a newer manuscript or confirmation. */
