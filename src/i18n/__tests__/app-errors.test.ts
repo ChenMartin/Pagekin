@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { appErrorMessage, displayedErrorMessage, errorCodeOf, importGenerationStopMessage, knownAppErrorMessage } from '../app-errors'
+import { appErrorMessage, displayedErrorMessage, errorCodeOf, importGenerationStopMessage, knownAppErrorMessage, legacyImportFailureMessage } from '../app-errors'
 
 describe('localized application errors', () => {
   it('maps stable error codes to localized messages', () => {
@@ -297,5 +297,46 @@ describe('import generation stops (#537)', () => {
 
   it.each(['ROOT_BUDGET_EXHAUSTED', 'GENERATION_DISPATCH_BLOCKED', 'GENERATION_DIRECTORY_CONTINUATION_BLOCKED'])('keeps the shared explanation of %s for other generation paths', code => {
     expect(knownAppErrorMessage('zh-CN', code)).toBe('这项生成已停止、暂停或用完了额度，不能再向模型发请求。需要时请重新生成。')
+  })
+})
+
+describe('导入旧项目副本的拒绝原因', () => {
+  const FALLBACK = '导入时出了问题'
+  it.each([
+    ['LEGACY_IMPORT_NOT_LEGACY_PROJECT', '不是旧版项目'],
+    ['LEGACY_IMPORT_PATH_INVALID', '选择已失效'],
+    ['LEGACY_IMPORT_TARGET_EXISTS', '同名文件夹'],
+    ['LEGACY_IMPORT_PATH_OVERLAP', '互相包含'],
+    ['PROJECT_STORAGE_PATH_UNSUPPORTED', '路径太深'],
+    ['LEGACY_IMPORT_UNSUPPORTED_SOURCE', '不支持旧项目导入'],
+    ['LEGACY_IMPORT_UNMAPPED_ASSET', '资料不完整'],
+    ['LEGACY_IMPORT_INVALID_MANIFEST', '资料不完整'],
+    ['LEGACY_IMPORT_UNSAFE_PATH', '符号链接'],
+    ['LEGACY_IMPORT_SOURCE_CHANGED', '别的程序占用'],
+    ['LEGACY_IMPORT_COPY_CHANGED', '别的程序占用'],
+    ['LEGACY_IMPORT_KNOWLEDGE_ORIGINAL_UNAVAILABLE', '知识库'],
+    ['LEGACY_IMPORT_KNOWLEDGE_ORIGINAL_INVALID', '知识库'],
+    ['LEGACY_IMPORT_IO_FAILED', '写入权限'],
+    ['LEGACY_IMPORT_SQLITE_CONTENT_CHANGED', FALLBACK],
+    ['LEGACY_IMPORT_SQLITE_VERIFICATION_FAILED', FALLBACK],
+    ['LEGACY_IMPORT_AVATAR_UNRESOLVED', FALLBACK],
+    ['LEGACY_IMPORT_AVATAR_INVALID', FALLBACK],
+    ['LEGACY_IMPORT_VECTOR_INVALID', FALLBACK],
+    ['LEGACY_IMPORT_IDENTITY_INVALID', FALLBACK],
+    ['LEGACY_IMPORT_HISTORY_INVALID', FALLBACK],
+    ['LEGACY_IMPORT_HISTORY_FREEZE_INVALID', FALLBACK],
+    ['LEGACY_IMPORT_HISTORY_AUTHORITY_INVALID', FALLBACK],
+    ['LEGACY_IMPORT_ROSTER_UNAVAILABLE', FALLBACK],
+    ['VECTOR_MIGRATION_NOT_REGISTERED_ANYWHERE', FALLBACK],
+  ])('%s 的说明先讲原文件没动，再讲原因，不露码', (code, reason) => {
+    const shown = legacyImportFailureMessage('zh-CN', code)
+    expect(shown.startsWith('没有导入，原文件没有改动。')).toBe(true)
+    expect(shown).toContain(reason)
+    expect(shown).not.toContain(code)
+  })
+
+  it('英文也给完整说明', () => {
+    expect(legacyImportFailureMessage('en-US', 'LEGACY_IMPORT_IO_FAILED'))
+      .toMatch(/^Nothing was imported\. Your original files were not changed\. .*write access/u)
   })
 })
