@@ -4,6 +4,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
 
 import { CHARACTER_STATE_TEXT_FIELDS } from '../../src/shared/character-roster'
+import { validThreadOutcome } from '../../src/shared/chapter-goal-review'
 import { readPortableCurrentAuthority } from './portable-current-authority'
 import { parsePortableRuntimeFreeze, readPortableRuntimeFreeze } from './portable-runtime-freeze'
 
@@ -610,8 +611,9 @@ function assertReviewContext(value: unknown): Record<string, unknown> {
       reviewIntegerFields(goalReview, ['version', 'chapterNumber'])
       reviewTextFields(goalReview, ['coverage'])
       for (const value of reviewArray(goalReview.items)) {
-        const item = object(value, ['id', 'text', 'status', 'description', 'evidence'])
-        reviewTextFields(item, ['id', 'text', 'status', 'description'])
+        const item = object(value, ['id', 'text', 'status', 'description', 'evidence', 'threadOutcome'])
+        reviewTextFields(item, ['id', 'text', 'status', 'description', 'threadOutcome'])
+        if (!validThreadOutcome(item)) fail('PORTABLE_UNSAFE_PROJECTION')
         for (const evidenceValue of reviewArray(item.evidence)) {
           const evidence = object(evidenceValue, ['quote', 'start', 'end'])
           reviewTextFields(evidence, ['quote'])

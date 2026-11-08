@@ -372,6 +372,41 @@ describe('portable project export service', { timeout: 20_000 }, () => {
     }
   })
 
+  it('exports a confirmed review whose thread-task goal carries its outcome', async () => {
+    const goalReview = { version: 1, chapterNumber: 1, coverage: 'not_configured', items: [
+      { id: 'ch1:thread:3', text: '本章推进或回收线索「旧信」', status: 'completed', description: '结论：已回收。旧信读完。',
+        evidence: [{ quote: '旧信', start: 0, end: 2 }], threadOutcome: 'resolved' },
+    ] }
+    const seedConfirmed = (f: Fixture, extra: Record<string, unknown>) => {
+      seedMergedCycle(f)
+      const db = new Database(f.databasePath)
+      try {
+        const binding = JSON.parse(db.prepare("SELECT binding_json FROM generation_runs WHERE run_id='run-revision'").pluck().get() as string)
+        const context = binding.sourceManifest.reviewRevisionContext
+        context.confirmation.snapshot.goalReview = { ...goalReview, items: goalReview.items.map(item => ({ ...item, ...extra })) }
+        binding.sourceManifest.reviewRevisionContextHash = hash(JSON.stringify(context))
+        binding.sourceManifest.authorInputs = [{ id: 'review-revision-context', text: JSON.stringify(context) }]
+        db.prepare('INSERT INTO generation_runs VALUES(?,?,?,?,?,?)').run('run-next-revision', 'root-merge', JSON.stringify(binding), 'open', 2, 'open-next-revision')
+      } finally { db.close() }
+    }
+    const f = fixture()
+    seedConfirmed(f, {})
+    await exportPortableProject(input(f))
+    const targetRoot = path.join(f.base, 'restored-thread-goal')
+    await restorePortableProject({ archivePath: f.target, targetProjectRoot: targetRoot })
+    const restored = new Database(path.join(targetRoot, '.ai-novel', 'project.db'), { readonly: true })
+    try {
+      const binding = JSON.parse(restored.prepare("SELECT binding_json FROM generation_runs WHERE run_id='run-next-revision'").pluck().get() as string)
+      expect(binding.sourceManifest.reviewRevisionContext.confirmation.snapshot.goalReview).toEqual(goalReview)
+    } finally { restored.close() }
+    const invalid = fixture()
+    seedConfirmed(invalid, { machinePath: 'C:/secret' })
+    await expect(exportPortableProject(input(invalid))).rejects.toThrow('PORTABLE_UNSAFE_PROJECTION')
+    const unknownOutcome = fixture()
+    seedConfirmed(unknownOutcome, { threadOutcome: 'finished' })
+    await expect(exportPortableProject(input(unknownOutcome))).rejects.toThrow('PORTABLE_UNSAFE_PROJECTION')
+  })
+
   it('cleans staging when a runtime freeze sidecar is invalid', async () => {
     const f = fixture()
     fs.writeFileSync(path.join(f.storage, 'portable-runtime-freeze.json'), '{}')

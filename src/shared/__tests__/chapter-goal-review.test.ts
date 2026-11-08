@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildChapterGoalReviewPrompt, chapterGoalReviewItems, freezeChapterGoals, normalizeChapterGoalReview, parseChapterGoalReview } from '../chapter-goal-review'
+import { buildChapterGoalReviewPrompt, chapterGoalReviewItems, freezeChapterGoals, normalizeChapterGoalReview, parseChapterGoalReview, withChapterThreadGoals } from '../chapter-goal-review'
 
 const draft = '她合上已经装订好的相册。两人约定周三再搬设备。'
 const goals = freezeChapterGoals(3, '完成相册；约定周三搬设备')
@@ -148,5 +148,70 @@ describe('本章目标审稿合同', () => {
     expect(parseChapterGoalReview({ ...valid, items: [{ ...valid.items[0], status: 'pass' }] })).toBeNull()
     expect(parseChapterGoalReview({ ...valid, items: [{ ...valid.items[0], evidence: [] }] })).toBeNull()
     expect(parseChapterGoalReview({ ...valid, items: [valid.items[0], valid.items[0]] })).toBeNull()
+  })
+})
+
+describe('伏笔线索任务的审稿目标', () => {
+  const tasks = [
+    { planId: 7, title: '青铜钥匙', authorIntent: '交代钥匙来历。', schedule: { kind: 'overdue', chaptersOverdue: 2 } },
+    { planId: 9, title: '雨夜来信', authorIntent: '揭开寄信人。', schedule: { kind: 'due' } },
+  ] as const
+  const prose = '她用青铜钥匙打开了父亲的木匣，匣底刻着外祖父的名字。窗外雨声渐密。'
+
+  it('每条线索任务一个目标，覆盖率仍只看作者配置的目标', () => {
+    const frozen = withChapterThreadGoals(freezeChapterGoals(6, ''), tasks, 'zh-CN')
+    expect(frozen.coverage).toBe('not_configured')
+    expect(frozen.items.map(item => item.id)).toEqual(['ch6:thread:7', 'ch6:thread:9'])
+    expect(frozen.items[0]!.text).toContain('青铜钥匙')
+    expect(withChapterThreadGoals(freezeChapterGoals(6, '交还钥匙'), tasks, 'zh-CN').coverage).toBe('complete')
+    expect(buildChapterGoalReviewPrompt(frozen, 'zh-CN')).toContain('resolved')
+  })
+
+  it('审稿给出回收、推进或未处理之一，回收和推进必须附引文', () => {
+    const frozen = withChapterThreadGoals(freezeChapterGoals(6, ''), tasks, 'zh-CN')
+    const review = normalizeChapterGoalReview([
+      { id: 'ch6:thread:7', status: 'resolved', description: '木匣揭开了钥匙来历。', evidence: [{ quote: '匣底刻着外祖父的名字' }] },
+      { id: 'ch6:thread:9', status: 'unaddressed', description: '正文没有写到来信。', evidence: [] },
+    ], frozen, prose, 'zh-CN')
+    expect(review.coverage).toBe('not_configured')
+    expect(review.items.map(item => [item.status, item.threadOutcome])).toEqual([['completed', 'resolved'], ['unknown', 'unaddressed']])
+    expect(review.items[0]!.evidence[0]!.quote).toBe('匣底刻着外祖父的名字')
+    expect(review.items[0]!.description).toMatch(/^结论：已回收/u)
+    expect(review.items[1]!.description).toMatch(/^结论：未处理/u)
+    expect(parseChapterGoalReview(review)).toEqual(review)
+    const advanced = normalizeChapterGoalReview([
+      { id: 'ch6:thread:7', status: 'advanced', description: '钥匙打开了木匣。', evidence: [{ quote: '她用青铜钥匙打开了父亲的木匣' }] },
+      { id: 'ch6:thread:9', status: 'advanced', description: '没有引文。', evidence: [] },
+    ], frozen, prose, 'zh-CN')
+    expect(advanced.items.map(item => [item.status, item.threadOutcome])).toEqual([['completed', 'advanced'], ['unknown', undefined]])
+    expect(advanced.coverage).toBe('not_configured')
+  })
+
+  it('未处理的结论不能带引文，带了按无效判断处理，存档也不接受', () => {
+    const frozen = withChapterThreadGoals(freezeChapterGoals(6, ''), tasks, 'zh-CN')
+    const review = normalizeChapterGoalReview([
+      { id: 'ch6:thread:7', status: 'unaddressed', description: '钥匙没有交代。', evidence: [{ quote: '她用青铜钥匙打开了父亲的木匣' }] },
+      { id: 'ch6:thread:9', status: 'unaddressed', description: '正文没有写到来信。', evidence: [] },
+    ], frozen, prose, 'zh-CN')
+    expect(review.items.map(item => [item.status, item.threadOutcome, item.evidence.length])).toEqual([['unknown', undefined, 0], ['unknown', 'unaddressed', 0]])
+    expect(review.coverage).toBe('not_configured')
+    const stored = { ...review, items: [{ ...review.items[1]!, evidence: [{ quote: '窗外雨声渐密', start: 26, end: 32 }] }] }
+    expect(parseChapterGoalReview(stored)).toBeNull()
+  })
+
+  it('作者目标仍用原来的三种状态，线索结论只能出现在线索目标上', () => {
+    const frozen = withChapterThreadGoals(freezeChapterGoals(6, '打开木匣'), tasks.slice(0, 1), 'zh-CN')
+    const review = normalizeChapterGoalReview([
+      { id: 'ch6:keyEvents:1', status: 'resolved', description: '打开了。', evidence: [{ quote: '她用青铜钥匙打开了父亲的木匣' }] },
+      { id: 'ch6:thread:7', status: 'completed', description: '打开了。', evidence: [{ quote: '她用青铜钥匙打开了父亲的木匣' }] },
+    ], frozen, prose, 'zh-CN')
+    expect(review.items.map(item => [item.status, item.threadOutcome])).toEqual([['unknown', undefined], ['unknown', undefined]])
+    expect(review.coverage).toBe('unknown')
+    const valid = normalizeChapterGoalReview([
+      { id: 'ch6:keyEvents:1', status: 'completed', description: '打开了。', evidence: [{ quote: '她用青铜钥匙打开了父亲的木匣' }] },
+      { id: 'ch6:thread:7', status: 'advanced', description: '推进。', evidence: [{ quote: '她用青铜钥匙打开了父亲的木匣' }] },
+    ], frozen, prose, 'zh-CN')
+    expect(parseChapterGoalReview({ ...valid, items: [{ ...valid.items[0], threadOutcome: 'resolved' }, valid.items[1]] })).toBeNull()
+    expect(parseChapterGoalReview({ ...valid, items: [valid.items[0], { ...valid.items[1], threadOutcome: 'finished' }] })).toBeNull()
   })
 })
