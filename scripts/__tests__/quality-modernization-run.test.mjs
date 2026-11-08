@@ -3927,7 +3927,7 @@ test('full accepted predecessor reads the current same-arm final DB row and pres
       await assert.rejects(read(invoke, { ...request, predecessor: { ...expected, ...changed } }, { arm: 'candidate' },
         { projectId: expected.projectId }, { number: 2 }, assert, hash, Buffer))
     const { assembleChapterMaterials, previousChapterEnding } = await import('../../src/services/workflows/chapter-materials')
-    const assembly = await assembleChapterMaterials({ identity: { projectId: expected.projectId, epoch: 'own-epoch', chapterNumber: 2 },
+    const assembly = await assembleChapterMaterials({ admission: { kind: 'budget', budget: { inputTokens: 1_000_000 } }, nonMaterialUnits: 0, identity: { projectId: expected.projectId, epoch: 'own-epoch', chapterNumber: 2 },
       writingLanguage: 'zh-CN', authorProjectFacts: [], characterProfiles: '', futurePlans: '', references: [], finalized: [],
       candidates: [{ chapterNumber: 1, draftId: 1, version: 1, content: actual.content }], relevanceTerms: [] })
     const ending = previousChapterEnding(final)

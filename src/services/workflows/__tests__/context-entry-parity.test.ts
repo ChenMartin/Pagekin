@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 
 import { freezeChapterGoals } from '../../../shared/chapter-goal-review'
 import type { ReviewRevisionContext } from '../../../shared/review-revision-generation'
-import { MATERIAL_DECISION_MAX_INPUT_UNITS } from '../../../shared/generation-owner-contract'
+import { MATERIAL_DECISION_MAX_INPUT_UNITS, materialBudgetFrom, type MaterialAdmission } from '../../../shared/generation-owner-contract'
 import {
   ChapterMaterialCapacityError,
   assembleChapterMaterials,
@@ -25,6 +25,7 @@ import { refineHistoryMaterials } from '../commands/refine-draft.command'
  * 再变一次：`includeEnding` 的上一章定稿必带 `previousChapterEnding`，不再只靠证据窗口与末两段；
  * 基线第 1 章不足一个结尾上限，于是整章进入，定稿块前多出 `第一章正文。` 一段，其余字节不变。
  */
+const ADMISSION = { admission: { kind: 'budget', budget: materialBudgetFrom({ contextWindowTokens: 6_000, contextWindowSource: 'manual', reservedOutputTokens: 0, safetyMarginTokens: 0 }) } as MaterialAdmission, nonMaterialUnits: 0 }
 const sha = (value: string) => createHash('sha256').update(value, 'utf8').digest('hex')
 
 const finalized = (chapterNumber: number, content: string,
@@ -47,6 +48,7 @@ function baseline() {
     ],
     candidates: [{ chapterNumber: 3, draftId: 30, version: 1, content: '第三章草稿。\n\n她走向北塔。' }] as SelectedCandidateDraft[],
     relevanceTerms: ['海港', '北塔'],
+    ...ADMISSION,
   }
 }
 
@@ -183,7 +185,7 @@ function runFrozenEntry(kind: 'review' | 'refine', required: string, optional: r
     ? reviewHistoryMaterials(frozen, PARITY_IDENTITY)
     : refineHistoryMaterials(frozen, PARITY_IDENTITY)
   try {
-    const admission = selectReviewRevisionMaterials({ current: PARITY_IDENTITY, writingLanguage: 'zh-CN',
+    const admission = selectReviewRevisionMaterials({ ...ADMISSION, current: PARITY_IDENTITY, writingLanguage: 'zh-CN',
       materials, relevanceTerms: [] })
     return { visibleText: admission.admitted.map(material => material.text).join('\n\n'),
       omissionReasons: admission.selection.omissions.map(omission => omission.reason), failure: null }
@@ -201,7 +203,7 @@ const ENTRY_POINTS: readonly EntryPoint[] = [
     async run(required, optional) {
       try {
         const bundle = await assembleChapterMaterials({
-          identity: PARITY_IDENTITY, writingLanguage: 'zh-CN',
+          ...ADMISSION, identity: PARITY_IDENTITY, writingLanguage: 'zh-CN',
           authorProjectFacts: [required], characterProfiles: '', futurePlans: '',
           references: optional.map(text => ({ text, rendered: text })),
           finalized: [], candidates: [], relevanceTerms: [],
@@ -255,7 +257,7 @@ describe('S10B-2 写/审/修共享同一套准入语义', () => {
       const frozen = frozenHistory(REQUIRED_FITS, ['可选的另一份定稿'])
       const materials = (kind === 'review' ? reviewHistoryMaterials : refineHistoryMaterials)(frozen, PARITY_IDENTITY)
         .map(material => (material.required ? material : { ...material, identity: { ...material.identity, ...over } }))
-      return selectReviewRevisionMaterials({ current: PARITY_IDENTITY, writingLanguage: 'zh-CN', materials, relevanceTerms: [] })
+      return selectReviewRevisionMaterials({ current: PARITY_IDENTITY, writingLanguage: 'zh-CN', materials, relevanceTerms: [], ...ADMISSION })
         .selection.omissions.filter(omission => !omission.required).map(omission => omission.reason)
     }
     expect(optionalOmissions('review', { provenance: 'unknown' })).toEqual(['unknown-provenance'])

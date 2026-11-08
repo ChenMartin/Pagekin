@@ -1,4 +1,5 @@
 import { reviewRevisionAiBrief, reviewRevisionAuthorMaterial, type ReviewRevisionContext } from '../../../shared/review-revision-generation'
+import type { MaterialAdmission } from '../../../shared/generation-owner-contract'
 import { hashAuthorText } from '../../../shared/source-ref'
 import { promptLanguageText } from '../../prompt-language'
 import { selectReviewRevisionMaterials, unknownReviewMaterialIdentity, type ChapterMaterialIdentity, type ReviewRevisionMaterial } from '../chapter-materials'
@@ -20,18 +21,19 @@ export function reviewHistoryMaterials(frozen: ReviewRevisionContext, current: C
   }))
 }
 
-export async function selectFrozenReviewRevisionMaterials(frozen: ReviewRevisionContext, current: ChapterMaterialIdentity) {
+export async function selectFrozenReviewRevisionMaterials(frozen: ReviewRevisionContext, current: ChapterMaterialIdentity,
+  admission: MaterialAdmission, nonMaterialUnits: number, historyRenderedCopies = 1) {
   const author = reviewRevisionAuthorMaterial(frozen)
   const ai = reviewRevisionAiBrief(frozen)
   const materials: ReviewRevisionMaterial[] = [{ identity: { projectId: current.projectId,
     sourceId: 'author:required', revision: 1, contentHash: await hashAuthorText(author), provenance: 'author' },
-  category: 'author', required: true, text: author }, ...reviewHistoryMaterials(frozen, current)]
+  category: 'author', required: true, text: author },
+  ...reviewHistoryMaterials(frozen, current).map(material => ({ ...material, renderedCopies: historyRenderedCopies }))]
   if (ai) materials.push({ identity: { projectId: current.projectId,
     sourceId: `review:confirmed:${frozen.confirmation!.reviewSourceId}`, revision: frozen.confirmation!.reviewSourceId,
     contentHash: await hashAuthorText(ai), provenance: 'derived' }, category: 'future-plan', required: true, text: ai })
   const blueprint = frozen.blueprints.find(item => item.chapterNumber === frozen.source.chapterNumber)
   return selectReviewRevisionMaterials({ current, writingLanguage: frozen.writingLanguage, materials,
-    // Optional history keeps its local allowance; main admits the complete request including all required material.
-    budgetChars: 8_000,
+    admission, nonMaterialUnits,
     relevanceTerms: [blueprint?.title ?? '', blueprint?.keyEvents ?? '', ...(blueprint?.characters ?? [])] })
 }

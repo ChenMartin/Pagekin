@@ -42,6 +42,16 @@ describe('S10A source selection contract', () => {
       category: 'derived-locator', required: false }))
   })
 
+  it('selects the same materials whichever order duplicates differing only by rank arrive in', () => {
+    const unranked = material({ ref: ref('knowledge:duplicate', hash('d')), text: '重复片段' })
+    const ranked = { ...unranked, knowledgeRank: 5 }
+    const other = material({ ref: ref('knowledge:other', hash('e')), text: '排名靠前的片段', knowledgeRank: 2 })
+    const included = (candidates: MaterialCandidate[]) => expectDecision(
+      selectChapterSources({ current, capacity, relevanceTerms: [], candidates }), 'ready').included.map(item => item.text)
+    expect(included([unranked, ranked, other])).toEqual(['排名靠前的片段', '重复片段'])
+    expect(included([ranked, unranked, other])).toEqual(['排名靠前的片段', '重复片段'])
+  })
+
   it('never admits the plot tree as manuscript material', () => {
     const result = selectChapterSources({ current, capacity, relevanceTerms: [],
       candidates: [material({ ref: ref('plot-tree:snapshot'), category: 'reference', provenance: 'derived', text: '剧情树' })] })

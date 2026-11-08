@@ -11,11 +11,13 @@ import { composeVisibleContinuation } from '../../../../shared/visible-continuat
 import { redactVisibleCompletionText } from '../../bounded-completion'
 import { useProjectStore } from '../../../../stores/project-store'
 import type { ExpectedDraftSource } from '../../../../shared/ipc-channels'
-import type { MaterialDecisionReceipt } from '../../../../shared/generation-owner-contract'
+import { DEFAULT_CONTEXT_WINDOW_TOKENS, materialBudgetFrom, type MaterialAdmission, type MaterialDecisionReceipt } from '../../../../shared/generation-owner-contract'
 import { buildReviewCycleRecheckReport, recheckCommitPolicy } from '../../../../shared/review-cycle'
 
 const digest = (text: string) => createHash('sha256').update(text).digest('hex')
 type Backend = (channel: string, ...args: unknown[]) => Promise<unknown>
+const FIXTURE_MATERIAL_ADMISSION: MaterialAdmission = { kind: 'budget', budget: materialBudgetFrom({
+  contextWindowTokens: DEFAULT_CONTEXT_WINDOW_TOKENS, contextWindowSource: 'default', reservedOutputTokens: 8_192, safetyMarginTokens: 512 }) }
 
 /** Consumer-only transport double. Legacy backend callbacks retain their existing domain assertions;
  * actual main authority/SQLite/ledger tests live in the Electron suites, not in this adapter. */
@@ -114,6 +116,7 @@ export class ReviewRevisionRuntimeFixture {
       if (!this.recovery) throw new Error('fixture recovery absent')
       return structuredClone(this.recovery)
     }
+    if (channel === 'generation:read-context') return this.optional(channel, { materialAdmission: FIXTURE_MATERIAL_ADMISSION }, ...args)
     if (channel === 'generation:read-visible-composition') return this.recovery?.composition ?? null
     if (channel === 'generation:bind-material-decision') {
       const request = args[0] as { handle: ReviewRevisionRecovery['handle']; materialDecision: MaterialDecisionReceipt }

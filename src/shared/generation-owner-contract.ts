@@ -77,6 +77,34 @@ export type MaterialDecisionOmissionReason = typeof MATERIAL_DECISION_OMISSION_R
 /** v1 只接收当前写/审/修材料装配器能铸造的稳定、非正文来源 ID。 */
 export const MATERIAL_DECISION_SOURCE_ID = /^(?:author:required|(?:finalized|candidate|review:confirmed):[1-9]\d*|reference:(?:0|[1-9]\d*))$/u
 
+/** 选材按 UTF-8 字节估 token 的唯一系数。实测中文 3.78–4.37 字节/token，取 3 偏保守。 */
+export const MATERIAL_BYTES_PER_TOKEN = 3
+export const DEFAULT_CONTEXT_WINDOW_TOKENS = 32_768
+export const MATERIAL_BUDGET_WINDOW_SOURCES = ['manual', 'endpoint', 'preset', 'default'] as const
+export type MaterialBudgetWindowSource = typeof MATERIAL_BUDGET_WINDOW_SOURCES[number]
+/** 本次生成可用的输入 token 及其来历。只决定放多少可选材料，绝不用来拒绝发送（ADR-0026）。 */
+export interface MaterialBudget {
+  inputTokens: number
+  contextWindowTokens: number
+  contextWindowSource: MaterialBudgetWindowSource
+  reservedOutputTokens: number
+  safetyMarginTokens: number
+}
+export function materialBudgetFrom(input: Omit<MaterialBudget, 'inputTokens'>): MaterialBudget {
+  return { ...input, inputTokens: Math.max(0, input.contextWindowTokens - input.reservedOutputTokens - input.safetyMarginTokens) }
+}
+export function estimateMaterialTokens(units: number): number {
+  return Math.ceil(units / MATERIAL_BYTES_PER_TOKEN)
+}
+/** 主进程裁决的选材依据。旧收据没有额度，只能照它记下的可选材料原样重现（frozen）。 */
+export type MaterialAdmission =
+  | { kind: 'budget'; budget: MaterialBudget }
+  | { kind: 'frozen'; optionalContentHashes: string[] }
+
+/** 没有主进程额度可用时的选材依据：窗口按默认值，不预留输出。 */
+export const DEFAULT_MATERIAL_ADMISSION: Extract<MaterialAdmission, { kind: 'budget' }> = { kind: 'budget', budget: materialBudgetFrom({
+  contextWindowTokens: DEFAULT_CONTEXT_WINDOW_TOKENS, contextWindowSource: 'default', reservedOutputTokens: 0, safetyMarginTokens: 0 }) }
+
 export interface MaterialDecisionIncludedSource {
   sourceId: string
   revision: number
@@ -111,6 +139,8 @@ export interface MaterialDecisionReceipt {
   shortOutlinePromptHash?: string
   /** admittedUnits 只统计被选来源块，不冒充完整 user prompt 的总字节数。 */
   capacity: { maxInputUnits: number; methodVersion: typeof MATERIAL_DECISION_UNIT_METHOD_VERSION; admittedUnits: number }
+  /** 恢复同一次生成时沿用，不按当前模型重算。ADR-0026 之前的收据没有这个字段。 */
+  budget?: MaterialBudget
   coverage: { required: number; included: number; complete: boolean }
   included: MaterialDecisionIncludedSource[]
   omitted: MaterialDecisionOmittedSource[]
@@ -174,6 +204,8 @@ export interface GenerationRecoveryContext {
   draftShortOutline?: { artifactIds: string[]; completedOutput: string | null; promptHash: string; initialDraftTask?: GenerationTask; retry: ShortOutlineRetry }
   /** Present only when the originally selected drafts still match their frozen source references. */
   selectedDrafts?: PreparedDraftContext['selectedDrafts']
+  /** 写稿、审修运行的选材依据；其他运行没有。 */
+  materialAdmission?: MaterialAdmission
 }
 export interface PlanningContinuationReceipt {
   kind: 'planning-continuation'
@@ -226,6 +258,7 @@ export interface PreparedDraftContext {
   preparationId: string
   knowledgeSnapshot: GenerationKnowledgeSnapshot
   selectedDrafts: { draftId: number; chapterNumber: number; version: number; contentHash: string; content: string; required?: boolean }[]
+  materialBudget: MaterialBudget
 }
 /** 单次批量创作的章数边界；渲染层界面与主进程准入共用，主进程据此限定批量根预算（见 batchRootBudget）。 */
 export const MIN_BATCH_CHAPTERS = 1

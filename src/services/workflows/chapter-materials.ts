@@ -1,11 +1,14 @@
 import type { WritingLanguage } from '../../shared/writing-language'
 import { hashAuthorText } from '../../shared/source-ref'
 import {
+  MATERIAL_BYTES_PER_TOKEN,
   MATERIAL_DECISION_MAX_INPUT_UNITS,
   MATERIAL_DECISION_RECEIPT_VERSION,
   MATERIAL_DECISION_UNIT_METHOD_VERSION,
   type MaterialDecisionIncludedSource,
   type MaterialDecisionOmittedSource,
+  type MaterialAdmission,
+  type MaterialBudget,
   type MaterialDecisionDraft,
 } from '../../shared/generation-owner-contract'
 import type { ReviewMaterialIdentity } from '../../shared/review-revision-generation'
@@ -14,6 +17,7 @@ import {
   selectChapterSources,
   type MaterialCandidate,
   type MaterialCategory,
+  type OptionalMaterialRule,
   type SourceOmission,
   type SourceOmissionReason,
   type SourceSelection,
@@ -55,6 +59,7 @@ export interface ChapterMaterialReference {
   readonly text: string
   readonly rendered: string
   readonly deduplicateAgainstFinalized?: boolean
+  readonly knowledgeRank?: number
 }
 
 export interface ChapterMaterialBundle {
@@ -142,6 +147,7 @@ export function buildMaterialDecisionReceipt(
   selection: SourceSelection,
   capacity: { maxInputUnits: number; methodVersion: typeof MATERIAL_DECISION_UNIT_METHOD_VERSION },
   additionalOmissions: readonly MaterialDecisionOmittedSource[] = [],
+  budget?: MaterialBudget,
 ): MaterialDecisionDraft {
   if (selection.decision !== 'ready') throw new Error('MATERIAL_DECISION_NOT_READY')
   if (!Number.isSafeInteger(capacity.maxInputUnits) || capacity.maxInputUnits < 1
@@ -208,6 +214,7 @@ export function buildMaterialDecisionReceipt(
       methodVersion: capacity.methodVersion,
       admittedUnits,
     },
+    ...(budget ? { budget } : {}),
     coverage: { required: selection.coverage.required, included: selection.coverage.included, complete: selection.coverage.complete },
     included: ordered,
     omitted,
@@ -219,15 +226,16 @@ function compareCodeUnit(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0
 }
 
-const MATERIAL_BUDGET_CHARS = 6_000
 const PREVIOUS_ENDING_MAX_CHARS = 1_000
-/**
- * 单位统一（S10B-1b）：旧遍历按 UTF-16 码元计量，选择契约按 UTF-8 字节计量
- * （估算器版本冻结为 `utf8-bytes-v1`）。这里按**写作语言的主要字符集**把码元预算换算成
- * 字节，使切换前后同一条路径的有效材料上限保持同一量级：CJK 一个码元约 3 字节，
- * 拉丁字母一个码元 1 字节。用固定倍数会把另一条路径的上限放大或缩小到 3 倍。
- */
-const BYTES_PER_BUDGET_CHAR: Readonly<Record<WritingLanguage, number>> = { 'zh-CN': 3, 'en-US': 1 }
+/** 材料块之间的分隔符和「覆盖缺口」里的一条记录，每个来源最多占这么多字节。 */
+const RENDER_RESERVE_UNITS_PER_SOURCE = 40
+
+function optionalMaterialRule(admission: MaterialAdmission, nonMaterialUnits: number): OptionalMaterialRule {
+  return admission.kind === 'frozen'
+    ? { kind: 'frozen', contentHashes: new Set(admission.optionalContentHashes) }
+    : { kind: 'ceiling', maxUnits: Math.max(0, admission.budget.inputTokens * MATERIAL_BYTES_PER_TOKEN - nonMaterialUnits) }
+}
+const admissionBudget = (admission: MaterialAdmission) => admission.kind === 'budget' ? admission.budget : undefined
 /** `SourceRef.sourceId` 里的家族前缀；渲染与省略清单都按它归类。 */
 const REQUIRED_SOURCE_ID = 'author:required'
 
@@ -246,6 +254,7 @@ export interface ReviewRevisionMaterial {
   required: boolean
   /** 该材料在本入口提示词里的文本（块头按各入口原有措辞由调用方给出）。 */
   text: string
+  renderedCopies?: number
 }
 
 export interface ReviewRevisionMaterialAdmission {
@@ -282,7 +291,9 @@ export function selectReviewRevisionMaterials(input: {
   writingLanguage: WritingLanguage
   materials: readonly ReviewRevisionMaterial[]
   relevanceTerms: readonly string[]
-  budgetChars?: number
+  admission: MaterialAdmission
+  /** 提示词里材料以外部分的 UTF-8 字节数。 */
+  nonMaterialUnits: number
 }): ReviewRevisionMaterialAdmission {
   const candidates: MaterialCandidate[] = input.materials.map(material => ({
     ref: {
@@ -294,6 +305,7 @@ export function selectReviewRevisionMaterials(input: {
     provenance: material.identity.provenance,
     required: material.required,
     text: material.text,
+    ...(material.renderedCopies === undefined ? {} : { renderedCopies: material.renderedCopies }),
   }))
   // The receipt limit is already in UTF-8 units; it is not a model window or a character allowance.
   const capacity = {
@@ -303,7 +315,8 @@ export function selectReviewRevisionMaterials(input: {
   const selection = selectChapterSources({
     current: input.current,
     capacity,
-    optionalMaterialCeiling: (input.budgetChars ?? MATERIAL_BUDGET_CHARS) * BYTES_PER_BUDGET_CHAR[input.writingLanguage],
+    optionalMaterial: optionalMaterialRule(input.admission,
+      input.nonMaterialUnits + candidates.length * RENDER_RESERVE_UNITS_PER_SOURCE),
     relevanceTerms: input.relevanceTerms,
     candidates,
   })
@@ -311,7 +324,7 @@ export function selectReviewRevisionMaterials(input: {
   const admittedKeys = new Set(selection.included.map(item => materialIdentityKey(item.ref)))
   return {
     selection,
-    decision: buildMaterialDecisionReceipt(selection, capacity),
+    decision: buildMaterialDecisionReceipt(selection, capacity, [], admissionBudget(input.admission)),
     admitted: input.materials.filter(material => admittedKeys.has(materialIdentityKey(material.identity))),
   }
 }
@@ -449,7 +462,9 @@ export async function assembleChapterMaterials(input: {
   finalized: readonly FinalizedMaterialSource[]
   candidates: readonly SelectedCandidateDraft[]
   relevanceTerms: readonly string[]
-  budgetChars?: number
+  admission: MaterialAdmission
+  /** 提示词里材料以外部分的 UTF-8 字节数。 */
+  nonMaterialUnits: number
 }): Promise<ChapterMaterialAssembly> {
   const writingLanguage = input.writingLanguage
   const omissions: ChapterMaterialOmission[] = []
@@ -477,6 +492,7 @@ export async function assembleChapterMaterials(input: {
     provenance: MaterialCandidate['provenance']
     required: boolean
     staleLocator?: false
+    knowledgeRank?: number
   }): Promise<MaterialCandidate | undefined> => {
     // 没有材料文本的来源贡献不了任何东西；如果给它建候选，只会在省略清单里
     // 冒出一个成本为 0 的假纳入。
@@ -490,6 +506,7 @@ export async function assembleChapterMaterials(input: {
       category: material.category, provenance: material.provenance, required: material.required,
       text: material.text,
       ...(material.staleLocator === undefined ? {} : { staleLocator: material.staleLocator }),
+      ...(material.knowledgeRank === undefined ? {} : { knowledgeRank: material.knowledgeRank }),
     }
     candidates.push(candidate)
     familyBySourceId.set(material.sourceId, family)
@@ -656,6 +673,7 @@ export async function assembleChapterMaterials(input: {
       category: 'reference',
       provenance: 'author',
       required: false,
+      ...(reference.knowledgeRank === undefined ? {} : { knowledgeRank: reference.knowledgeRank }),
     })
     if (candidate) referenceCandidates.push({ candidate, reference })
     else {
@@ -673,13 +691,14 @@ export async function assembleChapterMaterials(input: {
     maxInputUnits: MATERIAL_DECISION_MAX_INPUT_UNITS,
     methodVersion: MATERIAL_DECISION_UNIT_METHOD_VERSION,
   }
-  const optionalMaterialCeiling = (input.budgetChars ?? MATERIAL_BUDGET_CHARS) * BYTES_PER_BUDGET_CHAR[writingLanguage]
+  const optionalMaterial = optionalMaterialRule(input.admission, input.nonMaterialUnits + new TextEncoder().encode(sourced).length
+    + (candidates.length + omissions.length + 2) * RENDER_RESERVE_UNITS_PER_SOURCE)
 
   const select = () => {
     const choose = (dropped: Set<MaterialCandidate>) => selectChapterSources({
       current: input.identity,
       capacity,
-      optionalMaterialCeiling,
+      optionalMaterial,
       relevanceTerms: input.relevanceTerms,
       candidates: candidates.filter(item => !dropped.has(item)),
     })
@@ -766,7 +785,7 @@ export async function assembleChapterMaterials(input: {
 
   return {
     selection,
-    decision: buildMaterialDecisionReceipt(selection, capacity, decisionOmissions),
+    decision: buildMaterialDecisionReceipt(selection, capacity, decisionOmissions, admissionBudget(input.admission)),
     text: [requiredBlock, sourced, ...sourcedBlocks, gap].filter(Boolean).join('\n\n'),
     previousEnding: requiredPredecessor
       ? previousChapterEnding(requiredPredecessor.content)

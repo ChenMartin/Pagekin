@@ -2,7 +2,8 @@ import { chapterTimeContinuity } from '../../../shared/chapter-time-continuity'
 import { appErrorMessage, displayedErrorMessage, englishWithReason } from '../../../i18n/app-errors'
 import { sanitizeDraftText, composeDraftVisibleContinuation, DRAFT_CONDENSE_PURPOSE, DRAFT_VISIBLE_TEXT_VERSION, isDraftVisibleTextVersion, type DraftVisibleTextVersion } from '../../../shared/draft-visible-text'
 import { DRAFT_RECONCILE_PURPOSE, draftReconciliationBlock } from '../../../shared/draft-reconciliation'
-import { DRAFT_SHORT_OUTLINE_PURPOSE, draftShortOutlinePrompt, draftShortOutlineBlock, draftShortOutlineTask } from '../../../shared/draft-short-outline'
+import { DEFAULT_MATERIAL_ADMISSION } from '../../../shared/generation-owner-contract'
+import { DRAFT_SHORT_OUTLINE_PURPOSE, DRAFT_SHORT_OUTLINE_UNITS, draftShortOutlinePrompt, draftShortOutlineBlock, draftShortOutlineTask } from '../../../shared/draft-short-outline'
 import { isWorkflowCancellation, WorkflowCancelledError } from '../workflow-cancellation'
 export { sanitizeDraftText } from '../../../shared/draft-visible-text'
 import { createWorkflowMainGenerationRuntime, type WorkflowMainGenerationRequest } from '../workflow-main-generation'
@@ -729,7 +730,7 @@ export class GenerateDraftCommand extends BaseWorkflowCommand {
         expectedProjectPath,
       ))
       if (results.length > 0) {
-        knowledgeReferences = results.map((result: { fileName: string; score: number; text: string }, index: number) => ({
+        knowledgeReferences = results.map((result: { fileName: string; score: number; text: string; rank?: number }, index: number) => ({
           text: result.text,
           rendered: promptLanguageText(
             writingLanguage,
@@ -737,6 +738,7 @@ export class GenerateDraftCommand extends BaseWorkflowCommand {
             `[${index + 1}] (${result.fileName}, relevance ${(result.score * 100).toFixed(0)}%)\n${result.text}`,
           ),
           deduplicateAgainstFinalized: true,
+          ...(result.rank === undefined ? {} : { knowledgeRank: result.rank }),
         }))
       } else {
         const emptyContext = promptLanguageText(writingLanguage, '（知识库中无相关内容）', '(no relevant knowledge-base context)')
@@ -813,12 +815,24 @@ export class GenerateDraftCommand extends BaseWorkflowCommand {
         `The required finalized source for Chapter ${previousChapterNumber} could not be fixed, so generation stopped. Repair or re-finalize that chapter and try again.`,
       ))
     }
+    const chapterExecutionContract = chapterExecutionContractText(writingLanguage, writerChapterInfo)
+    const systemRole = `${promptBuilder.getSystemRole()}\n\n${chapterExecutionContract.rules}`
+    const composeInitialPrompt = (materialsText: string, reconciliationBlock: string) => [materialsText, promptBuilder.build(),
+      reconciliationBlock, chapterExecutionContract.authorItems, chapterLengthContract]
+      .filter(Boolean)
+      .join('\n\n')
+    const withSkill = (content: string) => injectWritingSkillIntoTask({ purpose: 'chapter-draft', output: 'visible-text',
+      messages: [{ role: 'user', content }] }, context, 'drafting').task.messages[0]!.content
+    const utf8Units = (text: string) => new TextEncoder().encode(text).length
     let chapterMaterials: ChapterMaterialAssembly
     try {
       chapterMaterials = await assembleChapterMaterials({
         identity: { projectId: projectSession.projectId, epoch: projectSession.leaseId },
         writingLanguage,
-        budgetChars: 8_000,
+        admission: prepared ? { kind: 'budget', budget: prepared.materialBudget } : earlyRecovery?.materialAdmission ?? DEFAULT_MATERIAL_ADMISSION,
+        // 短细纲是首稿提示词里后追加的生成内容，按它的目标字数预留。
+        nonMaterialUnits: utf8Units(withSkill(composeInitialPrompt('', ''))) + utf8Units(systemRole)
+          + utf8Units(draftShortOutlineBlock(writingLanguage, '字'.repeat(DRAFT_SHORT_OUTLINE_UNITS))),
         authorProjectFacts: authoredConfigFacts,
         characterProfiles,
         futurePlans: futureBlueprintsStr,
@@ -885,16 +899,8 @@ export class GenerateDraftCommand extends BaseWorkflowCommand {
       ))
     }
     // 仅历史恢复沿用已记录的对账块；新 run 直接使用作者材料与定稿事实。
-    const chapterExecutionContract = chapterExecutionContractText(writingLanguage, writerChapterInfo)
-    const systemRole = `${promptBuilder.getSystemRole()}\n\n${chapterExecutionContract.rules}`
-    const composeInitialPrompt = (reconciliationBlock: string) => [chapterMaterials.text, promptBuilder.build(),
-      reconciliationBlock, chapterExecutionContract.authorItems, chapterLengthContract]
-      .filter(Boolean)
-      .join('\n\n')
-    const prompt = composeInitialPrompt('')
+    const prompt = composeInitialPrompt(chapterMaterials.text, '')
     const outlinePrompt = draftShortOutlinePrompt(writingLanguage, prompt)
-    const withSkill = (content: string) => injectWritingSkillIntoTask({ purpose: 'chapter-draft', output: 'visible-text',
-      messages: [{ role: 'user', content }] }, context, 'drafting').task.messages[0]!.content
     const materialDecision = { ...chapterMaterials.decision, promptHash: await hashAuthorText(withSkill(prompt)),
       ...(!this.resumeHandle ? { shortOutlinePromptHash: await hashAuthorText(withSkill(outlinePrompt)) } : {}) }
     const previousEnding = chapterMaterials.previousEnding
@@ -1075,7 +1081,7 @@ export class GenerateDraftCommand extends BaseWorkflowCommand {
           const reconciliationBlock = [recordedReconciliation ? draftReconciliationBlock(writingLanguage, recordedReconciliation) : '',
             shortOutline ? draftShortOutlineBlock(writingLanguage, shortOutline) : ''].filter(Boolean).join('\n\n')
           const initialPrompt = shortOutline ? `${prompt}\n\n${draftShortOutlineBlock(writingLanguage, shortOutline)}`
-            : composeInitialPrompt(reconciliationBlock)
+            : composeInitialPrompt(chapterMaterials.text, reconciliationBlock)
           const originalDraftTask = recovery?.draftShortOutline?.initialDraftTask
           if (recovery?.draftShortOutline && (recovery.draftShortOutline.promptHash !== await hashAuthorText(withSkill(outlinePrompt))
             || recovery.attemptedPurposes.includes('chapter-draft') && !originalDraftTask

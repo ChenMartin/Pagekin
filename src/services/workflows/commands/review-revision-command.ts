@@ -1,6 +1,6 @@
 import { BaseWorkflowCommand, injectWritingSkillIntoTask, type CommandExecuteParams, type WorkflowGenerationRuntimeDependencies } from './base-command'
 import type { MainGenerationRunHandle } from '../../generation/generation-runtime'
-import type { GenerationAuthorInput, MaterialDecisionDraft } from '../../../shared/generation-owner-contract'
+import { DEFAULT_MATERIAL_ADMISSION, type GenerationAuthorInput, type MaterialAdmission, type MaterialDecisionDraft } from '../../../shared/generation-owner-contract'
 import type { PreparedReviewRevisionContext, ReviewRevisionContext, ReviewRevisionOperation, ReviewRevisionRecovery, ReviewRevisionCommitReceipt } from '../../../shared/review-revision-generation'
 import type { FrozenDraftSourceIdentity } from '../chapter-workflow'
 import { hashAuthorText } from '../../../shared/source-ref'
@@ -108,15 +108,30 @@ export abstract class ReviewRevisionCommand extends BaseWorkflowCommand<string> 
 
   protected abstract generateAndCommit(prepared: PreparedReviewRevisionContext, params: CommandExecuteParams): Promise<ReviewRevisionCommitReceipt>
 
+  private promptWithSkill(params: CommandExecuteParams, prompt: string): string {
+    return injectWritingSkillIntoTask({ purpose: this.operation, output: 'visible-text',
+      messages: [{ role: 'user', content: prompt }] }, params.context, this.operation === 'review-chapter' ? 'review' : 'refinement').task.messages[0]!.content
+  }
+
   protected async bindMaterialDecision(params: CommandExecuteParams, decision: MaterialDecisionDraft, prompt: string): Promise<void> {
     const handle = params.context.mainGenerationRunHandle
     if (!handle) throw new Error('GENERATION_REVIEW_REVISION_HANDLE_REQUIRED')
-    const { task } = injectWritingSkillIntoTask({ purpose: this.operation, output: 'visible-text',
-      messages: [{ role: 'user', content: prompt }] }, params.context, this.operation === 'review-chapter' ? 'review' : 'refinement')
     await ipc.invokeWithProjectSession(requireWorkflowProjectSession(params.context), 'generation:bind-material-decision', {
       handle,
-      materialDecision: { ...decision, promptHash: await hashAuthorText(task.messages[0]!.content) },
+      materialDecision: { ...decision, promptHash: await hashAuthorText(this.promptWithSkill(params, prompt)) },
     })
+  }
+
+  protected nonMaterialUnits(params: CommandExecuteParams, prompt: string, systemRole: string): number {
+    return new TextEncoder().encode(this.promptWithSkill(params, prompt) + systemRole).length
+  }
+
+  /** 审修在运行打开之后才选材，运行里冻结的模型这时才确定。 */
+  protected async materialAdmission(params: CommandExecuteParams): Promise<MaterialAdmission> {
+    const handle = params.context.mainGenerationRunHandle
+    if (!handle) throw new Error('GENERATION_REVIEW_REVISION_HANDLE_REQUIRED')
+    const context = await ipc.invokeWithProjectSession(requireWorkflowProjectSession(params.context), 'generation:read-context', { handle })
+    return context.materialAdmission ?? DEFAULT_MATERIAL_ADMISSION
   }
 
   private assertSession(params: CommandExecuteParams): void {

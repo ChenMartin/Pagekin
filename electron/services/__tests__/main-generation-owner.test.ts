@@ -9,13 +9,13 @@ import { getDesktopMigrationRegistry, CURRENT_DESKTOP_SCHEMA_VERSION } from '../
 import { SqliteSchemaAdapter } from '../../migrations/sqlite-schema-adapter'
 import { migrateSchema } from '../../migrations/runner'
 import { createMainGenerationOwner, safeGenerationModelReceipt } from '../main-generation-owner'
-import { batchRootBudget, buildMainGenerationPlan, MAIN_GENERATION_POLICY, newMainGenerationPolicy, readMainGenerationPolicy } from '../main-generation-plan'
+import { batchRootBudget, buildMainGenerationPlan, MAIN_GENERATION_POLICY, newMainGenerationPolicy, readMainGenerationPolicy, resolveMaterialBudget } from '../main-generation-plan'
 import { createModelExecutionLeaseReceipt, ModelExecutionLeaseRegistry } from '../model-execution-lease'
 import * as providerPresets from '../../../src/shared/provider-presets'
 import { buildGenerationSourceBinding, planningBlueprintSourceHash, rebuildGenerationSourceBinding } from '../generation-source-binding'
 import { getBuiltinPromptTemplate } from '../../../src/services/builtin-prompt-templates'
 import { readBuiltinWritingSkill } from '../../../src/shared/builtin-writing-skills'
-import type { ArchitecturePlanningIntent, BeginGenerationRequest } from '../../../src/shared/generation-owner-contract'
+import type { ArchitecturePlanningIntent, BeginGenerationRequest, MaterialDecisionReceipt } from '../../../src/shared/generation-owner-contract'
 import { generationOutputContract, MAX_BATCH_CHAPTERS } from '../../../src/shared/generation-owner-contract'
 import { GenerationRunRepository, textHash } from '../../repositories/generation-run-repository'
 import type { GenerationTask } from '../../../src/services/generation/generation-harness'
@@ -34,6 +34,7 @@ import { reopenFinalizedChapter } from '../chapter-reopen-service'
 import { ChapterDeletionService } from '../chapter-deletion-service'
 import { GenerationDraftEffects } from '../generation-draft-effects'
 import type { ModelProfile } from '../../../src/shared/ipc-channels'
+import type { GenerationKnowledgeSnapshot } from '../../../src/shared/generation-knowledge'
 import type { GenerationRunServiceDependencies } from '../generation-run-service'
 import { getProjectDb, getCurrentProjectPath } from '../../database'
 import { ProjectClearRepository } from '../../repositories/project-clear-repository'
@@ -70,13 +71,14 @@ function fixture(dispatch?: GenerationRunServiceDependencies['dispatch'], silico
     modelName: silicon ? 'deepseek-ai/DeepSeek-V4-Flash' : 'gpt-4.1', apiKey: 'synthetic-private-key',
     baseUrl: silicon ? 'https://api.siliconflow.cn/v1' : 'https://api.openai.com/v1', temperature: 0.7, maxTokens: 2048, purposes: ['generation'],
     capabilities: { contextWindowTokens: 32768, maxOutputTokens: 2048, reasoning: false, structuredOutput: false, usage: true } }
+  const modelSource: { load: () => ModelProfile | null } = { load: () => model }
   const makeOwner = () => {
     const capturedDb = db, capturedEpoch = epoch
     const sourceDeps = { db: capturedDb, projectStorageRoot, globalDataRoot,
       readBuiltinPrompt: (key: string, language: 'zh-CN' | 'en-US') => JSON.stringify(getBuiltinPromptTemplate(key, language)), readBuiltinSkill: readBuiltinWritingSkill }
     return createMainGenerationOwner({ database: capturedDb, projectId: 'project', epoch: capturedEpoch,
       assertCurrent: () => { if (!current || capturedEpoch !== epoch || capturedDb !== db) throw new Error('GENERATION_EPOCH_STALE') },
-      leases: new ModelExecutionLeaseRegistry({ loadModel: () => model }), loadModel: () => model, dispatch,
+      leases: new ModelExecutionLeaseRegistry({ loadModel: () => model }), loadModel: () => modelSource.load(), dispatch,
       onReasoning,
       onSnapshot,
       buildBinding: (selection, modelReceipt, policy) => buildGenerationSourceBinding(sourceDeps, { ...selection, projectId: 'project', epoch: capturedEpoch,
@@ -89,7 +91,7 @@ function fixture(dispatch?: GenerationRunServiceDependencies['dispatch'], silico
     if (db.open) db.close(); fs.rmSync(root, { recursive: true, force: true }) })
   const begin: BeginGenerationRequest = { operation: 'chapter-draft', uiActionNonce: 'click', modelId: model.id, chapterNumber: 1,
     selectedDraftIds: [], selectedFinalizedDraftIds: [], promptKeys: ['first_chapter_draft'], skillStages: [], output: 'visible-text' }
-  return { root, model, get db() { return db }, owner: owners[0], begin,
+  return { root, model, modelSource, get db() { return db }, owner: owners[0], begin,
     invalidate: () => { current = false },
     reopen: () => { owners.at(-1)!.suspendForProjectClose(); db.close(); db = new Database(path.join(root, 'project.db')); epoch = `epoch-${owners.length + 1}`;
       const owner = makeOwner(); owners.push(owner); return owner },
@@ -1656,6 +1658,70 @@ it.each(['', ' ', null, 7])('rejects malformed parent root %j before creating a 
   expect(() => f.owner.begin({ ...f.begin, parentRootActionId: parent as string })).toThrow('GENERATION_BEGIN_INVALID');
   expect(f.db.prepare('SELECT COUNT(*) FROM generation_roots').pluck().get()).toBe(0);
 });
+
+describe('材料额度（ADR-0026）', () => {
+  const profile = (over: Partial<ModelProfile>): ModelProfile => ({ id: 'm', name: '合成', provider: 'custom', protocol: 'openai', modelName: 'unknown-model',
+    apiKey: 'synthetic-private-key', baseUrl: 'https://relay.example/v1', temperature: 0.7, maxTokens: 4_096, purposes: ['generation'], ...over } as ModelProfile)
+  const receipt = (over: Partial<MaterialDecisionReceipt> = {}): MaterialDecisionReceipt => ({
+    version: 1, verdict: 'admitted', promptHash: textHash(task.messages[0].content),
+    capacity: { maxInputUnits: 18_000, methodVersion: 'utf8-bytes-v1', admittedUnits: 13 },
+    coverage: { required: 1, included: 1, complete: true },
+    included: [
+      { sourceId: 'author:required', revision: 1, contentHash: 'a'.repeat(64), category: 'author', required: true, units: 12 },
+      { sourceId: 'reference:0', revision: 1, contentHash: 'b'.repeat(64), category: 'reference', required: false, units: 1 },
+    ],
+    omitted: [], ...over })
+
+  it('窗口未知时按 32,768 算，来源记默认，预留输出取实际发送值', () => {
+    expect(resolveMaterialBudget(profile({}), 8_192)).toEqual({ inputTokens: 28_160, contextWindowTokens: 32_768, contextWindowSource: 'default',
+      reservedOutputTokens: 4_096, safetyMarginTokens: MAIN_GENERATION_POLICY.safetyMarginTokens })
+  })
+
+  it('手填的窗口压过预设，拉取的窗口记拉取', () => {
+    const preset = { provider: 'siliconflow' as const, modelName: 'deepseek-ai/DeepSeek-V4-Flash', baseUrl: 'https://api.siliconflow.cn/v1' }
+    const presetWindow = resolveMaterialBudget(profile(preset), 8_192)
+    expect(presetWindow.contextWindowSource).toBe('preset')
+    expect(presetWindow.contextWindowTokens).toBeGreaterThan(32_768)
+    expect(resolveMaterialBudget(profile({ ...preset, capabilities: { contextWindowTokens: 16_385 } as ModelProfile['capabilities'] }), 8_192))
+      .toMatchObject({ contextWindowTokens: 16_385, contextWindowSource: 'manual' })
+    expect(presetWindow.contextWindowTokens).not.toBe(64_000)
+    expect(resolveMaterialBudget(profile({ ...preset, capabilities: { contextWindowTokens: 64_000 } as ModelProfile['capabilities'], capabilitySources: { contextWindowTokens: 'endpoint' } }), 8_192))
+      .toMatchObject({ contextWindowTokens: 64_000, contextWindowSource: 'endpoint' })
+  })
+
+  it.each<[string, ModelProfile | null]>([
+    ['已被删除', null],
+    ['换成了别的窗口', { id: 'model', name: '换后', provider: 'openai', protocol: 'openai', modelName: 'gpt-4.1', apiKey: 'synthetic-private-key', baseUrl: 'https://api.openai.com/v1',
+      temperature: 0.7, maxTokens: 2048, purposes: ['generation'], capabilities: { contextWindowTokens: 262_144, maxOutputTokens: 2048, reasoning: false, structuredOutput: false, usage: true } }],
+  ])('写稿准备的额度取自建绑定时读到的模型：之后模型%s也不受影响', (_name, later) => {
+    const f = fixture(), snapshot: GenerationKnowledgeSnapshot = { version: 1, state: 'empty', storageState: 'absent', query: '第一章', topK: 5, canonicalRevision: null, documentsRevision: null, items: [] }
+    let reads = 0
+    f.modelSource.load = () => ++reads === 1 ? f.model : later
+    const prepared = f.owner.prepareDraftContext({ chapterNumber: 1, modelId: f.model.id, promptKeys: ['first_chapter_draft'], skillStages: [], authorInputs: [], query: '第一章', selectedDraftIds: [] }, snapshot)
+    expect(prepared.materialBudget).toMatchObject({ contextWindowTokens: 32_768 })
+  })
+
+  it('窗口比预留还小时输入额度归零，不报错', () => {
+    expect(resolveMaterialBudget(profile({ capabilities: { contextWindowTokens: 1_024 } as ModelProfile['capabilities'] }), 8_192).inputTokens).toBe(0)
+  })
+
+  it('恢复读到收据里冻结的额度，当前模型变了也不重算', () => {
+    const f = fixture(), budget = { inputTokens: 11_777, contextWindowTokens: 16_385, contextWindowSource: 'manual', reservedOutputTokens: 4_096, safetyMarginTokens: 512 } as const
+    const run = f.owner.begin({ ...f.begin, materialDecision: receipt({ budget }) })
+    f.model.capabilities = { ...f.model.capabilities!, contextWindowTokens: 262_144 }
+    expect(f.owner.readContext(run.handle).materialAdmission).toEqual({ kind: 'budget', budget })
+  })
+
+  it('旧收据没有额度时，恢复按收据记下的可选内容重现', () => {
+    const f = fixture(), run = f.owner.begin({ ...f.begin, materialDecision: receipt() })
+    expect(f.owner.readContext(run.handle).materialAdmission).toEqual({ kind: 'frozen', optionalContentHashes: ['b'.repeat(64)] })
+  })
+
+  it('写稿运行没有收据时不给额度', () => {
+    const f = fixture(), run = f.owner.begin(f.begin)
+    expect(f.owner.readContext(run.handle).materialAdmission).toBeUndefined()
+  })
+})
 
 it('freezes a valid material decision into the run and rejects a malformed one before any budget', () => {
   // S10B 步骤 3：写稿入口把脱敏准入收据交给主进程，主进程校验后冻进 sourceManifest。
