@@ -16,6 +16,7 @@ import { saveDirtyEditorChangesForExit, useEditorStore } from '../../../../store
 import { useLLMStore } from '../../../../stores/llm-store'
 import { useLocaleStore } from '../../../../stores/locale-store'
 import { useStageStore } from '../../../../stores/navigation/stage-store'
+import { CHARACTER_DRAFT_TAB } from '../../../../stores/project-editor-draft-ledger'
 import { useProjectStore } from '../../../../stores/project-store'
 import { useWorkflowStore } from '../../../../stores/workflow-store'
 import StageCharacters from '../StageCharacters'
@@ -639,6 +640,20 @@ describe('角色时间线', () => {
     expect(note()!.textContent).toContain('手改的状态从第 8 章起生效')
     expect(host!.querySelector('.cast-state-chapter input')).toBeNull()
     expect(document.querySelector('[role="dialog"]')).toBeNull()
+  })
+
+  it.each([
+    ['基线', { baseValue: '损坏', draftValue: [linzhou] }],
+    ['草稿', { baseValue: [linzhou], draftValue: { 损坏: true } }],
+  ])('账本里的%s不是角色数组：档案页照常显示，不出现章号说明', async (_, values) => {
+    useEditorStore.setState({
+      draftLedgers: {
+        [CHARACTER_DRAFT_TAB.id]: JSON.stringify({ version: 1, projects: [{ projectKey: session.projectPath, ...values }] }),
+      },
+    })
+    await openState()
+    expect(host!.querySelector('.cast-grid textarea')).not.toBeNull()
+    expect(note()).toBeNull()
   })
 
   it('点开才能改章号，保存时带上所选章号', async () => {
