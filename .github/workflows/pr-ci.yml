@@ -97,7 +97,30 @@ jobs:
           Write-Output "CI_TESTED_COMMIT=$testedCommit"
 
       - name: Install locked dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      # GitHub 的发布文件下载偶发 5xx。跳过安装脚本，让重试只包这一次下载，lockfile 错误不重试。
+      - name: Download Electron binary
+        timeout-minutes: 5
+        run: |
+          $waits = 10, 20, 40, 80
+          $maxAttempts = $waits.Count + 1
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            node node_modules/electron/install.js
+            $code = $LASTEXITCODE
+            if ($code -eq 0) { exit 0 }
+            Write-Output "Electron download attempt $attempt/$maxAttempts failed with exit code $code."
+            if ($attempt -lt $maxAttempts) {
+              $wait = $waits[$attempt - 1]
+              Write-Output "Waiting $wait seconds before attempt $($attempt + 1)/$maxAttempts."
+              Start-Sleep -Seconds $wait
+            }
+          }
+          Write-Output "::error::Electron download failed after $maxAttempts attempts."
+          exit 1
+
+      - name: Run dependency build scripts
+        run: pnpm rebuild
 
       - name: Type-check
         if: ${{ matrix.shard == 1 }}
