@@ -25,7 +25,6 @@ export type CharacterProposalSource =
       artifact: { artifactId: string; revision: number; textHash: string } }
   | { kind: 'legacy-roster-generation'; handle: MainGenerationRunHandle;
       artifact: { artifactId: string; revision: number; textHash: string } }
-/** 蓝图提案的选择键带出处章号，批准时据此定关系的生效章。 */
 export const directoryProposalSelectionKey = (chapterNumber: number, index: number) => `${chapterNumber}:${index}`
 export const directoryProposalChapter = (selectionKey: string) => Number(selectionKey.slice(0, selectionKey.indexOf(':')))
 

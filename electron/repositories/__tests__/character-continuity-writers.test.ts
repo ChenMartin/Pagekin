@@ -33,15 +33,15 @@ describe('角色状态与关系的写入方', () => {
     'delete from character_relationships where relationship_id=?',
     'delete from characters',
     'update characters set cs_location=? where character_id=?',
-    'UPDATE characters SET ' + '$' + '{columns[field]}=? WHERE character_id=?',
-    'update characters set ' + '$' + '{STATE_COLUMNS[field]}=?',
+    'UPDATE characters SET ${columns[field]}=? WHERE character_id=?',
+    'update characters set ${STATE_COLUMNS[field]}=?',
   ])('识别写入：%#', sql => expect(isCharacterWrite(sql)).toBe(true))
 
   it.each([
     'SELECT cs_location FROM characters',
     'UPDATE characters SET notes=? WHERE character_id=?',
     'UPDATE characters SET cs_provenance=? WHERE character_id=?',
-    'UPDATE characters SET ' + '$' + '{keys.join(",")}=?',
+    'UPDATE characters SET ${keys.join(",")}=?',
   ])('不误报：%#', sql => expect(isCharacterWrite(sql)).toBe(false))
 
   it('每个写入方都走收口函数或登记了不追加节点的理由', () => {
