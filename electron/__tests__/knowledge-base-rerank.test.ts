@@ -3,7 +3,7 @@ import path from 'node:path'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { openCanonicalProjectFixture } from '../../test/helpers/canonical-project-fixture'
 import { closeProjectDatabase } from '../database'
-import { captureWritingKnowledgeSnapshot, importText } from '../knowledge-base'
+import { captureWritingKnowledgeSnapshot, importText, listDocuments, readDocumentCopy, saveDocumentCopy } from '../knowledge-base'
 import { captureGenerationKnowledge, verifyGenerationKnowledge } from '../services/generation-knowledge-source'
 import { getProjectDataRoot } from '../services/project-data-locator'
 import { closeConnection, getConnection } from '../vector-store'
@@ -110,6 +110,39 @@ describe('writing knowledge snapshot ranking', () => {
     expect(snapshot.ranking).toEqual({ method: 'original', candidateCount: expected.length, reason: 'source-changed' })
     expect(snapshot.items.map(item => item.chunkId)).toEqual(expected.map(item => item.chunkId))
     await expect(verifyGenerationKnowledge({ projectStorageRoot: getProjectDataRoot(projectPath), snapshot })).resolves.toBeUndefined()
+  })
+
+  it('takes the original five when the author saves a selected document copy during the rerank request', async () => {
+    const top = (await listDocuments(projectPath)).find(doc => doc.fileName === '第7章.md')!
+    fetchMock.mockImplementation(async (_url: string, init: RequestInit) => {
+      const opened = await readDocumentCopy(top.id, projectPath)
+      await expect(saveDocumentCopy(top.id, '第7段：潮位表被作者改写。', opened.contentHash!, projectPath)).resolves.toEqual({ success: true })
+      const { documents, top_n } = JSON.parse(String(init.body)) as { documents: string[]; top_n: number }
+      const scored = documents.map((text, index) => ({ index, relevance_score: Number(/第(\d+)段/u.exec(text)![1]) }))
+      return new Response(JSON.stringify({ results: scored.sort((a, b) => b.relevance_score - a.relevance_score).slice(0, top_n) }))
+    })
+    const snapshot = await captureWritingKnowledgeSnapshot('潮位', projectPath, null, [], RERANK)
+    const expected = await masterTopFive()
+
+    expect(snapshot.ranking).toEqual({ method: 'original', candidateCount: 5, reason: 'source-changed' })
+    expect(snapshot.items.map(item => [item.rank, item.chunkId])).toEqual(expected.map((item, index) => [index + 1, item.chunkId]))
+    expect(snapshot.items.map(item => item.documentId)).not.toContain(top.id)
+    await expect(verifyGenerationKnowledge({ projectStorageRoot: getProjectDataRoot(projectPath), snapshot })).resolves.toBeUndefined()
+  })
+
+  it('still fails when the reranker selects a passage from a damaged document', async () => {
+    const damaged = await importText(`残卷：潮位表的旧抄本。${'旧'.repeat(700)}`, '残卷.md', projectPath, 'openai', MODEL, { mode: 'fts-only' })
+    const chunks = await (await getConnection(projectPath)).openTable('chunks')
+    await chunks.delete(`\`docId\` = '${damaged.docId}' AND \`chunkIndex\` = 1`)
+    chunks.close()
+    fetchMock.mockImplementation(async (_url: string, init: RequestInit) => {
+      const { documents, top_n } = JSON.parse(String(init.body)) as { documents: string[]; top_n: number }
+      const scored = documents.map((text, index) => ({ index, relevance_score: Number(/第(\d+)段/u.exec(text)?.[1] ?? 100) }))
+      return new Response(JSON.stringify({ results: scored.sort((a, b) => b.relevance_score - a.relevance_score).slice(0, top_n) }))
+    })
+
+    await expect(captureWritingKnowledgeSnapshot('潮位 涨潮', projectPath, null, [], RERANK)).rejects.toThrow('GENERATION_KNOWLEDGE_DOCUMENT_INCOMPLETE')
+    expect((await captureGenerationKnowledge({ projectStorageRoot: getProjectDataRoot(projectPath), query: '潮位 涨潮' })).items).toHaveLength(5)
   })
 
   it('falls back to the original five when the rerank request fails', async () => {
