@@ -4,6 +4,7 @@ import { registerEditorExitSaveHandler, useEditorStore } from '../../stores/edit
 import { CHARACTER_DRAFT_TAB, getProjectEditorDraft, parseProjectEditorDraftLedger } from '../../stores/project-editor-draft-ledger'
 import { useWorkflowStore } from '../../stores/workflow-store'
 import { useCharacterStore, characterSelectionKey, type CharacterCard } from '../../stores/character-store'
+import { rosterStateChanged } from './character-state-fields'
 import { useLocaleStore } from '../../stores/locale-store'
 import { formatRelationshipsForEditor } from '../../shared/relationship-presentation'
 import { captureProjectSession, isProjectSessionCurrent, isProjectSessionPath } from '../project-session-gate'
@@ -30,6 +31,10 @@ export function useCharacterProfile(projectKey: string) {
   ) || Boolean(getProjectEditorDraft(
     parseProjectEditorDraftLedger(state.draftLedgers[CHARACTER_DRAFT_TAB.id]), projectKey,
   )))
+  const stateDirty = useEditorStore(state => {
+    const draft = getProjectEditorDraft(parseProjectEditorDraftLedger<CharacterCard[]>(state.draftLedgers[CHARACTER_DRAFT_TAB.id]), projectKey)
+    return draft !== undefined && rosterStateChanged(draft.baseValue, draft.draftValue)
+  })
   const [saveOutcome, setSaveOutcome] = useState<SaveOutcome>('idle')
   const [saveError, setSaveError] = useState('')
   const [stateEffectiveChapter, setStateEffectiveChapter] = useState<number>()
@@ -88,7 +93,6 @@ export function useCharacterProfile(projectKey: string) {
     try {
       await saveAll(projectKey, undefined, undefined, stateEffectiveChapter)
       if (!isProjectSessionCurrent(projectSession)) return
-      setStateEffectiveChapter(undefined)
       addLog('info', text(`已保存 ${characters.length} 个角色卡`, `Saved ${characters.length} character cards`))
       const stillDirty = useEditorStore.getState().tabs.some(
         tab => tab.type === 'character' && tab.projectKey === projectKey && tab.dirty,
@@ -159,6 +163,7 @@ export function useCharacterProfile(projectKey: string) {
     lastError,
     saving,
     dirty,
+    stateDirty,
     identityBusy,
     saveOutcome,
     saveError,

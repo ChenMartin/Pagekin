@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { ChevronRight } from 'lucide-react'
 import { resolveStateEffectiveChapter, type CharacterTimelineChange, type CharacterTimelineSource, type StateChapterRange } from '../../../shared/character-continuity'
 import { pluralEn } from '../../../shared/plural-en'
@@ -72,10 +72,11 @@ export default function CharacterTimeline({ timeline, open, onOpenChange }: { ti
   )
 }
 
-/** 有未保存的改动时替换视图说明：默认下一章起，点开才能改，不改就走默认。 */
-export function StateChapterNote({ range, onChange }: { range: StateChapterRange; onChange: (chapter: number | undefined) => void }) {
+/** 有未保存的状态改动时替换视图说明：默认下一章起，点开才能改，不改就走默认。卸载时清掉所选章，否则下一次保存会写到界面上看不到的章。 */
+export function StateChapterNote({ range, disabled, onChange }: { range: StateChapterRange; disabled: boolean; onChange: (chapter: number | undefined) => void }) {
   const text = useLocaleStore(state => state.text)
   const [draft, setDraft] = useState<string | null>(null)
+  useEffect(() => () => onChange(undefined), [onChange])
   const requested = draft?.trim() ? Number(draft) : undefined
   const chapter = resolveStateEffectiveChapter(requested, range)
   const update = (value: string) => {
@@ -88,7 +89,7 @@ export function StateChapterNote({ range, onChange }: { range: StateChapterRange
       <span>{text(`手改的状态从第 ${chapter} 章起生效`, `Hand edits to state apply from chapter ${chapter}`)}</span>
       {draft === null
         ? <Button variant="text" size="sm" onClick={() => setDraft('')}>{text('改章号', 'Change chapter')}</Button>
-        : <label>{text('章号', 'Chapter')}<input className="pi-input" type="number" min={1} max={range.last} placeholder={String(range.next)} value={draft} onChange={event => update(event.target.value)} /></label>}
+        : <label>{text('章号', 'Chapter')}<input className="pi-input" type="number" min={1} max={range.last} placeholder={String(range.next)} disabled={disabled} value={draft} onChange={event => update(event.target.value)} /></label>}
       {requested !== undefined && requested !== chapter && (
         <span>{text(`第 ${requested} 章不在 1–${range.last} 章内，先按第 ${chapter} 章算`, `Chapter ${requested} is outside 1–${range.last}, so chapter ${chapter} is used`)}</span>
       )}

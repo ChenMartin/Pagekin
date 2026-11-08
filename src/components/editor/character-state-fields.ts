@@ -30,6 +30,12 @@ export function stateFieldView(
   }
 }
 
+/** 名单里有没有状态字段的值变了，口径与保存时判定要写节点的字段相同。 */
+export function rosterStateChanged(base: readonly CharacterCard[], draft: readonly CharacterCard[]): boolean {
+  const before = new Map(base.map(card => [card.characterId, card.currentState]))
+  return draft.some(card => CHARACTER_STATE_FIELDS.some(([field]) => (card.currentState?.[field] ?? '') !== (before.get(card.characterId)?.[field] ?? '')))
+}
+
 /** 作者手改一个状态字段：记为作者输入，章节号沿用最后更新的那一章。 */
 export function authorStateEdit(card: CharacterCard, field: CharacterStateTextField, value: string): CharacterCurrentState {
   return {

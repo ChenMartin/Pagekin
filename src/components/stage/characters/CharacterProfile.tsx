@@ -133,8 +133,8 @@ export default function CharacterProfile({ projectKey }: { projectKey: string })
 
       <div className="cast-view-switch">
         <SegmentedControl label={text('档案视图', 'Profile view')} options={viewOptions} value={view} onChange={setView} />
-        {view === 'state' && card && (profile.dirty && timeline.status === 'ready'
-          ? <StateChapterNote range={timeline.chapterRange} onChange={profile.setStateEffectiveChapter} />
+        {view === 'state' && card && (profile.stateDirty && timeline.status === 'ready'
+          ? <StateChapterNote range={timeline.chapterRange} disabled={profile.saving} onChange={profile.setStateEffectiveChapter} />
           : <span className="cast-view-note">{text('定稿后由 AI 按章节更新，也可以手动修正', 'Updated by AI after each finalized chapter; you can correct it by hand')}</span>)}
       </div>
 
