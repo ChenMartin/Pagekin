@@ -25,6 +25,9 @@ export type CharacterProposalSource =
       artifact: { artifactId: string; revision: number; textHash: string } }
   | { kind: 'legacy-roster-generation'; handle: MainGenerationRunHandle;
       artifact: { artifactId: string; revision: number; textHash: string } }
+export const directoryProposalSelectionKey = (chapterNumber: number, index: number) => `${chapterNumber}:${index}`
+export const directoryProposalChapter = (selectionKey: string) => Number(selectionKey.slice(0, selectionKey.indexOf(':')))
+
 export interface CharacterProposalStageEvidence { proposalBatchId: string; sourceHash: string }
 export interface CharacterProposalItem {
   selectionKey: string

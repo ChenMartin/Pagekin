@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3'
 import { isDeepStrictEqual } from 'node:util'
 import type { MainGenerationRunHandle } from '../../src/services/generation/generation-runtime'
-import type { CharacterProposalItem, CharacterProposalSource } from '../../src/shared/character-proposal'
+import { directoryProposalSelectionKey, type CharacterProposalItem, type CharacterProposalSource } from '../../src/shared/character-proposal'
 import type { GenerationAuthorInput } from '../../src/shared/generation-owner-contract'
 import { characterProposalMaterialChunks, parseArchitectureCharacterProposal, parsePlanningMaterialCharacterProposal, type ArchitectureDerivationVersion } from '../../src/shared/character-proposal-parser'
 import { GenerationRunRepository, textHash } from '../repositories/generation-run-repository'
@@ -122,7 +122,7 @@ export function proveCharacterProposal(db: Database.Database, runs: GenerationRu
       const relationships = Array.isArray(blueprint.relationshipHints) ? blueprint.relationshipHints.filter((relation: unknown) => relation && typeof relation === 'object'
         && 'from' in relation && relation.from === candidate.name).map((relation: { to?: unknown; relation?: unknown }) => ({
           ...(typeof relation.to === 'string' ? { targetName: relation.to } : {}), relation: typeof relation.relation === 'string' ? relation.relation : '', raw: structuredClone(relation) })) : []
-      return { selectionKey: `${blueprint.chapterNumber}:${index}`, sourceId: `${operation.operation_id}:${blueprint.chapterNumber}:${index}`,
+      return { selectionKey: directoryProposalSelectionKey(blueprint.chapterNumber, index), sourceId: `${operation.operation_id}:${blueprint.chapterNumber}:${index}`,
         fields: { name: candidate.name, role: candidate.role }, relationships, rawValue: { candidate: structuredClone(candidate), characters: [...blueprint.characters], relationshipHints: blueprint.relationshipHints } }
     }))
     const progress = runs.readDirectoryProgress(operation.operation_id, forWrite)
