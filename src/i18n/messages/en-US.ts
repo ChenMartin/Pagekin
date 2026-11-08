@@ -31,7 +31,7 @@ export const enUS = {
   'error.legacyImportTargetExists': 'A folder with that name is already at the copy location. Click “Import an old project copy” and choose another location.',
   'error.legacyImportPathOverlap': 'The copy location and the old project folder cannot contain each other. Click “Import an old project copy” and choose another location.',
   'error.legacyImportTargetTooDeep': 'The copy location path is too deep. Click “Import an old project copy” and choose a location near the drive root (for example, D:\\Novels).',
-  'error.legacyImportIncompleteSource': 'The project data is incomplete or has files the app does not recognize. Choose the original old project folder and do not edit its .vela folder by hand.',
+  'error.legacyImportIncompleteSource': 'The project data is incomplete or has files the app does not recognize. Choose the original old project folder and do not edit the files inside it by hand.',
   'error.legacyImportLinkedSource': 'The folder has symbolic links or hard links, so it cannot be copied safely. Copy it to a plain folder, then click “Import an old project copy”.',
   'error.legacyImportSourceBusy': 'Another program was using this project during the import. Close the old app and any sync tool, then click “Import an old project copy”.',
   'error.legacyImportKnowledgeOriginal': 'An original file used by the knowledge base is missing, has changed, or is outside the project folder. Put it back in the project folder, then click “Import an old project copy”.',

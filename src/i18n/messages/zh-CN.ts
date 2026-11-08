@@ -33,7 +33,7 @@ export const zhCN = {
   'error.legacyImportTargetExists': '副本位置已有同名文件夹，请重新点「导入旧项目副本」换个位置。',
   'error.legacyImportPathOverlap': '副本位置和旧项目文件夹不能互相包含，请重新点「导入旧项目副本」换个位置。',
   'error.legacyImportTargetTooDeep': '副本位置的路径太深，请重新点「导入旧项目副本」，选靠近磁盘根目录的位置（例如 D:\\Novels）。',
-  'error.legacyImportIncompleteSource': '项目资料不完整或有无法识别的文件：请选旧项目原本的文件夹，不要手动改动里面的 .vela。',
+  'error.legacyImportIncompleteSource': '项目资料不完整或有无法识别的文件：请选旧项目原本的文件夹，不要手动改动里面的文件。',
   'error.legacyImportLinkedSource': '文件夹里有符号链接或硬链接，无法安全复制：请把它复制成普通文件夹，再点「导入旧项目副本」。',
   'error.legacyImportSourceBusy': '导入时这个项目正被别的程序占用：请关闭旧版程序和同步工具，再点「导入旧项目副本」。',
   'error.legacyImportKnowledgeOriginal': '知识库引用的原文缺失、已变化或在项目文件夹之外：请把原文放回项目文件夹，再点「导入旧项目副本」。',
