@@ -513,6 +513,7 @@ describe('material decision receipt binding (S10B step 3)', () => {
         omitted: [],
         ...over,
     });
+    const BUDGET = { inputTokens: 27_680, contextWindowTokens: 32_768, contextWindowSource: 'default', reservedOutputTokens: 4_576, safetyMarginTokens: 512 } as const;
     const decisionOf = (binding: { sourceManifest: Readonly<Record<string, unknown>> }) =>
         binding.sourceManifest.materialDecision as MaterialDecisionReceipt | undefined;
     const receiptFixture = () => {
@@ -610,10 +611,25 @@ describe('material decision receipt binding (S10B step 3)', () => {
         ['a complete flag that disagrees with the counts', { ...decision(), coverage: { required: 1, included: 1, complete: false } }],
         ['a credential-shaped field', { ...decision(), apiKey: 'secret' }],
         ['an oversized source list', { ...decision(), included: Array.from({ length: 1_025 }, () => ({ sourceId: 'author:required', revision: 1, contentHash: hash('x'), category: 'author', required: true, units: 1 })) }],
+        ['a budget with an unknown window source', { ...decision(), budget: { ...BUDGET, contextWindowSource: 'guess' } }],
+        ['a budget with a negative input', { ...decision(), budget: { ...BUDGET, inputTokens: -1 } }],
+        ['a budget carrying an extra field', { ...decision(), budget: { ...BUDGET, baseUrl: 'https://example.com' } }],
+        ['a null budget', { ...decision(), budget: null }],
     ])('fails closed on %s', (_name, value) => {
         const f = receiptFixture();
         f.input.materialDecision = value as MaterialDecisionReceipt;
         expect(() => f.build()).toThrow('GENERATION_MATERIAL_DECISION_INVALID');
+    });
+
+    it('freezes the budget into the receipt and its hash, and still accepts a receipt without one', () => {
+        const f = receiptFixture();
+        f.input.materialDecision = decision();
+        const legacy = f.build();
+        expect(decisionOf(legacy.binding)).toEqual(decision());
+        f.input.materialDecision = { ...decision(), budget: BUDGET };
+        const budgeted = f.build();
+        expect(decisionOf(budgeted.binding)?.budget).toEqual(BUDGET);
+        expect(budgeted.binding.sourceManifest.materialDecisionHash).not.toBe(legacy.binding.sourceManifest.materialDecisionHash);
     });
 
     it('rejects the receipt on a non-chapter operation', () => {

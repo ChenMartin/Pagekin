@@ -299,6 +299,8 @@ describe('review and revision generation through the actual owner and SQLite', (
     const admission = await selectFrozenReviewRevisionMaterials(prepared.context, { projectId: 'project', epoch: 'epoch-1' }, DEFAULT_MATERIAL_ADMISSION, 0)
     const prompt = admission.admitted.map(material => material.text).join('\n\n')
     const view = f.owner.begin(selection)
+    // 审修先开运行、后选材：收据绑定前额度来自运行冻结的模型。
+    expect(f.owner.readContext(view.handle).materialAdmission).toMatchObject({ kind: 'budget', budget: { reservedOutputTokens: expect.any(Number) } })
     f.owner.bindMaterialDecision(view.handle, { ...admission.decision, promptHash: textHash(prompt) })
     await f.owner.execute({ handle: view.handle, invocationNonce: 'materials', task: { purpose: 'review-chapter',
       output: 'structured-data', messages: [{ role: 'user', content: prompt }] } })

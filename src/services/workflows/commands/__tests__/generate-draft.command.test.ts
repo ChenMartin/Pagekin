@@ -41,7 +41,7 @@ import {
   type GenerateDraftCommandDependencies,
 } from '../generate-draft.command'
 import { assembleChapterMaterials } from '../../chapter-materials'
-import { DEFAULT_MATERIAL_ADMISSION, MATERIAL_DECISION_MAX_INPUT_UNITS, materialBudgetFrom, type MaterialBudget } from '../../../../shared/generation-owner-contract'
+import { DEFAULT_MATERIAL_ADMISSION, MATERIAL_DECISION_MAX_INPUT_UNITS, materialBudgetFrom, type BeginGenerationRequest, type MaterialBudget } from '../../../../shared/generation-owner-contract'
 import { WorkflowCancelledError } from '../../workflow-cancellation'
 
 // 默认原样透传真实装配；只有个别测试用 mockImplementationOnce 改写一次返回值，
@@ -704,6 +704,23 @@ describe('GenerateDraftCommand generation runtime boundary', () => {
     expect(f.invoke.mock.calls.some(([channel]) => channel === 'db:draft-create' || channel === 'db:draft-next-version' || channel === 'db:recovery-candidate-record')).toBe(false)
   })
 
+  it('新开写用主进程算好的额度选材，并把额度写进收据', async () => {
+    const materialBudget = materialBudgetFrom({ contextWindowTokens: 64_000, contextWindowSource: 'preset', reservedOutputTokens: 4_096, safetyMarginTokens: 512 })
+    const f = setup({ runtime: fakeOutcomes(), wordsTarget: 900, mainDefault: true, materialBudget })
+    f.context.generationModelId = '合成模型'
+    let begun: BeginGenerationRequest | undefined
+    const original = f.invoke.getMockImplementation()!
+    f.invoke.mockImplementation(async (channel, ...args) => {
+      if (channel === 'generation:begin') { begun = args[0] as BeginGenerationRequest; throw new Error('STOP_AFTER_BEGIN') }
+      return original(channel, ...args)
+    })
+
+    await expect(f.command.execute({ step: {}, context: f.context, callbacks: f.callbacks })).rejects.toThrow('STOP_AFTER_BEGIN')
+
+    expect(vi.mocked(assembleChapterMaterials).mock.calls.at(-1)?.[0].admission).toEqual({ kind: 'budget', budget: materialBudget })
+    expect(begun?.materialDecision?.budget).toEqual(materialBudget)
+  })
+
   it('没有显式模型时按写稿环节的模型准备上下文并开跑', async () => {
     const f = setup({ runtime: fakeOutcomes(), wordsTarget: 900, mainDefault: true })
     const originalLLM = useLLMStore.getState()
@@ -862,13 +879,14 @@ describe('GenerateDraftCommand generation runtime boundary', () => {
     const seed = '潮'.repeat(state === 'saved-ack-lost' ? 1350 : finishReason === 'stop' ? 900 : 500)
     const addition = (state === 'legacy-length' ? `二十年后。\n\n${seed}\n\n` : '') + '灯'.repeat(500) + '。'
     const expected = finishReason === 'stop' ? seed : composeDraftVisibleContinuation(seed, addition, algorithm)
+    const frozenAdmission = { kind: 'budget', budget: materialBudgetFrom({ contextWindowTokens: 20_000, contextWindowSource: 'endpoint', reservedOutputTokens: 4_096, safetyMarginTokens: 512 }) } as const
     const hash = (text: string) => createHash('sha256').update(text).digest('hex')
     const view: MainGenerationRunView = { handle, status: 'running', nonReplayable: false, artifacts: [],
       budget: { maxAttempts: 32, maxRequestedOutputTokens: 2000000, maxRequestedOutputTokensPerAttempt: 32768, deadlineAt: Date.now() + 3600000 } }
     const original = f.invoke.getMockImplementation()!
     f.invoke.mockImplementation(async (channel, ...args) => {
       if (channel === 'generation:read') return view
-      if (channel === 'generation:read-context') return { draftSave: { kind: 'absent' }, handle, operation: 'chapter-draft', chapterNumber: 1,
+      if (channel === 'generation:read-context') return { draftSave: { kind: 'absent' }, handle, operation: 'chapter-draft', chapterNumber: 1, materialAdmission: frozenAdmission,
         authorInputs: [
           { id: 'draft:chapter-info', text: JSON.stringify({ chapterNumber: 1, title: '第一章', role: '开端', purpose: '建立冲突', characters: [], keyEvents: '开端' }) },
           { id: 'draft:author-config', text: JSON.stringify(useProjectStore.getState().currentProject!.novelConfig) },
@@ -898,6 +916,7 @@ describe('GenerateDraftCommand generation runtime boundary', () => {
     await expect(f.command.execute({ step: {}, context: f.context, callbacks: f.callbacks })).resolves.toBe(expected)
     expect(f.invoke.mock.calls.filter(([channel]) => channel === 'generation:execute')).toHaveLength(finishReason === 'stop' ? 0 : 1)
     expect(f.invoke.mock.calls.some(([channel]) => channel === 'generation:begin' || channel === 'db:draft-create')).toBe(false)
+    if (state !== 'saved-ack-lost') expect(vi.mocked(assembleChapterMaterials).mock.calls.at(-1)?.[0].admission).toEqual(frozenAdmission)
     if (state === 'saved-ack-lost') {
       expect(f.invoke.mock.calls.some(([channel]) => channel === 'generation:read' || channel === 'generation:resume')).toBe(false)
       expect(f.invoke.mock.calls.some(([channel]) => ['generation:commit-draft', 'generation:prepare-draft-context', 'kb:search-writing-context', 'db:draft-get-latest'].includes(channel))).toBe(false)
