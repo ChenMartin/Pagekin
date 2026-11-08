@@ -854,11 +854,7 @@ function projectionForRow(
   return { projection, excludedFields }
 }
 
-/**
- * 未审稿件的审稿目标取自写稿运行冻结的线索任务（review-revision-context.ts 的 draftThreadTasks）。
- * 写稿运行的收据和绑定只留它要的两条路径：收据里定位草稿的两个编号，绑定里按白名单重建的任务。
- * 任务段写坏的只丢这一份稿的任务，导出照常进行。
- */
+/** 未审稿件的审稿目标要读写稿运行冻结的线索任务（见 review-revision-context.ts 的 draftThreadTasks），导出时别把这两处一并清空。 */
 function draftThreadTaskProofs(db: InstanceType<typeof BetterSqlite>, reviewRoots: ReadonlySet<string>): {
   receipts: Map<string, string>; bindings: Map<string, string>
 } {
