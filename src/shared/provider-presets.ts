@@ -79,7 +79,7 @@ export interface ProviderPreset {
   embeddingModels: string[]
   /** 向量模型的能力元数据，按模型 ID 索引以保持旧的 string[] 配置兼容。 */
   embeddingModelCapabilities?: Record<string, ModelCapabilities>
-  /** 重排模型，第一个是默认值；请求走 Jina/Cohere 兼容的 {baseUrl}/rerank。 */
+  /** 重排模型，第一个是默认值。 */
   rerankModels?: string[]
 }
 

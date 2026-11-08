@@ -193,7 +193,7 @@ export interface GlobalConfig {
   locale?: Locale
   defaultModelId: string | null
   defaultEmbeddingModelId?: string | null
-  /** 显式选定的重排档案；缺省时由检索档案决定能否自动复用，见 resolveRerankConfig。 */
+  /** 显式选定的重排档案；缺省时按检索档案自动复用。 */
   defaultRerankModelId?: string | null
   stageModelIds?: StageModelIds
   /** 定稿与后处理成功后，打开下一章的创作窗口（默认关闭）。 */

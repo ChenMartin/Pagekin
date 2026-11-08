@@ -1,6 +1,5 @@
 import { BUILTIN_PRESETS } from './provider-presets'
 
-/** 重排请求的全部去向：只发往这个地址，只带这把 Key。 */
 export interface RerankEndpoint {
   baseUrl: string
   apiKey: string
@@ -33,10 +32,8 @@ interface EmbeddingEndpoint {
 }
 
 export interface RerankConfigInput {
-  /** config.json 未经校验的原值。 */
   defaultRerankModelId: unknown
   models: readonly StoredProfile[]
-  /** getEmbeddingConfig 解析出的当前检索端点。 */
   embedding: EmbeddingEndpoint | null
 }
 
