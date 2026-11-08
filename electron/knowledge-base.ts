@@ -47,6 +47,10 @@ import { ImportRunRepository } from './repositories/import-run-repository'
 import { assertRequiredExpectedProjectPath } from './utils/project-context'
 import { getProjectDataRoot } from './services/project-data-locator'
 import { withKnowledgeSourceGate } from './services/knowledge-source-gate'
+import { rankPassages } from './rerank'
+import type { RerankConfig } from '../src/shared/rerank-config'
+import { RERANK_CANDIDATE_COUNT, WRITING_KNOWLEDGE_COUNT, type KnowledgeRanking, type KnowledgeRankingFallback } from '../src/shared/knowledge-ranking'
+import type { GenerationKnowledgeSnapshot } from '../src/shared/generation-knowledge'
 
 // ===== 迁移状态跟踪 =====
 
@@ -95,9 +99,11 @@ async function canWriteIncrementalVectors(projectPath: string): Promise<boolean>
 
 // ===== 导出函数（保持旧签名，IPC 层零改动） =====
 
-/** One initial retrieval; later generation guards re-read identities without another embedding request. */
+/** One initial retrieval; later generation guards re-read identities without another embedding request.
+ * 重排请求在门闩外发，最长 10 秒的网络等待不挡知识库写入；门内先只读候选，重排后只对选中的段落做完整性核对。 */
 export async function captureWritingKnowledgeSnapshot(query: string, projectPath: string,
-  configuration: { protocol: 'openai' | 'gemini'; model: EmbeddingModel } | null, excludedDocumentIds: readonly string[] = []) {
+  configuration: { protocol: 'openai' | 'gemini'; model: EmbeddingModel } | null, excludedDocumentIds: readonly string[] = [],
+  rerankConfig: RerankConfig = { kind: 'none', reason: 'not-configured' }): Promise<GenerationKnowledgeSnapshot> {
   await ensureMigration(projectPath)
   let queryVector: number[] | undefined
   if (configuration && hasRequiredApiKey(configuration.model) && query.trim()) {
@@ -106,18 +112,31 @@ export async function captureWritingKnowledgeSnapshot(query: string, projectPath
       if (vector?.length) queryVector = vector
     } catch { /* The established no-embedding path still uses canonical full-text search. */ }
   }
-  const { captureGenerationKnowledge } = await import('./services/generation-knowledge-source')
+  const { captureGenerationKnowledge, recallGenerationKnowledgeCandidates, freezeGenerationKnowledge } = await import('./services/generation-knowledge-source')
   const { withKnowledgeSourceGate } = await import('./services/knowledge-source-gate')
   const projectStorageRoot = getProjectDataRoot(projectPath)
-  return withKnowledgeSourceGate(projectStorageRoot, async () => {
-    try {
-      return await captureGenerationKnowledge({ projectStorageRoot, query, topK: 5, queryVector, excludedDocumentIds,
-        ...(queryVector && configuration ? { embeddingSpace: embeddingSpaceFor(configuration.protocol, configuration.model) } : {}) })
-    } catch (error) {
-      if (!(error instanceof Error) || error.message !== 'GENERATION_KNOWLEDGE_SPACE_NOT_MATCHED') throw error
-      return captureGenerationKnowledge({ projectStorageRoot, query, topK: 5, excludedDocumentIds })
-    }
-  })
+  const vector = queryVector && configuration ? { queryVector, embeddingSpace: embeddingSpaceFor(configuration.protocol, configuration.model) } : {}
+  const read = <T>(search: (input: Parameters<typeof captureGenerationKnowledge>[0]) => Promise<T>, topK: number) =>
+    withKnowledgeSourceGate(projectStorageRoot, async () => {
+      try {
+        return await search({ projectStorageRoot, query, topK, excludedDocumentIds, ...vector })
+      } catch (error) {
+        if (!(error instanceof Error) || error.message !== 'GENERATION_KNOWLEDGE_SPACE_NOT_MATCHED') throw error
+        return search({ projectStorageRoot, query, topK, excludedDocumentIds })
+      }
+    })
+  const withRanks = (snapshot: GenerationKnowledgeSnapshot, ranking: KnowledgeRanking): GenerationKnowledgeSnapshot =>
+    ({ ...snapshot, items: snapshot.items.map((item, index) => ({ ...item, rank: index + 1 })), ranking })
+  const original = async (reason: KnowledgeRankingFallback) => {
+    const snapshot = await read(captureGenerationKnowledge, WRITING_KNOWLEDGE_COUNT)
+    return withRanks(snapshot, { method: 'original', candidateCount: snapshot.items.length, reason })
+  }
+  if (rerankConfig.kind === 'none') return original(rerankConfig.reason)
+  const recalled = await read(recallGenerationKnowledgeCandidates, RERANK_CANDIDATE_COUNT)
+  const { items, ranking } = await rankPassages(query, recalled.candidates, rerankConfig, WRITING_KNOWLEDGE_COUNT)
+  const frozen = await withKnowledgeSourceGate(projectStorageRoot, () =>
+    freezeGenerationKnowledge({ projectStorageRoot, query, topK: WRITING_KNOWLEDGE_COUNT, recalled, picks: items }))
+  return frozen ? withRanks(frozen, ranking) : original('source-changed')
 }
 
 /**
