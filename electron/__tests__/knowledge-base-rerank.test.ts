@@ -67,6 +67,21 @@ describe('writing knowledge snapshot ranking', () => {
     await expect(verifyGenerationKnowledge({ projectStorageRoot: getProjectDataRoot(projectPath), snapshot })).resolves.toBeUndefined()
   })
 
+  it('recalls at most 40 candidates for the reranker', async () => {
+    for (let index = PASSAGES.length; index < 45; index += 1) {
+      await importText(`第${index + 1}段：潮位表又添一行。`, `补充${index + 1}.md`, projectPath, 'openai', MODEL, { mode: 'fts-only' })
+    }
+    fetchMock.mockImplementation(async (_url: string, init: RequestInit) => {
+      const { top_n } = JSON.parse(String(init.body)) as { top_n: number }
+      return new Response(JSON.stringify({ results: Array.from({ length: top_n }, (_, index) => ({ index, relevance_score: 1 - index / 10 })) }))
+    })
+    const snapshot = await captureWritingKnowledgeSnapshot('潮位', projectPath, null, [], RERANK)
+
+    expect((JSON.parse(String(fetchMock.mock.calls[0]![1].body)) as { documents: string[] }).documents).toHaveLength(40)
+    expect(snapshot.ranking).toEqual({ method: 'rerank', candidateCount: 40 })
+    expect(snapshot.items).toHaveLength(5)
+  })
+
   it('falls back to the original five when the rerank request fails', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     fetchMock.mockResolvedValue(new Response('{}', { status: 500 }))

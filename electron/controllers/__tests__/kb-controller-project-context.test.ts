@@ -690,8 +690,15 @@ describe('kb:search reranking', () => {
 
   it('returns a request for more than 40 passages in the original order without a rerank request', async () => {
     saved([siliconflowEmbedding])
-    await handler('kb:search')({}, '查询', 50, 'C:/projects/A')
+    await expect(handler('kb:search')({}, '查询', 50, 'C:/projects/A')).resolves.toEqual(candidates)
     expect(searchKnowledge).toHaveBeenCalledWith('查询', 'C:/projects/A', 'openai', expect.anything(), 50)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('recalls nothing extra and sends no passages for a request of zero passages', async () => {
+    saved([siliconflowEmbedding])
+    await expect(handler('kb:search')({}, '查询', 0, 'C:/projects/A')).resolves.toEqual([])
+    expect(searchKnowledge).toHaveBeenCalledWith('查询', 'C:/projects/A', 'openai', expect.anything(), 0)
     expect(fetchMock).not.toHaveBeenCalled()
   })
 })
