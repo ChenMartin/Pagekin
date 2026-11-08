@@ -488,10 +488,7 @@ export class BlueprintRepository {
         return rows.map(rowToData)
     }
 
-    /**
-     * 覆盖 range 的、afterMs 之后的正式提交只读一次；返回的判定：这一章现在的蓝图是否就是其中某次提交写进去的那份。
-     * committed_at 只到秒，同一秒不算。
-     */
+    /** 返回判定函数：这一章现在的蓝图是否就是 afterMs 之后某次正式提交写进去的那份。committed_at 只到秒，同一秒不算。 */
     static commitMatcherAfter(range: { from: number; to: number }, afterMs: number, db = requireProjectDb()): (chapterNumber: number) => boolean {
         const operations = db.prepare(`
           SELECT start_chapter, end_chapter, character_sync_input FROM blueprint_commit_operations
