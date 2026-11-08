@@ -28,7 +28,6 @@ function isOpencodeGoBaseUrl(baseUrl: string): boolean {
 
 type OutputTokenField = 'max_tokens' | 'max_completion_tokens'
 
-/** 中转站不暴露模型接受哪个字段，只能从明确的拒收里学到；键是端点加模型名，只存内存。 */
 const acceptedOutputTokenFields = new Map<string, OutputTokenField>()
 
 // 值太大、超范围时 param 同样指向该字段，但换字段救不了，错误要原样交给作者。

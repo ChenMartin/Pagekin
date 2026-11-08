@@ -43,7 +43,6 @@ afterEach(async () => {
   })))
 })
 
-/** 一个真实监听 127.0.0.1 的上游，按收到的请求逐条回复，并记下线上看到的原始请求。 */
 async function upstream(reply: (request: WireRequest, index: number) => WireReply) {
   const requests: WireRequest[] = []
   const server = createServer((req, res) => {
@@ -69,7 +68,7 @@ const relayModel = (baseUrl: string, modelName = 'gpt-6.1'): ModelProfile => ({ 
 
 const other = (field: OutputField): OutputField => field === 'max_tokens' ? 'max_completion_tokens' : 'max_tokens'
 
-/** Issue #636 用户贴出的错误体原文，字段按方向替换。 */
+/** Issue #636 用户贴出的错误体原文。 */
 const fieldRejection = (field: OutputField) => JSON.stringify({ error: {
   message: `Unsupported parameter: '${field}' is not supported with this model. Use '${other(field)}' instead.`,
   type: 'invalid_request_error', param: field, code: 'unsupported_parameter' } })
