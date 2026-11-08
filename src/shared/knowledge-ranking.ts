@@ -11,6 +11,7 @@ export type KnowledgeRankingFallback =
   | RerankFailure
   | 'no-candidates'
   | 'top-k-exceeds-candidates'
+  | 'source-changed'
 
 /** 一次检索的排序方式。不记端点和 Key。 */
 export type KnowledgeRanking =
