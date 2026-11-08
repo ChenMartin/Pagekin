@@ -814,7 +814,6 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
     "SELECT 1 FROM generation_attempts WHERE run_id=? AND json_extract(attempt_json,'$.status') IN ('reserved','dispatch-marked') LIMIT 1").get(runId)
   /**
    * 拿不准就列出：多列的一份作者能自己放弃，误藏的一份作者根本不知道还在。
-   * 蓝图要求每一章现在就是开跑以后某次正式提交写进去的那份，删过、重建、手改过的都不算；
    * 导入原稿的 fill-empty 提交会把原有行原样记账，所以还要求这一章开跑以后确实变过。
    * 大纲没有提交记录，只能比内容。
    */

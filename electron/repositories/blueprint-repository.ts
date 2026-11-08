@@ -488,7 +488,7 @@ export class BlueprintRepository {
         return rows.map(rowToData)
     }
 
-    /** 这一章现在的蓝图是否就是 afterMs 之后某次正式提交写进去的那份。提交时间只到秒，同一秒不算；提交记录读不出也不算。 */
+    /** 这一章现在的蓝图是否就是 afterMs 之后某次正式提交写进去的那份。committed_at 只到秒，同一秒不算。 */
     static matchesCommitAfter(chapterNumber: number, afterMs: number, db = requireProjectDb()): boolean {
         const row = db.prepare('SELECT * FROM blueprints WHERE chapter_number = ?').get(chapterNumber) as BlueprintRow | undefined
         if (!row) return false
