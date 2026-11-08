@@ -12,7 +12,7 @@ import { createMainGenerationOwner, safeGenerationModelReceipt } from '../main-g
 import { batchRootBudget, buildMainGenerationPlan, MAIN_GENERATION_POLICY, newMainGenerationPolicy, readMainGenerationPolicy } from '../main-generation-plan'
 import { createModelExecutionLeaseReceipt, ModelExecutionLeaseRegistry } from '../model-execution-lease'
 import * as providerPresets from '../../../src/shared/provider-presets'
-import { buildGenerationSourceBinding, rebuildGenerationSourceBinding } from '../generation-source-binding'
+import { buildGenerationSourceBinding, planningBlueprintSourceHash, rebuildGenerationSourceBinding } from '../generation-source-binding'
 import { getBuiltinPromptTemplate } from '../../../src/services/builtin-prompt-templates'
 import { readBuiltinWritingSkill } from '../../../src/shared/builtin-writing-skills'
 import type { ArchitecturePlanningIntent, BeginGenerationRequest } from '../../../src/shared/generation-owner-contract'
@@ -3578,6 +3578,37 @@ describe('规划恢复稿是否还列为可恢复（#608）', () => {
     expect(f.listed()).toEqual([])
     expect(f.owner.findBlueprintRecovery()).toBeNull()
     expect(f.owner.readContext(interrupted).blueprintRecovery?.draft).toBe(raw)
+  })
+
+  it('缺的章节由另一次生成补齐后，其中一章定稿写入章节要点：旧恢复稿仍不列出', async () => {
+    const f = directoryFixture()
+    const interrupted = await f.failed(1, 3, 'interrupted')
+    f.startedMinuteEarlier(interrupted)
+    await f.finished(1, 3, 'filled-later')
+    expect(f.listed()).toEqual([])
+    expect(BlueprintRepository.updateNotes(2, '定稿后写入的章节要点')).toBe(true)
+    expect(f.listed()).toEqual([])
+    expect(f.owner.findBlueprintRecovery()).toBeNull()
+  })
+
+  it('补齐之后改蓝图行的任一列：恢复稿重新列出，当且仅当这一列算进冻结的规划内容', async () => {
+    const f = directoryFixture()
+    const interrupted = await f.failed(1, 3, 'interrupted')
+    f.startedMinuteEarlier(interrupted)
+    await f.finished(1, 3, 'filled-later')
+    const columns = (f.db.prepare('PRAGMA table_info(blueprints)').all() as Array<{ name: string }>)
+      .map(column => column.name).filter(name => name !== 'chapter_number')
+    const relisted: Record<string, boolean> = {}, planningChanged: Record<string, boolean> = {}
+    for (const column of columns) {
+      const before = f.db.prepare(`SELECT ${column} AS value FROM blueprints WHERE chapter_number=2`).get() as { value: unknown }
+      const hashBefore = planningBlueprintSourceHash(f.db, 2)
+      f.db.prepare(`UPDATE blueprints SET ${column}=? WHERE chapter_number=2`).run(column === 'characters' ? '["后来加入的角色"]' : `改过的${column}`)
+      planningChanged[column] = planningBlueprintSourceHash(f.db, 2) !== hashBefore
+      relisted[column] = f.listed().includes(interrupted.runId)
+      f.db.prepare(`UPDATE blueprints SET ${column}=? WHERE chapter_number=2`).run(before.value)
+    }
+    expect(relisted).toEqual(planningChanged)
+    expect(relisted).toMatchObject({ title: true, key_events: true, notes: false, notes_updated_at: false })
   })
 
   it('缺的章节作者只新建了空白蓝图（没填内容就保存）：恢复稿照常列出', async () => {
