@@ -102,6 +102,12 @@ function binding(request: RunBinding): RunBinding {
         fail('GENERATION_BINDING_INVALID');
     return JSON.parse(encode({ projectId: request.projectId, epoch: request.epoch, fingerprint: request.fingerprint, contextSnapshotId: request.contextSnapshotId, sourceManifest: request.sourceManifest, sourceRefs: request.sourceRefs }));
 }
+/** binding_json 里 `$` 开头的键是运行上的记账（作者编辑、退役、放弃、大纲已提交），不属于冻结绑定：读时剥掉，重写冻结绑定时原样带回。 */
+function storedBinding(json: string): { frozen: RunBinding; records: Record<string, unknown> } {
+    const entries = Object.entries(JSON.parse(json) as Record<string, unknown>);
+    return { frozen: Object.fromEntries(entries.filter(([key]) => !key.startsWith('$'))) as unknown as RunBinding,
+        records: Object.fromEntries(entries.filter(([key]) => key.startsWith('$'))) };
+}
 export class GenerationRunRepository {
     private readonly database: Database.Database | null;
     constructor(getDb: () => Database.Database | null = getProjectDb, private readonly now: () => number = Date.now,
@@ -124,9 +130,11 @@ export class GenerationRunRepository {
         } | undefined;
         if (!row)
             fail('GENERATION_RUN_MISSING');
-        const { $runEffects, $blueprintRetirement, $planningDismissal, $plotOutlineCommitted, ...frozen } = JSON.parse(row.binding_json) as RunBinding & { $runEffects?: unknown; $blueprintRetirement?: unknown; $planningDismissal?: unknown; $plotOutlineCommitted?: unknown };
-        void $runEffects; void $blueprintRetirement; void $planningDismissal; void $plotOutlineCommitted;
-        return { runId: row.run_id, rootActionId: row.root_action_id, binding: frozen, status: row.status };
+        return { runId: row.run_id, rootActionId: row.root_action_id, binding: storedBinding(row.binding_json).frozen, status: row.status };
+    }
+    private replaceFrozenBinding(runId: string, frozen: RunBinding): void {
+        const { records } = storedBinding(this.db().prepare('SELECT binding_json FROM generation_runs WHERE run_id=?').pluck().get(runId) as string);
+        this.db().prepare('UPDATE generation_runs SET binding_json=? WHERE run_id=?').run(encode({ ...frozen, ...records }), runId);
     }
     private authorEditedRoot(rootId: string): boolean {
         return !!this.db().prepare('SELECT 1 FROM generation_runs WHERE root_action_id=? AND json_type(binding_json,?) IS NOT NULL LIMIT 1').get(rootId, authorEffectPath);
@@ -305,7 +313,7 @@ export class GenerationRunRepository {
             if (!isDeepStrictEqual(run.binding, expected)) fail('GENERATION_BINDING_CONFLICT');
             if (run.status !== 'running' || budget.root.status !== 'active' || this.attemptCount(runId) > 0 || budget.blockedCode)
                 fail('GENERATION_MATERIAL_DECISION_TOO_LATE');
-            this.db().prepare('UPDATE generation_runs SET binding_json=? WHERE run_id=?').run(encode(frozen), runId);
+            this.replaceFrozenBinding(runId, frozen);
             return this.get(runId);
         });
     }
@@ -779,7 +787,8 @@ export class GenerationRunRepository {
             budget.root.epoch = next.epoch;
             budget.root.status = 'active';
             this.db().prepare('UPDATE generation_roots SET action_json=? WHERE root_action_id=?').run(encode(budget.root), run.rootActionId);
-            this.db().prepare('UPDATE generation_runs SET binding_json=?,status=? WHERE run_id=?').run(encode(next), 'running', runId);
+            this.replaceFrozenBinding(runId, next);
+            this.db().prepare('UPDATE generation_runs SET status=? WHERE run_id=?').run('running', runId);
         });
     }
     recoverInterrupted(): void {
