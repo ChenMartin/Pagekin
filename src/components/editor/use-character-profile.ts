@@ -3,7 +3,7 @@ import { useProjectStore } from '../../stores/project-store'
 import { registerEditorExitSaveHandler, useEditorStore } from '../../stores/editor-store'
 import { CHARACTER_DRAFT_TAB, getProjectEditorDraft, parseProjectEditorDraftLedger } from '../../stores/project-editor-draft-ledger'
 import { useWorkflowStore } from '../../stores/workflow-store'
-import { useCharacterStore, characterSelectionKey, type CharacterCard } from '../../stores/character-store'
+import { useCharacterStore, characterSelectionKey, readCharacterDraftLedger, type CharacterCard } from '../../stores/character-store'
 import { rosterStateChanged } from './character-state-fields'
 import { useLocaleStore } from '../../stores/locale-store'
 import { formatRelationshipsForEditor } from '../../shared/relationship-presentation'
@@ -32,7 +32,7 @@ export function useCharacterProfile(projectKey: string) {
     parseProjectEditorDraftLedger(state.draftLedgers[CHARACTER_DRAFT_TAB.id]), projectKey,
   )))
   const stateDirty = useEditorStore(state => {
-    const draft = getProjectEditorDraft(parseProjectEditorDraftLedger<CharacterCard[]>(state.draftLedgers[CHARACTER_DRAFT_TAB.id]), projectKey)
+    const draft = getProjectEditorDraft(readCharacterDraftLedger(projectKey, state.draftLedgers[CHARACTER_DRAFT_TAB.id]), projectKey)
     return draft !== undefined && rosterStateChanged(draft.baseValue, draft.draftValue)
   })
   const [saveOutcome, setSaveOutcome] = useState<SaveOutcome>('idle')

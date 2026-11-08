@@ -83,10 +83,11 @@ function normalizeCharacterState(value: unknown): CharacterCurrentState | undefi
   }
 }
 
-function readCharacterDraftLedger(projectKey: string) {
-  const ledger = parseProjectEditorDraftLedger<unknown>(
-    useEditorStore.getState().draftLedgers[CHARACTER_DRAFT_TAB.id],
-  )
+export function readCharacterDraftLedger(
+  projectKey: string,
+  content = useEditorStore.getState().draftLedgers[CHARACTER_DRAFT_TAB.id],
+) {
+  const ledger = parseProjectEditorDraftLedger<unknown>(content)
   return {
     version: 1 as const,
     projects: ledger.projects.map(project => (
