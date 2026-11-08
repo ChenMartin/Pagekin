@@ -3624,6 +3624,56 @@ describe('规划恢复稿是否还列为可恢复（#608）', () => {
     expect(f.listed()).toEqual([regenerate.runId])
   })
 
+  it('正式提交之后删掉其中一章，又重建成空白蓝图：恢复稿照常列出', async () => {
+    const f = directoryFixture()
+    for (const row of rows(1, 3, '作者早先写好的')) BlueprintRepository.upsert(row)
+    const regenerate = await f.failed(1, 3, 'regenerate')
+    f.startedMinuteEarlier(regenerate)
+    BlueprintRepository.commitRange({ mode: 'replace-range', operationId: 'later', startChapter: 1, endChapter: 3, blueprints: rows(1, 3, '后来生成的') })
+    expect(f.listed()).toEqual([])
+    BlueprintRepository.delete(2)
+    BlueprintRepository.upsert({ chapterNumber: 2, title: '', role: '发展', purpose: '', keyEvents: '', characters: [],
+      suspenseHook: '', userGuidance: '', notes: '', notesUpdatedAt: '' })
+    expect(f.listed()).toEqual([regenerate.runId])
+    expect(f.owner.findBlueprintRecovery()?.handle).toEqual(regenerate)
+  })
+
+  it('正式提交之后作者手改了其中一章：恢复稿照常列出', async () => {
+    const f = directoryFixture()
+    const interrupted = await f.failed(1, 3, 'interrupted')
+    f.startedMinuteEarlier(interrupted)
+    BlueprintRepository.commitRange({ mode: 'replace-range', operationId: 'later', startChapter: 1, endChapter: 3, blueprints: rows(1, 3, '后来生成的') })
+    expect(f.listed()).toEqual([])
+    BlueprintRepository.upsert(rows(2, 2, '作者提交之后改过')[0])
+    expect(f.listed()).toEqual([interrupted.runId])
+    expect(f.owner.findBlueprintRecovery()?.handle).toEqual(interrupted)
+  })
+
+  it.each([
+    ['读不出', 'not json'],
+    ['缺这几章', '[]'],
+  ])('晚于运行的提交记录%s：恢复稿照常列出，其余运行不受影响', async (_case, stored) => {
+    const f = directoryFixture()
+    const interrupted = await f.failed(1, 3, 'interrupted')
+    f.startedMinuteEarlier(interrupted)
+    BlueprintRepository.commitRange({ mode: 'replace-range', operationId: 'later', startChapter: 1, endChapter: 3, blueprints: rows(1, 3, '后来生成的') })
+    expect(f.listed()).toEqual([])
+    f.db.prepare("UPDATE blueprint_commit_operations SET character_sync_input=? WHERE operation_id='later'").run(stored)
+    const list = f.owner.listRecovery()
+    expect(list.planning.map(item => item.handle.runId)).toEqual([interrupted.runId])
+    expect(list.partial).toBeFalsy()
+  })
+
+  it('导入作者原稿只记了提交、保留原有蓝图（fill-empty）：恢复稿照常列出', async () => {
+    const f = directoryFixture()
+    for (const row of rows(1, 3, '作者早先写好的')) BlueprintRepository.upsert(row)
+    const regenerate = await f.failed(1, 3, 'regenerate')
+    f.startedMinuteEarlier(regenerate)
+    BlueprintRepository.commitRange({ mode: 'replace-range', operationId: 'import', startChapter: 1, endChapter: 3, blueprints: rows(1, 3, '导入反推的') },
+      undefined, undefined, 'fill-empty')
+    expect(f.listed()).toEqual([regenerate.runId])
+  })
+
   it('覆盖这几章的正式提交早于这次运行：作者之后再改也照常列出', async () => {
     const f = directoryFixture()
     await f.finished(1, 3, 'earlier-batch')
