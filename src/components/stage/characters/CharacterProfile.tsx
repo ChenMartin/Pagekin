@@ -14,6 +14,8 @@ import { EmptyState } from '../../ui/EmptyState'
 import { Menu } from '../../ui/Menu'
 import { SegmentedControl } from '../../ui/SegmentedControl'
 import { pluralEn } from '../../../shared/plural-en'
+import CharacterTimeline, { StateChapterNote } from './CharacterTimeline'
+import { useCharacterTimeline } from './use-character-timeline'
 
 type ProfileView = 'edit' | 'state' | 'graph'
 type TextField = Exclude<keyof CharacterCard, 'name' | 'characterId' | 'role' | 'currentState'>
@@ -40,6 +42,7 @@ export default function CharacterProfile({ projectKey }: { projectKey: string })
   const [view, setView] = useState<ProfileView>('edit')
   const [confirming, setConfirming] = useState<'selected' | 'all' | null>(null)
   const avatar = useCharacterAvatar(card?.characterId ?? null, dataReady && view === 'edit')
+  const timeline = useCharacterTimeline(card?.characterId, dataReady && view === 'state')
   const roleText = (role: unknown) => {
     const { zhCN, enUS } = getCharacterRoleLabels(role)
     return text(zhCN, enUS)
@@ -128,7 +131,9 @@ export default function CharacterProfile({ projectKey }: { projectKey: string })
 
       <div className="cast-view-switch">
         <SegmentedControl label={text('档案视图', 'Profile view')} options={viewOptions} value={view} onChange={setView} />
-        {view === 'state' && card && <span className="cast-view-note">{text('定稿后由 AI 按章节更新，也可以手动修正', 'Updated by AI after each finalized chapter; you can correct it by hand')}</span>}
+        {view === 'state' && card && (profile.dirty && timeline.status === 'ready'
+          ? <StateChapterNote range={timeline.chapterRange} onChange={profile.setStateEffectiveChapter} />
+          : <span className="cast-view-note">{text('定稿后由 AI 按章节更新，也可以手动修正', 'Updated by AI after each finalized chapter; you can correct it by hand')}</span>)}
       </div>
 
       <div className="cast-profile-body">
@@ -151,6 +156,8 @@ export default function CharacterProfile({ projectKey }: { projectKey: string })
             action={<Button variant="secondary" disabled={identityBusy || !dataReady} onClick={() => useCharacterStore.getState().addCharacter()}>{text('新建角色', 'New character')}</Button>}
           />
         ) : view === 'state' ? (
+          <>
+          <CharacterTimeline timeline={timeline} />
           <div className="cast-grid">
             {CHARACTER_STATE_FIELDS.map(([field, zh, en]) => {
               const state = stateFieldView(card, field, currentDerivedFields)
@@ -173,6 +180,7 @@ export default function CharacterProfile({ projectKey }: { projectKey: string })
               )
             })}
           </div>
+          </>
         ) : (
           <div className="cast-grid">
             <div className="cast-row-fields">

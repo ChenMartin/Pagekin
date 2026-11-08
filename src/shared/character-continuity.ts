@@ -1,4 +1,4 @@
-import type { CharacterStateTextField } from './character-roster'
+import { CHARACTER_STATE_TEXT_FIELDS, type CharacterStateTextField } from './character-roster'
 import type { FinalizedCharacterEvidence, FinalizedSourceIdentity } from './finalized-continuity'
 
 /** 节点的来历，与 character_continuity_events.provenance_json 的 kind 一一对应。 */
@@ -82,4 +82,62 @@ export function latestNodesBefore(nodes: readonly ContinuityNode[], chapter: num
     pairs.set(key, pair)
   }
   return { states, relations: [...pairs.values()] }
+}
+
+/** 作者手改状态时可选的生效章：默认 next，最大 last（下一章或蓝图的最后一章，取大）。 */
+export interface StateChapterRange { next: number; last: number }
+
+export interface CharacterContinuityTimeline {
+  nodes: ContinuityNode[]
+  chapterRange: StateChapterRange
+}
+
+/** 章号不合法时退回下一章。上限挡住手误：节点不早于同系列已有的章，写太大的章号后这个字段之后的改动都会被推到那一章。 */
+export function resolveStateEffectiveChapter(requested: unknown, range: StateChapterRange): number {
+  const legal = typeof requested === 'number' && Number.isSafeInteger(requested) && requested >= 1 && requested <= range.last
+  return legal ? requested : range.next
+}
+
+export type CharacterTimelineSource = 'author' | 'finalized' | 'legacy'
+
+const TIMELINE_SOURCE: Readonly<Record<ContinuityProvenance['kind'], CharacterTimelineSource>> = Object.freeze({
+  author: 'author', adopted: 'author', derived: 'finalized', legacy: 'legacy',
+})
+
+export interface CharacterTimelineChange {
+  node: ContinuityNode
+  source: CharacterTimelineSource
+  /** 这一条是清除字段或解除关系。 */
+  removed: boolean
+  /** removed 时是被去掉的旧值，其余时候是节点的值。 */
+  value: string
+}
+export interface CharacterTimelineChapter { chapter: number; changes: CharacterTimelineChange[] }
+
+const aspectRank = (node: ContinuityNode) => node.aspect === 'relation' ? CHARACTER_STATE_TEXT_FIELDS.length : CHARACTER_STATE_TEXT_FIELDS.indexOf(node.aspect)
+const targetOf = (node: ContinuityNode) => node.aspect === 'relation' ? node.targetName : ''
+
+/** 同一章同一字段连改几次，只留这一章最终生效的一条，取舍规则与 latestNodesBefore 相同。 */
+export function characterTimeline(nodes: readonly ContinuityNode[]): CharacterTimelineChapter[] {
+  const series = new Map<string, ContinuityNode[]>()
+  for (const node of nodes) series.set(seriesKey(node), [...series.get(seriesKey(node)) ?? [], node])
+  const chapters = new Map<number, CharacterTimelineChange[]>()
+  for (const line of series.values()) {
+    line.sort((left, right) => newer(left, right) ? 1 : newer(right, left) ? -1 : 0)
+    let previous = ''
+    line.forEach((node, index) => {
+      const removed = node.value === ''
+      if (line[index + 1]?.effectiveChapter !== node.effectiveChapter) {
+        const changes = chapters.get(node.effectiveChapter) ?? []
+        changes.push({ node, source: TIMELINE_SOURCE[node.provenance.kind], removed, value: removed ? previous : node.value })
+        chapters.set(node.effectiveChapter, changes)
+      }
+      if (!removed) previous = node.value
+    })
+  }
+  return [...chapters].sort(([left], [right]) => right - left).map(([chapter, changes]) => ({
+    chapter,
+    changes: changes.sort((left, right) => aspectRank(left.node) - aspectRank(right.node)
+      || targetOf(left.node).localeCompare(targetOf(right.node)) || Number(right.removed) - Number(left.removed)),
+  }))
 }

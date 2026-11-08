@@ -11,6 +11,9 @@ import { SummaryRepository } from '../../repositories/summary-repository'
 import { CharacterRosterRepository, refreshCharacterIdentityProjection } from '../../repositories/character-roster-repository'
 import { createCanonicalProjectManifest } from '../../../src/shared/project-format'
 import { parseFinalizedCharacterStateResponse } from '../../../src/shared/finalized-continuity'
+import { commitAuthorCharacterRoster } from '../character-roster-author'
+import { readCharacterContinuityTimeline } from '../../repositories/character-continuity-repository'
+import { characterTimeline } from '../../../src/shared/character-continuity'
 import { exportPortableProject } from '../project-archive-service'
 import { restorePortableProject } from '../project-restore-service'
 import { readPortableCurrentAuthority } from '../portable-current-authority'
@@ -473,5 +476,29 @@ describe('#484 删章记录作为来源证明的边界', { timeout: 60_000 }, ()
     expect(String(characterRow().cs_provenance)).toContain(a.projectId)
     finalizeChapter(c, 2, 2, CHAPTER_2)
     expect(() => deriveCharacterState(c, 2, { location: '南港旅店' }, '住进南港旅店')).toThrow('FINALIZED_CHARACTER_SOURCE_CONFLICT')
+  })
+})
+
+describe('角色时间线经过便携导出恢复', { timeout: 30_000 }, () => {
+  it('导出再恢复后，每章的字段、值、来历和原文证据都和导出前一样', async () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'timeline-'))
+    roots.push(base)
+    const a = createSourceProject(base)
+    finalizeChapter(a, 1, 1, CHAPTER_1)
+    deriveCharacterState(a, 1, { location: '北塔顶层' }, '林岚在北塔顶层找到铜钥匙')
+    const db = getProjectDb()!
+    const read = CharacterRosterRepository.read(db), entries = structuredClone(read.entries)
+    entries[0].currentState = { ...entries[0].currentState!, keyItems: '玉佩' }
+    commitAuthorCharacterRoster(db, { operationId: 'author-edit', schemaVersion: 1, intent: 'manual_edit', expectedRevision: read.revision,
+      expectedIdentityRevision: read.identityRevision!, entries }, { projectId: a.projectId, epoch: 'session' }, () => undefined)
+    const shown = () => characterTimeline(readCharacterContinuityTimeline(getProjectDb()!, CHARACTER_ID).nodes)
+      .map(group => [group.chapter, group.changes.map(change => [change.node.aspect, change.value, change.source, change.node.quote])])
+    const before = shown()
+    expect(before).toEqual([
+      [2, [['keyItems', '玉佩', 'author', null]]],
+      [1, [['location', '北塔顶层', 'finalized', expect.objectContaining({ text: '林岚在北塔顶层找到铜钥匙' })]]],
+    ])
+    await exportAndRestore(base, a, 'timeline')
+    expect(shown()).toEqual(before)
   })
 })

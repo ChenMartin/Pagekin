@@ -245,6 +245,7 @@ interface CharacterState {
     projectPath?: string,
     expectedProjectSession?: ProjectSessionContext,
     operationKind?: 'delete',
+    stateEffectiveChapter?: number,
   ) => Promise<void>
 
   // 兼容旧接口
@@ -655,7 +656,7 @@ export const useCharacterStore = create<CharacterState>()((set, get) => ({
     ))
   },
 
-  saveAll: (projectPath, expectedProjectSession, operationKind) => {
+  saveAll: (projectPath, expectedProjectSession, operationKind, stateEffectiveChapter) => {
     const projectSession = currentCharacterProjectSession(projectPath, expectedProjectSession)
     const projectKey = projectSession?.projectPath
     if (
@@ -711,6 +712,7 @@ export const useCharacterStore = create<CharacterState>()((set, get) => ({
         expectedRevision, expectedIdentityRevision: expectedIdentityRevision ?? undefined,
         schemaVersion: 1 as const, intent: 'manual_edit' as const,
         entries: characterRosterEntriesFromCards(savedCharacters),
+        ...(stateEffectiveChapter === undefined ? {} : { stateEffectiveChapter }),
       }
       const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify({ projectSession, payload })))
       const operationId = `manual-character-save-${Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('')}`

@@ -120,6 +120,14 @@ async function continuityNodes(projectPath) {
   } finally { db.close() }
 }
 
+async function readAuthorNodes(projectPath) {
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(path.join(projectPath, '.ai-novel', 'project.db'), { readOnly: true })
+  try {
+    return db.prepare("SELECT aspect,value,effective_chapter FROM character_continuity_events WHERE json_extract(provenance_json,'$.kind')='author'").all().map(row => ({ ...row }))
+  } finally { db.close() }
+}
+
 export const F491_SCENARIOS = {
   'c2-continuity-nodes-finalize': { model: true, shell: 'stage', setup: seedStageSample, run: async context => {
     context.fake.replyCharacterState(characterStateReply)
@@ -134,6 +142,51 @@ export const F491_SCENARIOS = {
     assert.ok(nodes.every(node => JSON.parse(node.provenance_json).kind === 'derived' && node.chapter_number === node.effective_chapter && node.status === 'finalized'),
       `节点来历为派生，绑定本章定稿。实际：${JSON.stringify(nodes)}`)
     return { nodes: nodes.map(node => `${node.effective_chapter}:${node.aspect}`) }
+  } },
+
+  'c3-character-timeline': { model: true, shell: 'stage', setup: seedStageSample, run: async context => {
+    context.fake.replyCharacterState(characterStateReply)
+    await finalizeChapter(context.page, 3)
+    await finalizeChapter(context.page, 4)
+    const { page } = context
+    await openCharacterState(page)
+    const profile = stage.root(page).locator('.cast-profile')
+    const summary = profile.locator('.cast-timeline-summary')
+    await summary.waitFor({ state: 'visible' })
+    const measured = { summary: await summary.innerText() }
+    assert.equal(measured.summary.trim(), '时间线 · 5 处变化', '第 3 章三个字段加第 4 章两个字段')
+    assert.equal(await profile.locator('.cast-timeline-list').isVisible(), false, '默认收起')
+    await context.shoot('c3-1-collapsed')
+
+    await summary.click()
+    const headings = () => profile.locator('.cast-timeline-chapter h3').allInnerTexts()
+    measured.chapters = await headings()
+    assert.deepEqual(measured.chapters, ['第 4 章', '第 3 章'], '按章倒序')
+    await profile.locator('.cast-timeline-quote summary').first().click()
+    measured.quote = await profile.locator('.cast-timeline-quote blockquote').first().innerText()
+    assert.equal(measured.quote, CHAPTER_UPDATES[1].evidence, '第 4 章的原文证据')
+    await context.shoot('c3-2-expanded')
+
+    const location = profile.locator('.cast-grid textarea').first()
+    await location.fill('灯塔外的礁石')
+    const note = profile.locator('.cast-state-chapter')
+    await note.waitFor({ state: 'visible' })
+    measured.defaultNote = await note.innerText()
+    assert.match(measured.defaultNote, /手改的状态从第 5 章起生效/u, '已定稿到第 4 章，默认下一章')
+    await note.getByRole('button', { name: '改章号' }).click()
+    await note.locator('input').fill('7')
+    measured.chosenNote = await note.innerText()
+    assert.match(measured.chosenNote, /手改的状态从第 7 章起生效/u, '所选章号进说明')
+    await context.shoot('c3-3-chosen-chapter')
+
+    await profile.getByRole('button', { name: '保存角色' }).click()
+    await page.waitForFunction(() => [...document.querySelectorAll('.cast-timeline-chapter h3')].some(item => item.textContent === '第 7 章'), null, { timeout: 15_000 })
+    measured.afterSave = await headings()
+    assert.deepEqual(measured.afterSave, ['第 7 章', '第 4 章', '第 3 章'], '节点按所选章写入并显示')
+    await context.shoot('c3-4-after-save')
+    const authored = (await readAuthorNodes(context.samplePath)).filter(node => node.aspect === 'location')
+    assert.deepEqual(authored.map(node => [node.value, node.effective_chapter]), [['灯塔外的礁石', 7]], '库里的节点')
+    return measured
   } },
 
   'f491-backup-roundtrip': { model: true, shell: 'stage', setup: seedStageSample, run: async context => {

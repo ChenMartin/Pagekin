@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { latestNodesBefore, type CharacterRelationNode, type CharacterStateNode, type ContinuityProvenance } from '../character-continuity'
+import { characterTimeline, latestNodesBefore, resolveStateEffectiveChapter, type CharacterRelationNode, type CharacterStateNode, type ContinuityProvenance } from '../character-continuity'
 
 const author: ContinuityProvenance = { kind: 'author', operationId: '作者保存' }
 const adopted: ContinuityProvenance = { kind: 'adopted', operationId: '接受候选' }
@@ -88,5 +88,51 @@ describe('latestNodesBefore', () => {
     const nodes = [relation('一', '结盟', 1), relation('一', '', 4)]
     expect(latestNodesBefore(nodes, 5).relations).toEqual([])
     expect(latestNodesBefore(nodes, 3).relations[0].lines[0].value).toBe('结盟')
+  })
+})
+
+describe('characterTimeline', () => {
+  const rows = (nodes: Parameters<typeof characterTimeline>[0]) =>
+    characterTimeline(nodes).map(group => [group.chapter, group.changes.map(change => [change.node.aspect, change.value, change.source, change.removed])])
+
+  it('按章倒序，来历分作者设定、定稿记录、升级前已有三种', () => {
+    expect(rows([state('旧站', 0, legacy), state('北塔', 2, derived), state('南港', 5, author), state('码头', 7, adopted)])).toEqual([
+      [7, [['location', '码头', 'author', false]]],
+      [5, [['location', '南港', 'author', false]]],
+      [2, [['location', '北塔', 'finalized', false]]],
+      [0, [['location', '旧站', 'legacy', false]]],
+    ])
+  })
+
+  it('同一章同一字段连改几次只留最终生效的一条，作者优先于派生', () => {
+    expect(rows([state('初稿', 3, author), state('定稿', 3, author)])).toEqual([[3, [['location', '定稿', 'author', false]]]])
+    expect(rows([state('作者值', 3, author), state('派生值', 3, derived)])).toEqual([[3, [['location', '作者值', 'author', false]]]])
+  })
+
+  it('解除关系带出被解除的那一条，清除字段标为已去掉，都不是空白', () => {
+    const changes = characterTimeline([relation('r1', '盟友', 1), relation('r1', '', 4), state('北塔', 1, author), state('', 4, author)])
+    expect(changes.find(group => group.chapter === 4)!.changes.map(change => [change.node.aspect, change.removed, change.value])).toEqual([
+      ['location', true, '北塔'],
+      ['relation', true, '盟友'],
+    ])
+  })
+
+  it('同一对角色的多条关系各占一行', () => {
+    const [group] = characterTimeline([relation('r1', '盟友', 2), relation('r2', '死敌', 2)])
+    expect(group.changes.map(change => change.value).sort()).toEqual(['死敌', '盟友'])
+  })
+
+  it('没有节点时没有分组', () => {
+    expect(characterTimeline([])).toEqual([])
+  })
+})
+
+describe('resolveStateEffectiveChapter', () => {
+  const range = { next: 6, last: 40 }
+  it.each([[1, 1], [6, 6], [40, 40]])('范围内的章号 %s 照用', (requested, expected) => {
+    expect(resolveStateEffectiveChapter(requested, range)).toBe(expected)
+  })
+  it.each([[undefined], [0], [-3], [1.5], [41], ['7'], [Number.NaN], [null]])('%s 不合法，退回下一章', requested => {
+    expect(resolveStateEffectiveChapter(requested, range)).toBe(6)
   })
 })
