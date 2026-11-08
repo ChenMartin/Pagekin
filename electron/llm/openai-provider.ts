@@ -36,9 +36,9 @@ function upstreamRejectsOutputTokenField(responseBody: string, sent: OutputToken
   const message = typeof error?.message === 'string' ? error.message : ''
   // 拒收文案常把两个字段都写上（Use 'x' instead），排在前面的才是被拒的那个。
   const namesSentField = error?.param === sent || /max_(?:completion_)?tokens/u.exec(message)?.[0] === sent
-  // 值太大或非法时 param 同样指向该字段，但换字段救不了，错误要原样交给作者。
+  const complainsAboutValue = /value/iu.test(`${error?.code} ${message}`)
   return namesSentField && (error?.code === 'unsupported_parameter'
-    || (!/value/iu.test(`${error?.code} ${message}`) && /unsupported|not supported|unrecognized|unknown parameter/iu.test(message)))
+    || (!complainsAboutValue && /unsupported|not supported|unrecognized|unknown parameter/iu.test(message)))
 }
 
 export class OpenAIProvider implements ILLMProvider {
