@@ -110,7 +110,6 @@ const COVERED_PREFIXES = [
   'IMPORT_INSPECTION_',
   'IMPORT_CHAPTER_',
   'IMPORT_RESOURCE_',
-  // 导入旧项目副本的拒绝原因（#626）：书房提示按码说明，不露码。
   'LEGACY_IMPORT_',
 ] as const
 const UNREGISTERED: Record<string, readonly string[]> = {

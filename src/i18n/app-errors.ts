@@ -55,7 +55,6 @@ const ERROR_KEYS = {
   LEGACY_IMPORT_KNOWLEDGE_ORIGINAL_UNAVAILABLE: 'error.legacyImportKnowledgeOriginal',
   LEGACY_IMPORT_KNOWLEDGE_ORIGINAL_INVALID: 'error.legacyImportKnowledgeOriginal',
   LEGACY_IMPORT_IO_FAILED: 'error.legacyImportIoFailed',
-  // 转换后的校验没过：作者没有能照做的修法，和没登记的码用同一条说明。
   LEGACY_IMPORT_SQLITE_CONTENT_CHANGED: 'error.legacyImportFailed',
   LEGACY_IMPORT_SQLITE_VERIFICATION_FAILED: 'error.legacyImportFailed',
   LEGACY_IMPORT_AVATAR_UNRESOLVED: 'error.legacyImportFailed',
@@ -386,12 +385,9 @@ export function knownAppErrorMessage(locale: Locale, error: unknown): string | u
   return code ? translate(locale, ERROR_KEYS[code]) : undefined
 }
 
-/**
- * 导入旧项目副本被拒时的说明。只认登记过的码，异常原文可能带路径，不进界面。
- * 路径过深的通用说明让作者挪项目文件夹，这里过深的是还没建出来的副本位置，单独说明。
- */
 export function legacyImportFailureMessage(locale: Locale, error: unknown): string {
-  const reason = errorCodeOf(error) === 'PROJECT_STORAGE_PATH_UNSUPPORTED'
+  const copyTargetTooDeep = errorCodeOf(error) === 'PROJECT_STORAGE_PATH_UNSUPPORTED'
+  const reason = copyTargetTooDeep
     ? translate(locale, 'error.legacyImportTargetTooDeep')
     : knownAppErrorMessage(locale, error) ?? translate(locale, 'error.legacyImportFailed')
   const kept = translate(locale, 'error.legacyImportNothingChanged')
