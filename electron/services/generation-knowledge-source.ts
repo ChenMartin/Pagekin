@@ -101,56 +101,100 @@ async function sourceItem(reader: Reader, row: Row, score: number): Promise<Gene
   return { revision: reader.canonicalRevision!, chunkId, documentId, chunkIndex, text, fileName, score, corpusKind: kind, contentHash: hash(text),
     documentChunkCount: ordered.length, documentChunkSetHash: hash(JSON.stringify(ordered.map(item => item.text))) }
 }
-export async function captureGenerationKnowledge(input: {
+type KnowledgeSearch = {
   projectStorageRoot: string; query: string; topK?: number; queryVector?: number[]; embeddingSpace?: EmbeddingSpaceIdentity
   excludedDocumentIds?: readonly string[]
-}): Promise<GenerationKnowledgeSnapshot> {
+}
+function requestedTopK(input: KnowledgeSearch): number {
   const topK = input.topK ?? 5
   if (typeof input.query !== 'string' || !Number.isSafeInteger(topK) || topK < 1 || topK > 100) fail('INVALID_REQUEST')
+  return topK
+}
+function emptySnapshot(reader: Reader, query: string, topK: number): GenerationKnowledgeSnapshot {
+  return { version: 1, state: 'empty', storageState: reader.state, query, topK, canonicalRevision: reader.canonicalRevision, documentsRevision: reader.documentsRevision, items: [] }
+}
+async function searchHits(reader: Reader, input: KnowledgeSearch, topK: number): Promise<{ row: Row; score: number }[]> {
+  if (!reader.chunks) return []
+  const staleDocIds = (await reader.documents!.query().toArray())
+    .filter(doc => !isDocumentCopyIndexCurrent(reader.root, String(doc.id), doc.filePath))
+    .map(doc => string(doc.id))
+  // 一个扁平的 NOT IN：逐个 `!=` 再用 AND 串起来，长篇补写时上千项会让 LanceDB 原生栈溢出，直接崩掉主进程。
+  const excluded = [...new Set([...staleDocIds, ...(input.excludedDocumentIds ?? [])])]
+  const documentFilter = excluded.length ? `\`docId\` NOT IN (${excluded.map(quote).join(', ')})` : ''
+  let hits: { row: Row; score: number }[] = []
+  if (input.queryVector) {
+    const bytes = registryBytes(reader.root)
+    if (!bytes) fail('SPACE_NOT_MATCHED')
+    const { validateRegistry } = await import('../vector-store')
+    const registry = validateRegistry(JSON.parse(bytes!))
+    const active = registry.spaces.filter(space => space.generation === registry.activeGeneration && space.status === 'active')
+    if (active.length === 0) fail('SPACE_NOT_MATCHED')
+    if (active.length !== 1 || !reader.names.includes(active[0].tableName)) fail('SPACE_UNPROVEN')
+    if (!input.queryVector.every(Number.isFinite)) fail('INVALID_VECTOR')
+    if (!input.embeddingSpace || active[0].modelFingerprint !== input.embeddingSpace.modelFingerprint
+      || active[0].distanceMetric !== (input.embeddingSpace.distanceMetric ?? 'l2')
+      || input.queryVector.length !== active[0].vectorDimension) fail('SPACE_NOT_MATCHED')
+    const table = await reader.connection!.openTable(active[0].tableName); await reader.pin(table)
+    if (!['l2', 'cosine', 'dot'].includes(active[0].distanceMetric)) fail('SPACE_UNPROVEN')
+    const rows = await table.vectorSearch(input.queryVector).distanceType(active[0].distanceMetric as 'l2' | 'cosine' | 'dot').where(`\`corpusKind\` != 'reference'${documentFilter ? ` AND ${documentFilter}` : ''}`).limit(topK).toArray()
+    for (const hit of rows) {
+      const canonical = await reader.chunks!.query().where(`id = ${quote(string(hit.id))}`).toArray()
+      if (canonical.length !== 1 || ['docId', 'text', 'fileName', 'chunkIndex', 'totalChunks', 'corpusKind'].some(key => !isDeepStrictEqual(canonical[0][key], hit[key]))) fail('VECTOR_CANONICAL_MISMATCH')
+      const distance = hit._distance
+      if (typeof distance !== 'number' || !Number.isFinite(distance) || distance < 0 && active[0].distanceMetric !== 'dot') fail('INVALID_DISTANCE')
+      hits.push({ row: canonical[0], score: active[0].distanceMetric === 'dot' ? 1 / (1 + Math.exp(distance)) : 1 / (1 + distance) })
+    }
+  }
+  if (!hits.length) {
+    const raw = input.query.match(/[\p{L}\p{N}-]+/gu) ?? [], meaningful = raw.filter(term => Array.from(term).length >= 2)
+    const terms = [...new Map((meaningful.length ? meaningful : raw).map(term => [term.toLocaleLowerCase(), term])).values()].slice(0, 8)
+    const filter = terms.length ? terms.map(term => `text LIKE ${quote(`%${term}%`)}`).join(' OR ') : "text LIKE '%%'"
+    const rows = await reader.chunks!.query().where(`(${filter})${documentFilter ? ` AND ${documentFilter}` : ''}`).toArray()
+    const rank = (row: Row) => terms.reduce((sum, term, index) => sum + (string(row.text).toLocaleLowerCase().includes(term.toLocaleLowerCase()) ? terms.length - index : 0), 0)
+    hits = rows.filter(row => corpus(row.corpusKind) !== 'reference').sort((a, b) => rank(b) - rank(a) || string(a.id).localeCompare(string(b.id)))
+      .slice(0, topK).map(row => ({ row, score: 0.5 }))
+  }
+  if (new Set(hits.map(hit => hit.row.id)).size !== hits.length) fail('DUPLICATE_CHUNK')
+  return hits
+}
+export async function captureGenerationKnowledge(input: KnowledgeSearch): Promise<GenerationKnowledgeSnapshot> {
+  const topK = requestedTopK(input)
   return readStable(input.projectStorageRoot, async reader => {
-    const snapshot: GenerationKnowledgeSnapshot = { version: 1, state: 'empty', storageState: reader.state, query: input.query, topK, canonicalRevision: reader.canonicalRevision, documentsRevision: reader.documentsRevision, items: [] }
-    if (!reader.chunks) return snapshot
-    const staleDocIds = (await reader.documents!.query().toArray())
-      .filter(doc => !isDocumentCopyIndexCurrent(reader.root, String(doc.id), doc.filePath))
-      .map(doc => string(doc.id))
-    // 一个扁平的 NOT IN：逐个 `!=` 再用 AND 串起来，长篇补写时上千项会让 LanceDB 原生栈溢出，直接崩掉主进程。
-    const excluded = [...new Set([...staleDocIds, ...(input.excludedDocumentIds ?? [])])]
-    const documentFilter = excluded.length ? `\`docId\` NOT IN (${excluded.map(quote).join(', ')})` : ''
-    let hits: { row: Row; score: number }[] = []
-    if (input.queryVector) {
-      const bytes = registryBytes(input.projectStorageRoot)
-      if (!bytes) fail('SPACE_NOT_MATCHED')
-      const { validateRegistry } = await import('../vector-store')
-      const registry = validateRegistry(JSON.parse(bytes!))
-      const active = registry.spaces.filter(space => space.generation === registry.activeGeneration && space.status === 'active')
-      if (active.length === 0) fail('SPACE_NOT_MATCHED')
-      if (active.length !== 1 || !reader.names.includes(active[0].tableName)) fail('SPACE_UNPROVEN')
-      if (!input.queryVector.every(Number.isFinite)) fail('INVALID_VECTOR')
-      if (!input.embeddingSpace || active[0].modelFingerprint !== input.embeddingSpace.modelFingerprint
-        || active[0].distanceMetric !== (input.embeddingSpace.distanceMetric ?? 'l2')
-        || input.queryVector.length !== active[0].vectorDimension) fail('SPACE_NOT_MATCHED')
-      const table = await reader.connection!.openTable(active[0].tableName); await reader.pin(table)
-      if (!['l2', 'cosine', 'dot'].includes(active[0].distanceMetric)) fail('SPACE_UNPROVEN')
-      const rows = await table.vectorSearch(input.queryVector).distanceType(active[0].distanceMetric as 'l2' | 'cosine' | 'dot').where(`\`corpusKind\` != 'reference'${documentFilter ? ` AND ${documentFilter}` : ''}`).limit(topK).toArray()
-      for (const hit of rows) {
-        const canonical = await reader.chunks.query().where(`id = ${quote(string(hit.id))}`).toArray()
-        if (canonical.length !== 1 || ['docId', 'text', 'fileName', 'chunkIndex', 'totalChunks', 'corpusKind'].some(key => !isDeepStrictEqual(canonical[0][key], hit[key]))) fail('VECTOR_CANONICAL_MISMATCH')
-        const distance = hit._distance
-        if (typeof distance !== 'number' || !Number.isFinite(distance) || distance < 0 && active[0].distanceMetric !== 'dot') fail('INVALID_DISTANCE')
-        hits.push({ row: canonical[0], score: active[0].distanceMetric === 'dot' ? 1 / (1 + Math.exp(distance)) : 1 / (1 + distance) })
+    const snapshot = emptySnapshot(reader, input.query, topK)
+    for (const hit of await searchHits(reader, input, topK)) snapshot.items.push(await sourceItem(reader, hit.row, hit.score))
+    snapshot.state = snapshot.items.length ? 'stored' : 'empty'
+    return snapshot
+  })
+}
+export interface GenerationKnowledgeCandidates {
+  canonicalRevision: number | null; documentsRevision: number | null
+  candidates: { chunkId: string; text: string; score: number }[]
+}
+/** 只读候选的 id、正文和分数，不做整篇文档的完整性核对：重排丢掉的候选不该让取材失败。 */
+export async function recallGenerationKnowledgeCandidates(input: KnowledgeSearch): Promise<GenerationKnowledgeCandidates> {
+  const topK = requestedTopK(input)
+  return readStable(input.projectStorageRoot, async reader => ({
+    canonicalRevision: reader.canonicalRevision, documentsRevision: reader.documentsRevision,
+    candidates: (await searchHits(reader, input, topK)).map(hit => ({ chunkId: string(hit.row.id), text: string(hit.row.text), score: hit.score })),
+  }))
+}
+/** 按选中的 id 冻结快照；召回之后知识库变过（含作者保存了选中文档的副本）就返回 null，由调用方重新取材。 */
+export async function freezeGenerationKnowledge(input: {
+  projectStorageRoot: string; query: string; topK: number; recalled: GenerationKnowledgeCandidates; picks: readonly { chunkId: string; score: number }[]
+}): Promise<GenerationKnowledgeSnapshot | null> {
+  return readStable(input.projectStorageRoot, async reader => {
+    if (reader.canonicalRevision !== input.recalled.canonicalRevision || reader.documentsRevision !== input.recalled.documentsRevision) return null
+    const snapshot = emptySnapshot(reader, input.query, input.topK)
+    try {
+      for (const pick of input.picks) {
+        const rows = await reader.chunks!.query().where(`id = ${quote(pick.chunkId)}`).toArray()
+        if (rows.length !== 1) fail('SOURCE_STALE')
+        snapshot.items.push(await sourceItem(reader, rows[0], pick.score))
       }
+    } catch (error) {
+      if (error instanceof Error && error.message === 'GENERATION_KNOWLEDGE_SOURCE_STALE') return null
+      throw error
     }
-    if (!hits.length) {
-      const raw = input.query.match(/[\p{L}\p{N}-]+/gu) ?? [], meaningful = raw.filter(term => Array.from(term).length >= 2)
-      const terms = [...new Map((meaningful.length ? meaningful : raw).map(term => [term.toLocaleLowerCase(), term])).values()].slice(0, 8)
-      const filter = terms.length ? terms.map(term => `text LIKE ${quote(`%${term}%`)}`).join(' OR ') : "text LIKE '%%'"
-      const rows = await reader.chunks.query().where(`(${filter})${documentFilter ? ` AND ${documentFilter}` : ''}`).toArray()
-      const rank = (row: Row) => terms.reduce((sum, term, index) => sum + (string(row.text).toLocaleLowerCase().includes(term.toLocaleLowerCase()) ? terms.length - index : 0), 0)
-      hits = rows.filter(row => corpus(row.corpusKind) !== 'reference').sort((a, b) => rank(b) - rank(a) || string(a.id).localeCompare(string(b.id)))
-        .slice(0, topK).map(row => ({ row, score: 0.5 }))
-    }
-    if (new Set(hits.map(hit => hit.row.id)).size !== hits.length) fail('DUPLICATE_CHUNK')
-    for (const hit of hits) snapshot.items.push(await sourceItem(reader, hit.row, hit.score))
     snapshot.state = snapshot.items.length ? 'stored' : 'empty'
     return snapshot
   })
@@ -160,14 +204,16 @@ export async function verifyGenerationKnowledge(input: { projectStorageRoot: str
   const expected = input.snapshot
   if (expected.version !== 1 || !Array.isArray(expected.items) || typeof expected.query !== 'string'
     || !Number.isSafeInteger(expected.topK) || expected.topK < 1 || expected.topK > 100
-    || expected.items.length > expected.topK || expected.state !== (expected.items.length ? 'stored' : 'empty')) fail('INVALID_SNAPSHOT')
+    || expected.items.length > expected.topK || expected.state !== (expected.items.length ? 'stored' : 'empty')
+    || expected.items.some((item, index) => item.rank !== undefined && item.rank !== index + 1)) fail('INVALID_SNAPSHOT')
   await readStable(input.projectStorageRoot, async reader => {
     if (reader.state !== expected.storageState || reader.canonicalRevision !== expected.canonicalRevision || reader.documentsRevision !== expected.documentsRevision) fail('SOURCE_STALE')
     if (new Set(expected.items.map(item => item.chunkId)).size !== expected.items.length) fail('INVALID_SNAPSHOT')
     for (const item of expected.items) {
       if (!reader.chunks) fail('SOURCE_STALE')
       const rows = await reader.chunks!.query().where(`id = ${quote(string(item.chunkId))}`).toArray()
-      if (rows.length !== 1 || !isDeepStrictEqual(await sourceItem(reader, rows[0], item.score), item)) fail('SOURCE_STALE')
+      const current = rows.length === 1 ? await sourceItem(reader, rows[0], item.score) : undefined
+      if (!current || !isDeepStrictEqual(item.rank === undefined ? current : { ...current, rank: item.rank }, item)) fail('SOURCE_STALE')
     }
   })
 }
