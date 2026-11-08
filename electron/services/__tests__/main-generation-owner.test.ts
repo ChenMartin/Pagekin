@@ -3649,6 +3649,25 @@ describe('规划恢复稿是否还列为可恢复（#608）', () => {
     expect(f.owner.findBlueprintRecovery()?.handle).toEqual(interrupted)
   })
 
+  it('早期版本一次开跑 1000 章的蓝图恢复稿，后来由正式提交补齐：打开恢复列表不卡住，作者改过最后一章后照常列出', async () => {
+    const f = directoryFixture(), count = 1000
+    f.db.prepare('UPDATE project_core SET total_chapters=?').run(count)
+    const selected = selection(f, 1, count, 'legacy-large')
+    selected.authorInputs = selected.authorInputs!.map(input => input.id === 'directory:author-config' ? { ...input, text: JSON.stringify({ totalChapters: count }) } : input)
+    const interrupted = (await frozenAggregateRun(f, selected)).handle
+    await f.owner.execute({ handle: interrupted, invocationNonce: 'legacy-large', task: directoryTask })
+    f.startedMinuteEarlier(interrupted)
+    BlueprintRepository.commitRange({ mode: 'replace-range', operationId: 'later', startChapter: 1, endChapter: count, blueprints: rows(1, count, '后来生成的关键事件。'.repeat(150)) })
+    const listedWithin = (limitMs: number) => {
+      const start = performance.now(), listed = f.listed()
+      expect(performance.now() - start).toBeLessThan(limitMs)
+      return listed
+    }
+    expect(listedWithin(3000)).toEqual([])
+    BlueprintRepository.upsert(rows(count, count, '作者提交之后改了最后一章')[0])
+    expect(listedWithin(3000)).toEqual([interrupted.runId])
+  }, 120_000)
+
   it.each([
     ['读不出', 'not json'],
     ['缺这几章', '[]'],
