@@ -272,6 +272,37 @@ describe('finalized continuity projection', () => {
     })).toThrow('CONTINUITY_SOURCE_STALE')
   })
 
+  it('does not let a continuity projection overwrite a legacy character-state snapshot', () => {
+    getProjectDb()!.prepare('INSERT INTO summary_snapshots_all (chapter_number, character_states) VALUES (?, ?)')
+      .run(1, '角色状态仍需保留')
+    const content = '定稿正文'
+    const receipt = FinalizedDraftImportRepository.commit(projectRoot, {
+      operationId: 'continuity-does-not-shadow-character-state',
+      chapters: [{
+        chapterNumber: 1,
+        title: '第一章',
+        content,
+        wordCount: countDraftUnits(content),
+      }],
+    })
+    SummaryRepository.saveFinalizedContinuity({
+      draftId: receipt.drafts[0]!.draftId,
+      chapterNumber: 1,
+      chapterNotes: '连续性事实',
+      projectionGeneration: projectionGeneration(),
+      source: {
+        draftId: receipt.drafts[0]!.draftId,
+        finalizationId: receipt.drafts[0]!.finalizationId,
+        chapterNumber: 1,
+        contentHash: receipt.drafts[0]!.contentHash,
+      },
+    })
+
+    expect(getProjectDb()!.prepare(
+      'SELECT chapter_number, character_states FROM summary_snapshots WHERE draft_id IS NULL',
+    ).all()).toEqual([{ chapter_number: 1, character_states: '角色状态仍需保留' }])
+  })
+
   it('marks an invalidated suffix stale while preserving raw finalized prose for deterministic fallback', () => {
     const content = '林岚在码头拒绝交出铜钥匙。'
     const receipt = FinalizedDraftImportRepository.commit(projectRoot, {
