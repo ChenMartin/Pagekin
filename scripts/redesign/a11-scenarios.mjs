@@ -87,4 +87,48 @@ export const A11_SCENARIOS = {
     await shoot('a11-thread-tasks-review')
     return { contract, threadGoals, sheetText: (await sheet.innerText()).slice(0, 2000) }
   } },
+  'a11-thread-review-candidate': { model: true, shell: 'stage', setup: seedWith([...PLANS, MAP_PLAN]), run: async ({ page, fake, shoot }) => {
+    await chapterView.open(page, 5)
+    await chapterView.view(page).getByRole('button', { name: '写作此章', exact: true }).click()
+    await chapterView.prose(page).getByText(firstLine(FIXTURE_PROSE)).first().waitFor({ state: 'visible', timeout: 90_000 })
+    fake.replyReview((prompt) => {
+      if (!prompt.includes('goalReviews')) return null
+      const authorGoals = [...new Set(prompt.match(/ch5:(?!thread:)[a-zA-Z]+:\d+/gu) ?? [])]
+      return JSON.stringify({ summary: '地图线索已交代，旧信有推进，钥匙没出现。', items: [
+        { category: '连续性', severity: 'pass', description: '本章时间线与前文一致。' },
+      ], goalReviews: [
+        ...authorGoals.map(id => ({ id, status: 'completed', description: '林岚在塔下得到钟声提前的线索。', evidence: [{ quote: '说昨夜的钟声比往常早了一刻' }] })),
+        { id: 'ch5:thread:1', status: 'unaddressed', description: '本章没有写到青铜钥匙。', evidence: [] },
+        { id: 'ch5:thread:2', status: 'advanced', description: '旧信被提起，但没有读到内容。', evidence: [{ quote: '对照远处灯塔的位置' }] },
+        { id: 'ch5:thread:3', status: 'resolved', description: '林岚对照父亲的地图找到了灯塔的位置。', evidence: [{ quote: '对照远处灯塔的位置' }] },
+      ] })
+    })
+    await chapterView.review(page)
+    await page.keyboard.press('Escape')
+    await chapterView.finalize(page, 5)
+    await chapterView.postProcess(page).getByText('4 / 4 完成').waitFor({ state: 'visible', timeout: 60_000 })
+
+    const requestsBefore = fake.requests.length
+    await refs.open(page, 'plot')
+    await refs.plotView(page, '伏笔线索').click()
+    const candidates = page.getByRole('article', { name: '审稿发现的回收' })
+    await candidates.first().waitFor({ state: 'visible', timeout: 15_000 })
+    assert.equal(await candidates.count(), 1, '只有判已回收且带引文的「父亲的地图」出候选')
+    const card = (await candidates.first().innerText()).split('\n').map(line => line.trim()).filter(Boolean)
+    assert.deepEqual(card, ['父亲的地图', '第 5 章审稿', '对照远处灯塔的位置', '理由：林岚对照父亲的地图找到了灯塔的位置。', '确认已回收'], '候选写明线索、章号、引文和理由')
+    await candidates.first().scrollIntoViewIfNeeded()
+    await shoot('a11-thread-review-candidate-pending')
+    const statusBefore = await page.locator('#narrative-plan-3 .stage-thread-name').innerText()
+    assert.match(statusBefore, /已计划/, '确认前线索状态不变')
+
+    await candidates.first().getByRole('button', { name: '确认已回收', exact: true }).click()
+    await candidates.first().waitFor({ state: 'detached', timeout: 15_000 })
+    await page.locator('#narrative-plan-3').getByText('第 5 章 · 已解决 · 对照远处灯塔的位置').waitFor({ state: 'visible' })
+    const statusAfter = await page.locator('#narrative-plan-3 .stage-thread-name').innerText()
+    assert.match(statusAfter, /已解决/, '确认后线索变已解决')
+    const modelRequests = fake.requests.slice(requestsBefore).filter(kind => kind !== 'models')
+    assert.deepEqual(modelRequests, [], '线索页显示和确认候选都不发模型请求，向量请求也算')
+    await shoot('a11-thread-review-candidate-confirmed')
+    return { card, statusBefore, statusAfter, modelRequests }
+  } },
 }

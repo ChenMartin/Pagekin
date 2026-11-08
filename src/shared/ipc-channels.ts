@@ -51,6 +51,7 @@ import type {
   NarrativeThreadPlanRecord,
   NarrativeThreadView,
 } from './narrative-thread'
+import type { NarrativeThreadReviewCandidate } from './narrative-thread-review-candidates'
 import type { PlotTreeSnapshot, PlotTreeSourceBundle } from './plot-tree'
 import type {
   UpdateActionResponse,
@@ -1070,6 +1071,10 @@ export interface DatabaseChannels {
   'db:narrative-thread-list-relevant': {
     args: [context: NarrativeThreadChapterContext, expectedProjectPath: string]
     return: NarrativeThreadView[]
+  }
+  'db:narrative-thread-review-candidates': {
+    args: [expectedProjectPath: string]
+    return: NarrativeThreadReviewCandidate[]
   }
   'db:narrative-thread-plan-create': {
     args: [input: NarrativeThreadPlanInput, expectedProjectPath: string]

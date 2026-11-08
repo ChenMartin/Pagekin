@@ -143,7 +143,7 @@ export default function PlotThreads({ plot, onDelete }: PlotThreadsProps) {
           {!eventThread ? (
             <p className="stage-plot-help">{plot.finalizedDrafts.length === 0
               ? text('还没有定稿的章节。', 'No chapter is final yet.')
-              : text('在左边线索的「更多」里选「记录定稿里的变化」。', 'Choose “Record a change from a final” in a thread’s menu on the left.')}</p>
+              : text('在线索的「更多」里选「记录定稿里的变化」。', 'Choose “Record a change from a final” in a thread’s menu.')}</p>
           ) : (
             <div className="stage-threads-form">
               <div className="stage-threads-target">{eventThread.title}</div>
@@ -188,6 +188,22 @@ export default function PlotThreads({ plot, onDelete }: PlotThreadsProps) {
                 <Button variant="text" size="sm" disabled={plot.busy} onClick={() => plot.rejectEventCandidate(candidate)}>{text('不采纳', 'Dismiss')}</Button>
                 <Button variant="secondary" size="sm" disabled={plot.busy || candidate.generationIndex !== undefined && plot.graphRecovery?.sourceStatus !== 'current'} onClick={() => void plot.confirmEventCandidate(candidate)}>
                   <Check size={13} aria-hidden="true" />{text('确认', 'Confirm')}
+                </Button>
+              </div>
+            </article>
+          ))}
+          {plot.reviewCandidates.length > 0 && <p className="stage-plot-help">{text('审稿认为这些线索已在定稿里回收。确认后才记入线索，不确认不会有变化。', 'Review found these threads resolved in a final. Nothing is recorded until you confirm.')}</p>}
+          {plot.reviewCandidates.map(candidate => (
+            <article key={`${candidate.planId}:${candidate.draftId}`} className="stage-candidate" aria-label={text('审稿发现的回收', 'Resolution found in review')}>
+              <div className="stage-candidate-head">
+                <b>{candidate.threadTitle}</b>
+                <span>{text(`第 ${candidate.chapterNumber} 章审稿`, `Chapter ${candidate.chapterNumber} review`)}</span>
+              </div>
+              <blockquote>{candidate.evidence}</blockquote>
+              <p>{text(`理由：${candidate.reason}`, `Why: ${candidate.reason}`)}</p>
+              <div className="stage-candidate-foot">
+                <Button variant="secondary" size="sm" disabled={plot.busy} onClick={() => void plot.confirmEventCandidate(candidate)}>
+                  <Check size={13} aria-hidden="true" />{text('确认已回收', 'Confirm resolved')}
                 </Button>
               </div>
             </article>

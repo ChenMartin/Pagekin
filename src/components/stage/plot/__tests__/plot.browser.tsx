@@ -8,6 +8,7 @@ import '../../../../styles/paper-ink/index.css'
 import '../../stage.css'
 import type { ProjectData } from '../../../../shared/ipc-channels'
 import type { NarrativeThreadView } from '../../../../shared/narrative-thread'
+import type { NarrativeThreadReviewCandidate } from '../../../../shared/narrative-thread-review-candidates'
 import type { PlotTreeSnapshot } from '../../../../shared/plot-tree'
 import { setActiveProjectSessionContext } from '../../../../shared/project-session-context'
 import { useLLMStore } from '../../../../stores/llm-store'
@@ -41,6 +42,7 @@ const tree: PlotTreeSnapshot = {
 
 let plotSnapshot: PlotTreeSnapshot | null
 let threads: NarrativeThreadView[]
+let reviewCandidates: NarrativeThreadReviewCandidate[]
 let root: Root | undefined
 let host: HTMLDivElement | undefined
 let invoke: ReturnType<typeof vi.fn<(channel: string, ...args: unknown[]) => Promise<unknown>>>
@@ -53,6 +55,7 @@ function thread(): NarrativeThreadView {
 beforeEach(() => {
   plotSnapshot = tree
   threads = [thread()]
+  reviewCandidates = []
   invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
     if (channel === 'generation:list') return []
     if (channel === 'db:plot-tree-read') return {
@@ -63,6 +66,7 @@ beforeEach(() => {
     }
     if (channel === 'db:plot-tree-clear') { plotSnapshot = null; return { success: true } }
     if (channel === 'db:narrative-thread-list') return threads
+    if (channel === 'db:narrative-thread-review-candidates') return reviewCandidates
     if (channel === 'db:draft-list-all') return [{ id: 7, chapterNumber: 1, version: 1, status: 'finalized' }, { id: 8, chapterNumber: 2, version: 1, status: 'finalized' }]
     if (channel === 'db:blueprint-get-all') return [{ chapterNumber: 1, title: '灰色的信' }]
     if (channel === 'db:narrative-thread-plan-delete') { threads = threads.filter(item => item.id !== args[0]); return { success: true } }
@@ -175,6 +179,69 @@ describe('剧情与伏笔', () => {
     useLocaleStore.setState({ locale: 'en-US' })
     await render('plans')
     await vi.waitFor(() => expect(document.querySelector('.stage-thread-sub[data-tone="warn"]')?.textContent).toBe('Quiet for 1 chapter'))
+  })
+
+  const reviewCandidate: NarrativeThreadReviewCandidate = {
+    planId: 5, draftId: 8, chapterNumber: 2, threadTitle: '灰色的信是谁寄的', type: 'resolved',
+    evidence: '信封上是母亲的笔迹', reason: '母亲寄信的真相揭开了。',
+  }
+  const reviewCard = () => document.querySelector('[aria-label="审稿发现的回收"], [aria-label="Resolution found in review"]')
+
+  it('审稿判定已回收的线索列成待确认候选，写明线索、章号和引文，不发模型请求', async () => {
+    reviewCandidates = [reviewCandidate]
+    await render('plans')
+    await vi.waitFor(() => expect(reviewCard()).toBeTruthy())
+    expect(reviewCard()!.textContent).toContain('灰色的信是谁寄的')
+    expect(reviewCard()!.textContent).toContain('第 2 章审稿')
+    expect(reviewCard()!.querySelector('blockquote')?.textContent).toBe('信封上是母亲的笔迹')
+    expect(reviewCard()!.textContent).toContain('理由：母亲寄信的真相揭开了。')
+    expect(document.body.textContent).toContain('确认后才记入线索')
+    expect(called('graph-generation:begin')).toHaveLength(0)
+    expect(called('db:narrative-thread-event-confirm')).toHaveLength(0)
+  })
+
+  it('确认候选走现有记账入口，记账后候选消失、线索显示已解决', async () => {
+    reviewCandidates = [reviewCandidate]
+    const plain = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel !== 'db:narrative-thread-event-confirm') return plain(channel, ...args)
+      reviewCandidates = []
+      threads = threads.map(item => ({ ...item, status: 'resolved' as const }))
+      return { success: true }
+    })
+    await render('plans')
+    await click('确认已回收')
+    await vi.waitFor(() => expect(reviewCard()).toBeNull())
+    expect(called('db:narrative-thread-event-confirm').map(([, input]) => input)).toEqual([{
+      planId: 5, draftId: 8, type: 'resolved', evidence: '信封上是母亲的笔迹', reason: '母亲寄信的真相揭开了。',
+    }])
+    await vi.waitFor(() => expect(document.body.textContent).toContain('已解决'))
+  })
+
+  it('英文界面的候选写 Chapter 2 review 和 Confirm resolved', async () => {
+    reviewCandidates = [reviewCandidate]
+    useLocaleStore.setState({ locale: 'en-US' })
+    await render('plans')
+    await vi.waitFor(() => expect(reviewCard()).toBeTruthy())
+    expect(reviewCard()!.textContent).toContain('Chapter 2 review')
+    expect(reviewCard()!.textContent).toContain('Why: 母亲寄信的真相揭开了。')
+    expect(button('Confirm resolved')).toBeTruthy()
+  })
+
+  it.each([
+    ['zh-CN', '在线索的「更多」里选「记录定稿里的变化」。'],
+    ['en-US', 'Choose “Record a change from a final” in a thread’s menu.'],
+  ] as const)('记录变化的指引不写线索列表在哪一边（%s）', async (locale, hint) => {
+    useLocaleStore.setState({ locale })
+    await render('plans')
+    await vi.waitFor(() => expect(document.body.textContent).toContain(hint))
+  })
+
+  it('没有候选时不显示审稿回收的说明', async () => {
+    await render('plans')
+    await vi.waitFor(() => expect(document.body.textContent).toContain('灰色的信是谁寄的'))
+    expect(reviewCard()).toBeNull()
+    expect(document.body.textContent).not.toContain('确认后才记入线索，不确认')
   })
 
   it('删除线索计划先危险确认：取消不删，确认才删', async () => {

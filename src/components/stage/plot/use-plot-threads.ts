@@ -27,6 +27,7 @@ import {
   type NarrativeThreadPlanInput,
   type NarrativeThreadView,
 } from '../../../shared/narrative-thread'
+import type { NarrativeThreadReviewCandidate } from '../../../shared/narrative-thread-review-candidates'
 import type { PlotTreeSnapshot, PlotTreeSourceBundle, PlotTreeSourceReference } from '../../../shared/plot-tree'
 import { routeStageModel } from '../../../shared/model-stage-routing'
 import { formatResourceUri } from '../../../shared/project-paths'
@@ -222,6 +223,7 @@ export function usePlotThreads(projectKey: string, {
   const [aiBlueprintChapter, setAiBlueprintChapter] = useState(0)
   const [planCandidates, setPlanCandidates] = useState<BoundPlanCandidate[]>([])
   const [eventCandidates, setEventCandidates] = useState<BoundEventCandidate[]>([])
+  const [reviewCandidates, setReviewCandidates] = useState<NarrativeThreadReviewCandidate[]>([])
   const [aiBusy, setAiBusy] = useState(false)
   const [aiError, setAiError] = useState('')
   const [view, setView] = useState<'plot-tree' | 'plans'>(initialView)
@@ -362,15 +364,17 @@ export function usePlotThreads(projectKey: string, {
     const session = captureProjectSession(useProjectStore.getState().currentProject)
     if (!session || !isProjectSessionPath(session, projectKey)) return
     try {
-      const [nextThreads, drafts, nextBlueprints] = await Promise.all([
+      const [nextThreads, drafts, nextBlueprints, nextReviewCandidates] = await Promise.all([
         ipc.invokeWithProjectSession(session, 'db:narrative-thread-list', projectKey),
         ipc.invokeWithProjectSession(session, 'db:draft-list-all', projectKey),
         ipc.invokeWithProjectSession(session, 'db:blueprint-get-all', projectKey),
+        ipc.invokeWithProjectSession(session, 'db:narrative-thread-review-candidates', projectKey),
       ])
       if (!isProjectSessionCurrent(session)) return
       const finalized = drafts.filter(draft => draft.status === 'finalized')
       setFinalizedDrafts(finalized)
       setThreads(nextThreads)
+      setReviewCandidates(nextReviewCandidates)
       setBlueprints(nextBlueprints)
       setEventDraftId(previous => previous || finalized[0]?.id || 0)
       setAiBlueprintChapter(previous => previous || nextBlueprints[0]?.chapterNumber || 0)
@@ -857,7 +861,7 @@ export function usePlotThreads(projectKey: string, {
     generationModels, plotSources, selectedPlotModel, setPlotModelId, plotBusy, plotError, plotModelSelectionError,
     refreshPlotTree, clearPlotTree, openPlotSource,
     aiOpen, aiMode, aiBusy, aiError, selectedModelId, setAiModelId, modelSelectionError,
-    aiBlueprintChapter, setAiBlueprintChapter, planCandidates, eventCandidates,
+    aiBlueprintChapter, setAiBlueprintChapter, planCandidates, eventCandidates, reviewCandidates,
     openAI, closeAI, generatePlanCandidates, generateEventCandidates,
     confirmPlanCandidate, rejectPlanCandidate, confirmEventCandidate, rejectEventCandidate,
     graphRuns, graphRecovery, graphError, loadGraphRuns, restoreGraph, continueGraph, cancelGraph,
