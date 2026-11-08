@@ -6,7 +6,7 @@ import { closeProjectDatabase } from '../database'
 import { captureWritingKnowledgeSnapshot, importText } from '../knowledge-base'
 import { captureGenerationKnowledge, verifyGenerationKnowledge } from '../services/generation-knowledge-source'
 import { getProjectDataRoot } from '../services/project-data-locator'
-import { closeConnection } from '../vector-store'
+import { closeConnection, getConnection } from '../vector-store'
 import type { RerankConfig } from '../../src/shared/rerank-config'
 
 const MODEL = { provider: 'siliconflow', baseUrl: 'https://api.siliconflow.cn/v1', apiKey: '', modelName: 'BAAI/bge-m3' }
@@ -68,9 +68,8 @@ describe('writing knowledge snapshot ranking', () => {
   })
 
   it('recalls at most 40 candidates for the reranker', async () => {
-    for (let index = PASSAGES.length; index < 45; index += 1) {
-      await importText(`第${index + 1}段：潮位表又添一行。`, `补充${index + 1}.md`, projectPath, 'openai', MODEL, { mode: 'fts-only' })
-    }
+    const extra = Array.from({ length: 38 }, (_, index) => `第${index + 8}段：潮位表又添一行。${'记'.repeat(300)}`).join('\n\n')
+    await expect(importText(extra, '补充.md', projectPath, 'openai', MODEL, { mode: 'fts-only' })).resolves.toMatchObject({ success: true, chunkCount: 38 })
     fetchMock.mockImplementation(async (_url: string, init: RequestInit) => {
       const { top_n } = JSON.parse(String(init.body)) as { top_n: number }
       return new Response(JSON.stringify({ results: Array.from({ length: top_n }, (_, index) => ({ index, relevance_score: 1 - index / 10 })) }))
@@ -80,6 +79,37 @@ describe('writing knowledge snapshot ranking', () => {
     expect((JSON.parse(String(fetchMock.mock.calls[0]![1].body)) as { documents: string[] }).documents).toHaveLength(40)
     expect(snapshot.ranking).toEqual({ method: 'rerank', candidateCount: 40 })
     expect(snapshot.items).toHaveLength(5)
+  })
+
+  it('freezes the reranked five even when a candidate the reranker dropped belongs to a damaged document', async () => {
+    const damaged = await importText(`残卷：潮位表的旧抄本。${'旧'.repeat(700)}`, '残卷.md', projectPath, 'openai', MODEL, { mode: 'fts-only' })
+    const chunks = await (await getConnection(projectPath)).openTable('chunks')
+    await chunks.delete(`\`docId\` = '${damaged.docId}' AND \`chunkIndex\` = 1`)
+    chunks.close()
+    fetchMock.mockImplementation(async (_url: string, init: RequestInit) => {
+      const { documents, top_n } = JSON.parse(String(init.body)) as { documents: string[]; top_n: number }
+      const scored = documents.map((text, index) => ({ index, relevance_score: Number(/第(\d+)段/u.exec(text)?.[1] ?? 0) }))
+      return new Response(JSON.stringify({ results: scored.sort((a, b) => b.relevance_score - a.relevance_score).slice(0, top_n) }))
+    })
+    const snapshot = await captureWritingKnowledgeSnapshot('潮位', projectPath, null, [], RERANK)
+
+    expect(snapshot.ranking).toEqual({ method: 'rerank', candidateCount: 8 })
+    expect(snapshot.items.map(item => item.text)).toEqual([7, 6, 5, 4, 3].map(n => PASSAGES[n - 1]))
+    await expect(verifyGenerationKnowledge({ projectStorageRoot: getProjectDataRoot(projectPath), snapshot })).resolves.toBeUndefined()
+  })
+
+  it('takes the original five from the new source when the knowledge base changes during the rerank request', async () => {
+    fetchMock.mockImplementation(async (_url: string, init: RequestInit) => {
+      await importText('第99段：潮位表被人改过。', '第99章.md', projectPath, 'openai', MODEL, { mode: 'fts-only' })
+      const { top_n } = JSON.parse(String(init.body)) as { top_n: number }
+      return new Response(JSON.stringify({ results: Array.from({ length: top_n }, (_, index) => ({ index, relevance_score: 1 - index / 10 })) }))
+    })
+    const snapshot = await captureWritingKnowledgeSnapshot('潮位', projectPath, null, [], RERANK)
+    const expected = await masterTopFive()
+
+    expect(snapshot.ranking).toEqual({ method: 'original', candidateCount: expected.length, reason: 'source-changed' })
+    expect(snapshot.items.map(item => item.chunkId)).toEqual(expected.map(item => item.chunkId))
+    await expect(verifyGenerationKnowledge({ projectStorageRoot: getProjectDataRoot(projectPath), snapshot })).resolves.toBeUndefined()
   })
 
   it('falls back to the original five when the rerank request fails', async () => {
