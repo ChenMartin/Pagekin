@@ -365,6 +365,10 @@ export function registerLLMController() {
         nextConfig.defaultEmbeddingModelId = null
         configChanged = true
       }
+      if (nextConfig.defaultRerankModelId === modelId) {
+        nextConfig.defaultRerankModelId = null
+        configChanged = true
+      }
       const stages = removeModelFromStages(parseStageModelIds(nextConfig.stageModelIds), modelId)
       if (stages.changed) {
         nextConfig.stageModelIds = stages.next
@@ -391,6 +395,7 @@ export function registerLLMController() {
         success: true,
         defaultModelId: nextConfig.defaultModelId,
         defaultEmbeddingModelId: nextConfig.defaultEmbeddingModelId ?? null,
+        defaultRerankModelId: nextConfig.defaultRerankModelId ?? null,
         stageModelIds: parseStageModelIds(nextConfig.stageModelIds),
       }
     } catch (error) {
