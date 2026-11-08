@@ -1569,6 +1569,23 @@ describe('durable directory commit and remaining stage', () => {
     expect(f.dispatch).toHaveBeenCalledTimes(MAIN_GENERATION_POLICY.budget.maxPhysicalRequests)
     expect(f.fixture.db.prepare('SELECT COUNT(*) FROM generation_roots').pluck().get()).toBe(1)
   })
+  it('批准蓝图提案里的关系：时间线节点从提出它的那一章生效', async () => {
+    const f = directoryFixture('chapter-blueprint-directory')
+    await f.owner.execute({ handle: f.run.handle, invocationNonce: 'proposal', task: directoryTask })
+    const request = f.request('hint-chapter', 1, 2)
+    request.blueprints[1] = { ...request.blueprints[1], characters: ['林岚', '周砚'],
+      newCharacterCandidates: [{ name: '林岚', role: 'supporting' }, { name: '周砚', role: 'supporting' }],
+      relationshipHints: [{ from: '林岚', to: '周砚', relation: '同行' }] }
+    f.commit(f.owner, f.run.handle, request, { startChapter: 1, endChapter: 3 })
+    const operation = BlueprintRepository.getCommittedRangeOperation(request.operationId)!
+    const batch = f.owner.characterProposals.stage({ kind: 'directory', operationId: operation.characterSyncOperation.operationId })
+    f.owner.approveCharacterProposal({ proposalBatchId: batch.proposalBatchId, expectedRevision: batch.revision, operationId: 'approve-hint',
+      selections: batch.items.map(item => ({ selectionKey: item.selectionKey, action: 'create' as const })),
+      relationships: [{ sourceSelectionKey: '2:0', targetSelectionKey: '2:1', relation: '同行' }] })
+    const node = f.db.prepare("SELECT value,effective_chapter,provenance_json FROM character_continuity_events WHERE aspect='relation'").get() as { value: string; effective_chapter: number; provenance_json: string }
+    expect(node).toMatchObject({ value: '同行', effective_chapter: 2 })
+    expect(JSON.parse(node.provenance_json)).toMatchObject({ kind: 'adopted', operationId: 'approve-hint' })
+  })
   it.each(['author-edit', 'other-progress', 'own-progress', 'own-hash', 'own-handle'] as const)(
     'preserves directory proposal evidence while refusing invalid %s recovery', async fault => {
       const f = directoryFixture('chapter-blueprint-directory')

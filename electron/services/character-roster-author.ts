@@ -7,10 +7,9 @@ import { CHARACTER_ROSTER_SCHEMA_VERSION, CHARACTER_STATE_TEXT_FIELDS,
 import { CharacterRosterRepository, commitCharacterIdentities, normalizeAuthorRosterEntry,
   refreshCharacterIdentityProjection, type CharacterIdentityCommitRequest } from '../repositories/character-roster-repository'
 import { hasCharacterIdentitySchema } from '../repositories/character-repository'
+import { deleteCharacterRelationship, writeCharacterStateField } from '../repositories/character-continuity-repository'
 
 const fields = ['name', 'role', 'gender', 'age', 'appearance', 'personality', 'background', 'abilities', 'motivation', 'arc', 'notes'] as const
-const columns = { location: 'cs_location', powerLevel: 'cs_power_level', physicalState: 'cs_physical_state',
-  mentalState: 'cs_mental_state', keyItems: 'cs_key_items', recentEvents: 'cs_recent_events' } as const
 const draftId = /^draft:[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/iu
 const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 const nonempty = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0
@@ -97,14 +96,15 @@ export function commitAuthorCharacterRoster(db: Database.Database, candidate: Ch
       if (!before) identity.creations.push({ selectionKey: entry.characterId, fields: { ...changed, name: entry.name } })
       else if (Object.keys(changed).length) identity.changes.push({ characterId: entry.characterId, fields: changed })
     }
-    const existingRelations = db.prepare(`SELECT r.relationship_id,r.source_character_id,r.target_character_id,r.relation FROM character_relationships r
+    const existingRelations = db.prepare(`SELECT r.relationship_id,r.source_character_id,r.target_character_id,r.relation,a.name AS source_name,b.name AS target_name FROM character_relationships r
       JOIN characters a ON a.character_id=r.source_character_id JOIN characters b ON b.character_id=r.target_character_id WHERE a.retired=0 AND b.retired=0`).all() as {
-        relationship_id: string; source_character_id: string; target_character_id: string; relation: string }[]
+        relationship_id: string; source_character_id: string; target_character_id: string; relation: string; source_name: string; target_name: string }[]
     const relationKey = (from: string, to: string, text: string) => JSON.stringify([from, to, text])
     const desired = new Set(request.entries.flatMap(entry => entry.relationships.map(relation => relationKey(entry.characterId, relation.targetCharacterId!, relation.relation))))
     const previousKeys = new Set(existingRelations.map(relation => relationKey(relation.source_character_id, relation.target_character_id, relation.relation)))
     for (const relation of existingRelations) if (kept.has(relation.source_character_id) && kept.has(relation.target_character_id)
-      && !desired.has(relationKey(relation.source_character_id, relation.target_character_id, relation.relation))) db.prepare('DELETE FROM character_relationships WHERE relationship_id=?').run(relation.relationship_id)
+      && !desired.has(relationKey(relation.source_character_id, relation.target_character_id, relation.relation))) deleteCharacterRelationship(db, { relationshipId: relation.relationship_id,
+        sourceId: relation.source_character_id, sourceName: relation.source_name, targetId: relation.target_character_id, targetName: relation.target_name }, approvalId)
     for (const entry of request.entries) for (const relation of entry.relationships) {
       if (previousKeys.has(relationKey(entry.characterId, relation.targetCharacterId!, relation.relation))) continue
       identity.relationships.push({ ...(draftId.test(entry.characterId) ? { sourceSelectionKey: entry.characterId } : { sourceCharacterId: entry.characterId }),
@@ -127,8 +127,9 @@ export function commitAuthorCharacterRoster(db: Database.Database, candidate: Ch
         if (changed.length || state.updatedAtChapter !== oldState?.updatedAtChapter) {
           const provenance = { ...oldState?.provenance }
           for (const field of changed) provenance[field] = { kind: 'author', chapterNumber: state.updatedAtChapter }
-          db.prepare(`UPDATE characters SET ${CHARACTER_STATE_TEXT_FIELDS.map(field => `${columns[field]}=?`).join(',')},cs_updated_at_chapter=?,cs_provenance=? WHERE character_id=?`)
-            .run(...CHARACTER_STATE_TEXT_FIELDS.map(field => state[field]), state.updatedAtChapter, JSON.stringify(provenance), id)
+          for (const field of changed) if (state[field] !== (oldState?.[field] ?? ''))
+            writeCharacterStateField(db, { characterId: id, characterName: entry.name, field, value: state[field], origin: { kind: 'author', operationId: approvalId } })
+          db.prepare('UPDATE characters SET cs_updated_at_chapter=?,cs_provenance=? WHERE character_id=?').run(state.updatedAtChapter, JSON.stringify(provenance), id)
         }
       }
     }

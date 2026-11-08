@@ -23,6 +23,7 @@ import type { FinalizedSourceIdentity } from '../../src/shared/finalized-continu
 import { isContentHash } from '../../src/shared/source-ref'
 import { getProjectDb } from '../database'
 import { CharacterRepository, hasCharacterIdentitySchema, type CharacterData } from './character-repository'
+import { insertCharacterRelationship } from './character-continuity-repository'
 import { ensureCharacterRosterSchema } from './character-roster-schema'
 import { CHARACTER_ROLE_LABELS, normalizeCharacterRole } from '../../src/shared/character-role'
 import { DEFAULT_WRITING_LANGUAGE, type WritingLanguage } from '../../src/shared/writing-language'
@@ -1154,7 +1155,7 @@ export interface CharacterIdentityCommitRequest {
   changes: CharacterIdentityChange[]
   creations: { selectionKey: string; fields: CharacterIdentityChange['fields'] & { name: string } }[]
   retireIds: string[]
-  relationships: { sourceCharacterId?: string; sourceSelectionKey?: string; targetCharacterId?: string; targetSelectionKey?: string; relation: string }[]
+  relationships: { sourceCharacterId?: string; sourceSelectionKey?: string; targetCharacterId?: string; targetSelectionKey?: string; relation: string; effectiveChapter?: number }[]
   resolutions: { proposalId: string; characterId: string }[]
 }
 export interface CharacterIdentityCommitReceipt {
@@ -1249,7 +1250,8 @@ export function commitCharacterIdentities(
       const from = active(fromId), to = active(toId), relationKey = JSON.stringify([fromId,toId,relationship.relation])
       if (!relationship.relation.trim() || fromId === toId || relationKeys.has(relationKey)) throw new Error('CHARACTER_RELATIONSHIP_INVALID')
       relationKeys.add(relationKey)
-      db.prepare('INSERT INTO character_relationships VALUES(?,?,?,?,?,?,?,?)').run(randomUUIDForIdentity(), fromId, toId, relationship.relation, from.name, to.name, source, request.approval.operationId)
+      insertCharacterRelationship(db, { relationshipId: randomUUIDForIdentity(), sourceId: fromId, sourceName: from.name as string, targetId: toId, targetName: to.name as string,
+        relation: relationship.relation, provenanceJson: source }, request.approval, relationship.effectiveChapter)
     }
     for (const resolution of request.resolutions) {
       active(resolution.characterId)
@@ -1265,7 +1267,8 @@ export function commitCharacterIdentities(
         if (parsed && typeof parsed === 'object' && 'relation' in parsed && typeof parsed.relation === 'string' && parsed.relation.trim()) {
           const from = active(proposal.owner_character_id), to = active(resolution.characterId)
           if (proposal.owner_character_id === resolution.characterId) throw new Error('CHARACTER_RELATIONSHIP_INVALID')
-          db.prepare('INSERT INTO character_relationships VALUES(?,?,?,?,?,?,?,?)').run(randomUUIDForIdentity(), proposal.owner_character_id, resolution.characterId, parsed.relation, from.name, to.name, source, request.approval.operationId)
+          insertCharacterRelationship(db, { relationshipId: randomUUIDForIdentity(), sourceId: proposal.owner_character_id, sourceName: from.name as string, targetId: resolution.characterId, targetName: to.name as string,
+            relation: parsed.relation, provenanceJson: source }, request.approval)
         }
       }
     }
