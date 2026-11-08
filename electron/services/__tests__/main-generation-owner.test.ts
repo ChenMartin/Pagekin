@@ -3907,4 +3907,44 @@ describe('规划恢复稿是否还列为可恢复（#608）', () => {
     f.db.prepare('UPDATE project_core SET synopsis=?').run(synopsis.replace('林岚确认第1份证词', '作者改写了第 1 章'))
     expect(f.owner.listRecovery().planning.map(item => item.handle.runId)).toEqual([run.handle.runId])
   })
+
+  it('作者放弃的蓝图恢复稿，重开项目后在来源没变时接着生成：运行侧页与蓝图页仍不给它', async () => {
+    const f = directoryFixture()
+    const kept = await f.failed(1, 3, 'kept')
+    const dismissed = await f.failed(1, 3, 'dismissed')
+    f.owner.dismissPlanningRecovery(dismissed)
+    const owner = f.reopen()
+    expect(owner.listRecovery().planning.map(item => item.handle.runId)).toEqual([kept.runId])
+    await owner.resume(dismissed)
+    expect(owner.listRecovery().planning.map(item => item.handle.runId)).toEqual([kept.runId])
+    expect(owner.findBlueprintRecovery()?.handle.runId).toBe(kept.runId)
+    expect(owner.readContext({ ...dismissed, epoch: 'epoch-2' }).planningDraft?.standing).toBe('dismissed')
+  })
+
+  it('大纲一批正式写入后作者把正式大纲改回原样，再接着生成：仍不列为可恢复', async () => {
+    const dispatch = vi.fn<GenerationRunServiceDependencies['dispatch']>(async (request, options) => {
+      options.onVisible({ kind: 'delta', text: outlineEntry(Number((request as { task: GenerationTask }).task.purpose.split(':')[2])) })
+      return { finishReason: 'stop', usage: null }
+    })
+    const f = fixture(dispatch)
+    f.db.prepare('UPDATE project_core SET total_chapters=?').run(2)
+    const original = f.db.prepare("SELECT synopsis FROM project_core WHERE id='main'").pluck().get()
+    const run = f.owner.begin(outlineSelection(f, 2))
+    for (const chapter of [1, 2]) {
+      await f.owner.execute({ handle: run.handle, invocationNonce: `outline-${chapter}`, task: outlineTask(f.owner.read(run.handle).plotOutline!) })
+      acceptOutline(f.owner, run.handle)
+    }
+    const progress = f.owner.readContext(run.handle).plotOutline!
+    const synopsis = renderPlotOutlineRange(progress.composition!.text, progress.range, progress.sourceExpected)
+    f.db.transaction(() => {
+      if (f.owner.assertSynopsisCommit(run.handle, synopsis, progress.sourceExpected)
+        || ProjectCoreRepository.commitSynopsis({ synopsis, expected: progress.sourceExpected, generationRunHandle: run.handle }, f.db)) f.owner.recordPlotOutlineCommit(run.handle)
+    }).immediate()
+    f.db.prepare("UPDATE project_core SET synopsis=? WHERE id='main'").run(original)
+    const owner = f.reopen()
+    expect(owner.listRecovery().planning).toEqual([])
+    await owner.resume(run.handle)
+    expect(owner.listRecovery().planning).toEqual([])
+    expect(owner.readContext({ ...run.handle, epoch: 'epoch-2' }).planningDraft?.standing).toBe('superseded')
+  })
 })
