@@ -41,6 +41,8 @@ export default function CharacterProfile({ projectKey }: { projectKey: string })
   const { characters, selectedId, selectedCard: card, dataReady, identityBusy } = profile
   const [view, setView] = useState<ProfileView>('edit')
   const [confirming, setConfirming] = useState<'selected' | 'all' | null>(null)
+  // 保存后名单重读时档案会重新挂载，展开状态放在这里才不会被收起。
+  const [timelineOpen, setTimelineOpen] = useState(false)
   const avatar = useCharacterAvatar(card?.characterId ?? null, dataReady && view === 'edit')
   const timeline = useCharacterTimeline(card?.characterId, dataReady && view === 'state')
   const roleText = (role: unknown) => {
@@ -157,7 +159,7 @@ export default function CharacterProfile({ projectKey }: { projectKey: string })
           />
         ) : view === 'state' ? (
           <>
-          <CharacterTimeline timeline={timeline} />
+          <CharacterTimeline timeline={timeline} open={timelineOpen} onOpenChange={setTimelineOpen} />
           <div className="cast-grid">
             {CHARACTER_STATE_FIELDS.map(([field, zh, en]) => {
               const state = stateFieldView(card, field, currentDerivedFields)

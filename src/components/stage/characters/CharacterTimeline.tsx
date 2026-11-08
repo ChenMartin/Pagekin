@@ -46,13 +46,13 @@ function TimelineRow({ change }: { change: CharacterTimelineChange }) {
 }
 
 /** 角色的逐章变化。默认收起成一行，节点再多也只在自己的区域里滚动。 */
-export default function CharacterTimeline({ timeline }: { timeline: CharacterTimelineView }) {
+export default function CharacterTimeline({ timeline, open, onOpenChange }: { timeline: CharacterTimelineView; open: boolean; onOpenChange: (open: boolean) => void }) {
   const text = useLocaleStore(state => state.text)
   if (timeline.status === 'loading') return null
   if (timeline.status === 'failed') return <p className="cast-timeline-empty">{text('时间线暂时读不出来', 'The timeline could not be read')}</p>
   if (timeline.changeCount === 0) return <p className="cast-timeline-empty">{text('时间线 · 还没有逐章记录', 'Timeline · nothing recorded yet')}</p>
   return (
-    <details className="cast-timeline">
+    <details className="cast-timeline" open={open} onToggle={event => onOpenChange(event.currentTarget.open)}>
       <summary className="cast-timeline-summary pi-focusable">
         <ChevronRight className="cast-timeline-chevron" size={14} aria-hidden />
         {text(`时间线 · ${timeline.changeCount} 处变化`, `Timeline · ${timeline.changeCount} ${pluralEn(timeline.changeCount, 'change')}`)}
