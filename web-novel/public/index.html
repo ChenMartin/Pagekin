@@ -108,7 +108,9 @@
           <a id="editor-notices" href="/editor.notices.txt" target="_blank" rel="noopener" hidden>编辑器许可证</a>
         </div>
         <details id="ai" hidden>
-          <summary>AI 写稿、审稿与修稿</summary>
+          <summary>AI 细纲、写稿、审稿与修稿</summary>
+          <p id="selected-outline">可先生成写前细纲，确认后用于写稿。</p>
+          <button id="clear-outline" hidden>取消引用细纲</button>
           <p id="selected-references"></p>
           <button id="clear-references" hidden>清除已选资料</button>
           <label id="reference-query-label" hidden>资料定位词（可选）
@@ -118,6 +120,7 @@
             <textarea id="guidance" rows="3" maxlength="6000"></textarea>
           </label>
           <div class="tools">
+            <button data-run="outline">生成写前细纲</button>
             <button data-run="draft">写稿</button>
             <button data-run="review">审稿</button>
             <button data-run="revise">修稿</button>
@@ -130,6 +133,7 @@
             <div class="tools">
               <button id="cancel-run" hidden>取消</button>
               <button id="apply-run" hidden>预览并应用候选</button>
+              <button id="use-outline" hidden>将此细纲用于写稿</button>
               <button id="use-review" hidden>选中文字后加入修稿要求</button>
             </div>
           </div>

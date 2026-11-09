@@ -1,8 +1,17 @@
 # 书童 Web 小说工作区
 
-fnOS 候选版的镜像载入、配置和验收步骤见 [v0.1.0-rc.1 发布说明](RELEASE.md)。
+把小说工作区部署在 NAS 后，可在电脑、iPad 和手机上打开同一个作品。当前开发分支使用 SQLite schema 7，提供 CodeMirror、参考资料语义检索和写前细纲。已发布的离线候选镜像使用 schema 5，载入和测试步骤见 [v0.1.0-rc.1 发布说明](RELEASE.md)。
 
-这是第一阶段可运行的 Web 版本。书房内可管理多个作品，维护设定与架构、人物卡、章节蓝图和正文。正文支持版本历史、定稿与重新打开。支持 UTF-8 TXT/Markdown 的单章和整稿导入、Markdown 导出，以及 Web 作品 JSON 备份和恢复。章节重开后，导出定稿和后续写作仍使用上一次定稿，确认新定稿时才换版。
+| 能力 | 可用操作 |
+| --- | --- |
+| 写作 | 管理作品、设定、人物卡、蓝图、章节、剧情线索与伏笔 |
+| 编辑 | 查找替换、历史版本、定稿重开、自动保存、断网草稿及多设备冲突对比 |
+| AI | 写前细纲、写稿、审稿和修稿；预览上下文、确认候选后应用 |
+| 资料 | 项目内关键词检索，可选语义索引并引用原文片段 |
+| 迁移 | TXT／Markdown 单章和整稿、桌面 `.ainovel`、Markdown 导出与作品 JSON 备份 |
+| 运维 | Compose、在线整库快照、新数据卷恢复 |
+
+日常写作可直接使用。AI 和语义检索各自配置模型，互不依赖。 [部署与备份](#fnos-部署) · [编辑和写作流程](#保存与-ai) · [资料检索](#参考资料语义检索) · [桌面作品迁移](#从-pagekin-桌面版导入) · [实施进度](https://github.com/ChenMartin/Pagekin/blob/codex/web-novel-fnos/docs/research/nas-web/07-implementation-progress.md)
 
 ## 本机启动
 
@@ -26,6 +35,19 @@ node server.mjs
 docker compose up -d --build
 docker compose ps
 ```
+
+常用 `.env` 配置如下。
+
+| 配置 | 用途 |
+| --- | --- |
+| `APP_PASSWORD` | 至少 12 个字符的访问密码 |
+| `APP_ORIGIN` | 浏览器实际访问地址，包括协议和非默认端口 |
+| `PAGEKIN_BIND` / `PAGEKIN_PORT` | 宿主机监听地址和端口，默认 `127.0.0.1:3100` |
+| `APP_SECURE_COOKIE` | HTTPS 下保留默认的 `1`。可信局域网 HTTP 联调可设 `0` |
+| `PAGEKIN_VOLUME` | 数据卷名，升级时沿用 |
+| `APP_EDITOR` | 默认 `auto`，兼容排查时可用 `plain` |
+| `LLM_BASE_URL` / `LLM_MODEL` / `LLM_API_KEY` | 可选文字生成模型 |
+| `EMBEDDING_BASE_URL` / `EMBEDDING_MODEL` / `EMBEDDING_API_KEY` | 可选参考资料语义模型 |
 
 Compose 默认监听 NAS 宿主机的回环地址。用宿主机上的 HTTPS 反向代理转发到 `127.0.0.1:3100`，将 `APP_ORIGIN` 填为浏览器实际使用的 HTTPS 地址。若代理运行在容器内，可将代理接到同一个 Docker 网络并转发到 `pagekin:3100`。
 
@@ -65,7 +87,9 @@ PAGEKIN_VOLUME=web-novel_novels_recovered docker compose run --rm --no-deps -T p
 
 其他设备保存后，已打开的章节会显示“NAS 上有更新，查看最新版本”。点击可加载新版。有未同步编辑时会保留本机稿，并提供冲突对比。短暂掉线后可补收事件，超出保留窗口时重新读取目录和版本。书名可在作品菜单中修改。
 
-在 `.env` 中配置 `LLM_BASE_URL`、`LLM_MODEL` 和所需的 `LLM_API_KEY` 后，打开未定稿章节使用写稿、审稿或修稿。模型服务需支持 OpenAI Chat Completions 的 SSE 流式响应，地址填写 API 根路径，例如 `https://api.openai.com/v1`。携带密钥的模型请求要求 HTTPS。模型收到章节正文及本次选取的作品资料。
+在 `.env` 中配置 `LLM_BASE_URL`、`LLM_MODEL` 和所需的 `LLM_API_KEY` 后，打开未定稿章节使用 AI 工作流。模型服务需支持 OpenAI Chat Completions 的 SSE 流式响应，地址填写 API 根路径，例如 `https://api.openai.com/v1`。携带密钥的模型请求要求 HTTPS。模型收到章节正文及本次选取的作品资料。
+
+可直接写稿，也可先点击“生成写前细纲”，检查结果后选择“将此细纲用于写稿”。细纲和正文候选是分别保存的任务。可以从任务历史重新打开细纲，在“预览发送内容”中核对写稿输入。选用时会检查当前章节版本、蓝图、前文、伏笔、参考资料和作者要求。任何绑定内容变化后，可重新生成细纲或取消引用。审稿只使用当前正文和实际资料。
 
 任务在 NAS 上执行，浏览器轮询已保存的结果。AI 写稿及修稿输出先保留为候选，应用时校验正文和引用资料版本。可在审稿结果中选中文字，通过“加入修稿要求”用于后续修稿。服务重启会保留已收到的输出，任务标为中断。
 
@@ -95,7 +119,7 @@ node desktop-copy.mjs 'D:\作品\我的小说\.ai-novel\project.db' '.\我的小
 
 两种方式都导入设定、人物卡、蓝图、正文和草稿历史，保留定稿与重开稿的关系。头像、桌面知识库、模型配置和运行记录需另行处理。数据库文件仍有 WAL 或回滚日志时，转换工具会提示关闭桌面版后重试。原归档和源数据库可继续在桌面版使用。
 
-升级时保留完整数据卷备份。当前源码启动会将 Web SQLite schema 升级到 v6，增加语义索引。回到只支持 v5 的 v0.1.0-rc.1 镜像时，使用升级前的数据库快照。
+升级时保留完整数据卷备份。当前源码启动会将 Web SQLite schema 升级到 v7，保留 v6 的语义索引并新增写稿任务的细纲引用。回到只支持 v5 的 v0.1.0-rc.1 镜像时，使用升级前的数据库快照。
 
 ## 导入 TXT 或 Markdown 整稿
 
@@ -105,7 +129,11 @@ node desktop-copy.mjs 'D:\作品\我的小说\.ai-novel\project.db' '.\我的小
 
 ## 当前实现范围
 
-此版本使用独立 Web 入口和 Web SQLite schema。从当前源码构建的镜像含增强编辑器和可选的参考资料语义索引。v0.1.0-rc.1 已发布的离线镜像使用普通文本编辑器及关键词检索。原有生成流程的完整复用、真实语义模型和移动真机验收仍在后续范围。
+当前实现覆盖小说工作区。上游批量生成、完整审批和续跑流程的移植，以及真实模型、fnOS、iPad 和手机实机验收仍在后续范围。剧本、分镜及制片的范围见 [小说到成片设计](https://github.com/ChenMartin/Pagekin/blob/codex/web-novel-fnos/docs/research/nas-web/06-novel-to-film.md)。
+
+## 开发与验证
+
+运行以下命令验证 HTTP、SQLite 迁移、模型流、数据恢复和整稿导入。测试使用临时数据库与模拟模型服务。
 
 ```sh
 node --test smoke.test.mjs

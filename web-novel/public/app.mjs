@@ -2,7 +2,7 @@ import { manuscriptBytes, manuscriptRequestBytes, splitManuscript } from './manu
 
 const $ = id => document.getElementById(id)
 const names = { settings: '设定与架构', character: '人物', blueprint: '蓝图', chapter: '正文', reference: '参考资料' }
-const runNames = { draft: '写稿', review: '审稿', revise: '修稿' }
+const runNames = { draft: '写稿', outline: '写前细纲', review: '审稿', revise: '修稿' }
 const runStates = { running: '生成中', done: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断' }
 const threadKinds = { plot: '剧情线索', foreshadow: '伏笔' }
 const threadStates = { planned: '计划埋设', open: '待回收', resolved: '已回收', archived: '已归档' }
@@ -138,6 +138,9 @@ function paint(state = editor) {
   $('status').hidden = state.doc.kind !== 'chapter'
   $('status').textContent = locked ? '重新打开定稿' : '定稿'
   $('ai').hidden = state.doc.kind !== 'chapter' || !model
+  $('selected-outline').textContent = !state.outline ? '可先生成写前细纲，确认后用于写稿。'
+    : state.outline.baseRev !== state.doc.rev ? '正文已更新，请重新生成细纲或取消引用。' : '已选细纲，下一次写稿将引用。'
+  $('clear-outline').hidden = !state.outline
   $('selected-references').textContent = state.references.size
     ? '已选资料：' + [...state.references].map(([id, title]) => title + (state.referenceSpans.has(id) ? '（片段）' : '')).join('、')
     : '可从参考资料库中选择本次生成所需的资料。'
@@ -964,7 +967,10 @@ function renderJob(state) {
   $('run-status').textContent = job ? [runNames[job.kind], runStates[job.status],
     job.applied_rev !== null && '已应用', job.error].filter(Boolean).join(' · ') : ''
   $('cancel-run').hidden = job?.status !== 'running'
-  $('apply-run').hidden = !job || job.kind === 'review' || job.status === 'running' || !job.output?.trim() || job.applied_rev !== null
+  $('apply-run').hidden = !job || !['draft', 'revise'].includes(job.kind) ||
+    job.status === 'running' || !job.source_hash || !job.output?.trim() || job.applied_rev !== null
+  $('use-outline').hidden = job?.kind !== 'outline' || job.status !== 'done' || !job.source_hash ||
+    job.base_rev !== state.doc.rev || state.doc.status === 'final'
   $('use-review').hidden = job?.kind !== 'review' || job.status === 'running' || !job.output
   paint(state)
 }
@@ -991,13 +997,14 @@ async function startRun(kind) {
   const referenceIds = [...state.references.keys()]
   const referenceSpans = [...state.referenceSpans.values()]
   const referenceQuery = referenceIds.length > referenceSpans.length ? $('reference-query').value : ''
+  const outlineId = kind === 'draft' ? state.outline?.id ?? null : null
   const previous = state.jobRequest
   if (previous && (previous.kind !== kind || previous.baseRev !== state.doc.rev || previous.guidance !== guidance ||
       JSON.stringify(previous.referenceIds) !== JSON.stringify(referenceIds) || previous.referenceQuery !== referenceQuery ||
-      JSON.stringify(previous.referenceSpans) !== JSON.stringify(referenceSpans))) {
+      JSON.stringify(previous.referenceSpans) !== JSON.stringify(referenceSpans) || previous.outlineId !== outlineId)) {
     throw new Error('上次任务提交状态未知。请用相同操作重试，或查看任务历史。')
   }
-  state.jobRequest ??= { kind, baseRev: state.doc.rev, guidance, referenceIds, referenceQuery, referenceSpans, mutationId: uuid() }
+  state.jobRequest ??= { kind, baseRev: state.doc.rev, guidance, referenceIds, referenceQuery, referenceSpans, outlineId, mutationId: uuid() }
   try {
     state.jobView = (state.jobView ?? 0) + 1
     state.job = await api(docPath(state) + '/runs', 'POST', state.jobRequest)
@@ -1024,6 +1031,7 @@ function previewContext() {
         kind: picker.value, baseRev: state.doc.rev, guidance: $('guidance').value, referenceIds: [...state.references.keys()],
         referenceQuery: state.references.size > state.referenceSpans.size ? $('reference-query').value : '',
         referenceSpans: [...state.referenceSpans.values()],
+        outlineId: picker.value === 'draft' ? state.outline?.id ?? null : null,
       })
       if (!result.isConnected || state !== editor) return
       const size = document.createElement('p')
@@ -1237,6 +1245,14 @@ for (const button of document.querySelectorAll('[data-run]')) {
 }
 click('runs', listRuns)
 click('preview-context', previewContext)
+click('use-outline', () => {
+  const state = editor
+  const job = state?.job
+  if (job?.kind !== 'outline' || job.status !== 'done' || job.base_rev !== state.doc.rev) return
+  state.outline = { id: job.id, baseRev: job.base_rev }
+  paint(state)
+})
+click('clear-outline', () => { editor.outline = null; paint() })
 $('use-review').addEventListener('pointerdown', event => event.preventDefault())
 click('use-review', () => {
   const selection = window.getSelection()

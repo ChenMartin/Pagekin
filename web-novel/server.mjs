@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Worker } from 'node:worker_threads'
-import { ApiError, hash, object, openStore } from './store.mjs'
+import { ApiError, hash, object, openStore, outlineMaxChars } from './store.mjs'
 import { archiveLimit } from './desktop-archive.mjs'
 import { manuscriptRequestBytes } from './public/manuscript.mjs'
 import { writingMessages } from './writing-context.mjs'
@@ -274,7 +274,8 @@ async function generate(job, messages) {
       }
       if (pending.length > 1_000_000) throw new Error('模型响应格式无效')
     }
-    if (!visible().trim()) error = '模型没有返回可用正文'
+    if (!visible().trim()) error = '模型没有返回可用内容'
+    else if (job.kind === 'outline' && visible().length > outlineMaxChars) error = '生成细纲过长，请缩短要求后重新生成'
     else if (finish === 'stop') { status = 'done'; error = '' }
     else error = '模型输出未正常完成，已保留收到的内容'
   } catch {

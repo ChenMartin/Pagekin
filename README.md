@@ -18,7 +18,33 @@
   本地优先：作品存在你自己的电脑上。软件不带模型：接你自己的 API Key，或用 Ollama 跑本地模型。
 </p>
 
-书童 Pagekin 由 EthanYoQ 维护。[官方主页](https://www.orz.md/ai-novel-writer/)提供产品介绍、使用指南和正式下载入口。
+## fnOS／NAS 上的 Web 小说工作区
+
+此 fork 的 `codex/web-novel-fnos` 分支增加了 [Web 小说工作区](web-novel/README.md)。把服务部署在 NAS 后，可从电脑、iPad 或手机的浏览器进入同一作品。上游桌面版由 EthanYoQ 维护，桌面安装包和说明请见 [官方主页](https://www.orz.md/ai-novel-writer/)。
+
+| 用途 | Web 工作区 |
+| --- | --- |
+| 长篇写作 | 作品、设定、人物、章节蓝图、正文、剧情线索与伏笔 |
+| 编辑与同步 | CodeMirror、自动保存、断网草稿、多设备冲突对比、定稿与历史 |
+| AI 辅助 | 写前细纲、写稿、审稿和修稿候选；发起前可预览模型输入 |
+| 资料与迁移 | 关键词和可选语义检索；TXT／Markdown 整稿；桌面 `.ainovel` 导入 |
+| NAS 运维 | `linux/amd64` Docker Compose、整库在线备份、恢复到独立数据卷 |
+
+在安装 Docker Compose 的 NAS 上，可从此分支构建。
+
+```sh
+git clone --branch codex/web-novel-fnos https://github.com/ChenMartin/Pagekin.git
+cd Pagekin/web-novel
+cp .env.example .env
+# 编辑 .env，填入 APP_PASSWORD 并配置访问地址
+docker compose up -d --build
+```
+
+默认端口为 3100，默认绑定 NAS 宿主机的回环地址。配置 HTTPS 或局域网联调参数后再从其他设备访问。手写可直接使用，AI 和语义检索分别配置自己的模型服务。 [部署、使用与升级](web-novel/README.md)
+
+已发布的 `v0.1.0-rc.1` 离线镜像与本分支的当前源码有功能和数据库版本差异。更新前先备份数据卷。 [候选版验收](web-novel/RELEASE.md) · [当前实施进度](docs/research/nas-web/07-implementation-progress.md) · [小说到成片设计](docs/research/nas-web/06-novel-to-film.md)
+
+## 上游桌面版
 
 <p align="center">
   <a href="https://github.com/EthanYoQ/Pagekin/releases/latest"><img src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD-Windows%20%7C%20macOS-2b4c8c?style=for-the-badge" alt="下载 Windows 与 macOS 安装包" /></a><br />

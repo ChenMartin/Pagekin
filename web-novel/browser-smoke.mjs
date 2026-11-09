@@ -14,9 +14,14 @@ if (!executable) throw new Error('Set BROWSER_EXE to a Chromium executable')
 const root = await mkdtemp(join(tmpdir(), 'pagekin-browser-'))
 const password = 'browser-test-local-only'
 let app, browser, socket
-const embeddingMock = createServer(async (req, res) => {
+const modelMock = createServer(async (req, res) => {
   const chunks = []
   for await (const chunk of req) chunks.push(chunk)
+  if (req.url === '/v1/chat/completions') {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' })
+    res.end('data: {"choices":[{"delta":{"content":"本章先调查船票。"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n')
+    return
+  }
   const { input } = JSON.parse(Buffer.concat(chunks))
   res.writeHead(200, { 'Content-Type': 'application/json' })
   res.end(JSON.stringify({ data: input.map((_, index) => ({ index, embedding: [1, 0] })) }))
@@ -36,8 +41,9 @@ async function until(action, message) {
 }
 
 try {
-  embeddingMock.listen(0, '127.0.0.1')
-  await once(embeddingMock, 'listening')
+  modelMock.listen(0, '127.0.0.1')
+  await once(modelMock, 'listening')
+  const modelBase = `http://127.0.0.1:${modelMock.address().port}/v1`
   const entry = process.env.PAGEKIN_TEST_APP_DIR
     ? join(process.env.PAGEKIN_TEST_APP_DIR, 'server.mjs')
     : fileURLToPath(new URL('./server.mjs', import.meta.url))
@@ -45,9 +51,9 @@ try {
     env: { ...process.env, APP_PASSWORD: password, APP_PASSWORD_FILE: '', APP_SECURE_COOKIE: '0',
       APP_ORIGIN: '', APP_HOST: '127.0.0.1', PORT: '0', APP_DATA_DIR: join(root, 'data'),
       APP_EDITOR: process.env.PAGEKIN_TEST_EDITOR === 'plain' ? 'plain' : 'auto',
-      EMBEDDING_BASE_URL: `http://127.0.0.1:${embeddingMock.address().port}/v1`,
+      EMBEDDING_BASE_URL: modelBase,
       EMBEDDING_MODEL: 'preview-embedding', EMBEDDING_API_KEY: '',
-      LLM_MODEL: 'preview-only', LLM_BASE_URL: 'http://127.0.0.1:1', LLM_API_KEY: '', LLM_CONTEXT_CHARS: '8000' },
+      LLM_MODEL: 'writing-mock', LLM_BASE_URL: modelBase, LLM_API_KEY: '', LLM_CONTEXT_CHARS: '8000' },
     stdio: ['ignore', 'pipe', 'inherit'],
   })
   const [chunk] = await Promise.race([once(app.stdout, 'data'), delay(5000).then(() => { throw new Error('App failed to start') })])
@@ -189,6 +195,15 @@ try {
   await until(() => evaluate("document.querySelector('#dialog-submit').textContent === '引用这个片段'"), 'Semantic excerpt did not open')
   await click('#dialog-submit')
   await until(() => evaluate("document.querySelector('#selected-references').textContent.includes('（片段）')"), 'Semantic excerpt was not selected')
+  await click('[data-run=outline]')
+  await visible('#use-outline')
+  assert.equal(await evaluate("document.querySelector('#apply-run').hidden"), true)
+  await click('#use-outline')
+  await click('#preview-context')
+  await click('#dialog-submit')
+  await until(() => evaluate("document.querySelector('#dialog-body').textContent.includes('【已选写前细纲】') && document.querySelector('#dialog-body').textContent.includes('本章先调查船票。')"), 'Selected outline did not enter the draft preview')
+  await click('#close-dialog')
+  await click('#clear-outline')
   assert.equal(await evaluate(`(async () => {
     const [project, doc] = JSON.parse(sessionStorage.getItem('pagekin-location'));
     const response = await fetch('/api/projects/' + project + '/documents/' + doc, {
@@ -280,7 +295,7 @@ try {
       await exited
     }
   }
-  embeddingMock.closeAllConnections()
-  await new Promise(resolve => embeddingMock.close(resolve))
+  modelMock.closeAllConnections()
+  await new Promise(resolve => modelMock.close(resolve))
   await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
 }

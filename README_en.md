@@ -18,7 +18,31 @@
   Local-first: your books stay on your own computer. No model is bundled: use your own API key, or run a local model with Ollama.
 </p>
 
-Pagekin is maintained by EthanYoQ. The [official website](https://www.orz.md/en/ai-novel-writer/) provides the product overview, setup guide and official download links.
+## Web novel workspace for fnOS and NAS
+
+The `codex/web-novel-fnos` branch of this fork adds a [self-hosted Web workspace](web-novel/README.md). Open the same novel from a desktop, iPad or phone browser. EthanYoQ maintains the upstream desktop app. See the [official website](https://www.orz.md/en/ai-novel-writer/) for desktop downloads and documentation.
+
+| Area | Web workspace |
+| --- | --- |
+| Novel writing | Projects, story setup, characters, blueprints, chapters and story threads |
+| Editing and sync | CodeMirror, autosave, offline drafts, conflict comparison, final chapters and version history |
+| AI workflow | Short outlines, draft candidates, review, revision and input preview |
+| Reference and import | Keyword and optional semantic search, TXT/Markdown manuscripts and desktop `.ainovel` archives |
+| NAS operation | Docker Compose on `linux/amd64`, live database backups and restore to a separate volume |
+
+```sh
+git clone --branch codex/web-novel-fnos https://github.com/ChenMartin/Pagekin.git
+cd Pagekin/web-novel
+cp .env.example .env
+# Edit .env to set APP_PASSWORD and the browser origin.
+docker compose up -d --build
+```
+
+The service binds to the host loopback address on port 3100 by default. Configure HTTPS or a trusted LAN address for other devices. Writing works without a model. AI drafting and semantic search each use their own model configuration. [Setup and upgrades](web-novel/README.md)
+
+The published `v0.1.0-rc.1` offline image and current source have different features and database schemas. Back up the data volume before upgrading. [Release candidate](web-novel/RELEASE.md) · [Implementation progress](docs/research/nas-web/07-implementation-progress.md) · [Novel-to-film design](docs/research/nas-web/06-novel-to-film.md)
+
+## Upstream desktop edition
 
 <p align="center">
   <a href="https://github.com/EthanYoQ/Pagekin/releases/latest"><img src="https://img.shields.io/badge/Download-Windows%20%7C%20macOS-2b4c8c?style=for-the-badge" alt="Download for Windows and macOS" /></a><br />

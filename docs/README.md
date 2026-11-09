@@ -4,7 +4,9 @@
 
 ## 先找到需要的文档
 
-- [中文使用说明](../README.md)介绍安装、写作、模型配置、旧项目导入和备份。[中文副本](../README_zh.md)保持相同内容。
+- [fnOS Web 小说工作区](../web-novel/README.md)介绍本 fork 的浏览器写作、部署和备份。实际交付状态见 [Web 实施进度](research/nas-web/07-implementation-progress.md)。
+
+- [中文使用说明](../README.md)介绍 Web 工作区和桌面安装、写作、模型配置、旧项目导入和备份。[兼容入口](../README_zh.md)指向同一份说明。
 
 - [English user guide](../README_en.md) covers the same desktop behavior in English.
 

@@ -144,7 +144,8 @@ test('novel workflow through HTTP across devices, generation, export and restart
     upstreamCalls++
     lastPrompt = input.messages.at(-1).content
     res.writeHead(200, { 'Content-Type': 'text/event-stream' })
-    res.write('data: {"choices":[{"delta":{"content":"候选正文"}}]}\n\n')
+    const output = input.messages[0].content.includes('生成写前细纲') ? '1. 抵达灯塔并核对钥匙。' : '候选正文'
+    res.write('data: ' + JSON.stringify({ choices: [{ delta: { content: output } }] }) + '\n\n')
     if (lastPrompt.includes('hold')) return
     res.end('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n')
   })
@@ -314,27 +315,52 @@ test('novel workflow through HTTP across devices, generation, export and restart
     assert.doesNotMatch((await request(base + '/export')).result, /电脑上的稿/)
     assert.match((await request(base + '/export?drafts=1')).result, /电脑上的稿/)
     const next = await create({ kind: 'chapter', number: 2, title: '前往灯塔', body: '' })
-    const nextJob = (await request(docs + '/' + next.id + '/runs', { method: 'POST', status: 202,
-      value: { baseRev: 1, kind: 'draft', mutationId: randomUUID(), referenceIds: [chosen.id], referenceQuery: '灯塔建于' } })).result
+    const nextDoc = docs + '/' + next.id
+    const scope = { baseRev: 1, referenceIds: [chosen.id], referenceQuery: '灯塔建于' }
+    async function nextRun(kind, outlineId) {
+      return (await request(nextDoc + '/runs', { method: 'POST', status: 202,
+        value: { ...scope, kind, outlineId, mutationId: randomUUID() } })).result
+    }
+    const plan = await nextRun('outline')
+    const planPath = base + '/runs/' + plan.id
+    assert.match((await awaitRun(planPath, job => job.status === 'done')).output, /核对钥匙/)
+    assert.equal((await request(nextDoc)).result.body, '')
+    await request(planPath + '/apply', { method: 'POST', status: 422 })
+    await request(nextDoc + '/context', { method: 'POST', status: 400,
+      value: { ...scope, kind: 'review', outlineId: plan.id } })
+    await request(nextDoc + '/context', { method: 'POST', status: 409,
+      value: { ...scope, kind: 'draft', outlineId: plan.id, guidance: '更改作者要求' } })
+    await request(doc + '/context', { method: 'POST', status: 409,
+      value: { ...scope, baseRev: 6, kind: 'draft', outlineId: plan.id } })
+    const nextJob = await nextRun('draft', plan.id)
+    assert.equal(nextJob.outline_id, plan.id)
     await awaitRun(base + '/runs/' + nextJob.id, job => job.status === 'done')
     assert.match(lastPrompt, /上一已定稿章节末尾：抵达\n候选正文/)
     assert.match(lastPrompt, /灯塔建于一百年前/)
     assert.match(lastPrompt, /灯塔里的旧钥匙/)
+    assert.match(lastPrompt, /【已选写前细纲】[\s\S]*核对钥匙/)
     assert.doesNotMatch(lastPrompt, /此条未选中/)
     const callsBeforePreview = upstreamCalls
-    const context = (await request(docs + '/' + next.id + '/context', { method: 'POST',
-      value: { kind: 'draft', baseRev: 1, referenceIds: [chosen.id], referenceQuery: '灯塔建于' } })).result
+    const context = (await request(nextDoc + '/context', { method: 'POST',
+      value: { ...scope, kind: 'draft', outlineId: plan.id } })).result
     assert.equal(context.messages.at(-1).content, lastPrompt)
     await request(base + '/threads/' + thread.id, { method: 'PUT',
       value: { ...plotThread, status: 'resolved', resolved: 2, baseRev: 1 } })
     await request(base + '/threads/' + thread.id, { method: 'PUT', status: 409,
       value: { ...plotThread, body: '另一台设备的旧稿', baseRev: 1 }, cookie: b })
     await request(base + '/runs/' + nextJob.id + '/apply', { method: 'POST', status: 409 })
+    await request(nextDoc + '/context', { method: 'POST', status: 409,
+      value: { ...scope, kind: 'draft', outlineId: plan.id } })
     const large = await create({ kind: 'chapter', number: 3, title: '长稿', body: '正文'.repeat(5000) })
     await request(docs + '/' + large.id + '/runs', { method: 'POST', status: 422,
       value: { kind: 'revise', baseRev: 1, mutationId: randomUUID() } })
     assert.equal(upstreamCalls, callsBeforePreview)
     assert.deepEqual((await request(docs + '/' + large.id + '/runs')).result, [])
+    const updatedPlan = await nextRun('outline')
+    await awaitRun(base + '/runs/' + updatedPlan.id, job => job.status === 'done')
+    const updatedDraft = await nextRun('draft', updatedPlan.id)
+    await awaitRun(base + '/runs/' + updatedDraft.id, job => job.status === 'done')
+    assert.equal((await request(base + '/runs/' + updatedDraft.id + '/apply', { method: 'POST' })).result.body, '候选正文')
     const hits = (await request(base + '/search?q=' + encodeURIComponent('码头'))).result
     assert.equal(hits[0].kind, 'blueprint')
     assert.match(hits[0].excerpt, /码头/)
@@ -345,6 +371,10 @@ test('novel workflow through HTTP across devices, generation, export and restart
     assert.equal((await request('/api/projects/' + copy.id + '/documents')).result.length, 6)
     assert.equal((await request('/api/projects/' + copy.id + '/references')).result.length, 2)
     assert.equal((await request('/api/projects/' + copy.id + '/semantic')).result.chunks, 0)
+    const copiedBackup = (await request('/api/projects/' + copy.id + '/backup')).result
+    const copiedDraft = copiedBackup.runs.find(row => row.outline_id && row.applied_rev)
+    assert.notEqual(copiedDraft.outline_id, updatedPlan.id)
+    assert.equal(copiedBackup.runs.find(row => row.id === copiedDraft.outline_id).kind, 'outline')
     const copiedThreads = (await request('/api/projects/' + copy.id + '/threads')).result
     assert.equal(copiedThreads[0].resolved, 2)
     assert.notEqual(copiedThreads[0].id, thread.id)
@@ -362,7 +392,7 @@ test('novel workflow through HTTP across devices, generation, export and restart
     const restoreDir = join(directory, 'recovered')
     const restoredDb = join(restoreDir, 'novels.sqlite')
     assert.equal((await restoreDatabase(createReadStream(snapshot), restoredDb)).projects, 3)
-    assert.equal(verifyDatabase(restoredDb).schema, 6)
+    assert.equal(verifyDatabase(restoredDb).schema, 7)
     await assert.rejects(restoreDatabase(createReadStream(snapshot), restoredDb), /目标已有数据库/)
     await stop(server)
     server = await launch(restoreDir, upstream.address().port)
@@ -388,13 +418,13 @@ test('opening an existing Web database migrates v1 and keeps chapter data', asyn
       DROP TRIGGER document_created_event; DROP TRIGGER document_updated_event; DROP TABLE project_events; DROP TABLE narrative_threads;
       DROP TABLE reference_vectors;
       DROP TABLE chapter_imports; DROP TABLE reference_material;
-      ALTER TABLE runs DROP COLUMN reference_ids; PRAGMA user_version=1;
+      ALTER TABLE runs DROP COLUMN outline_id; ALTER TABLE runs DROP COLUMN reference_ids; PRAGMA user_version=1;
     `)
     store.db.close()
     store = undefined
     store = openStore(directory)
     assert.equal(store.document(p.id, doc.id).body, '原文')
-    assert.equal(store.get('PRAGMA user_version').user_version, 6)
+    assert.equal(store.get('PRAGMA user_version').user_version, 7)
     assert.equal(store.addReference(p.id, { title: '资料', body: '参考文字' }).body, '参考文字')
   } finally { store?.db.close(); await rm(directory, { recursive: true, force: true }) }
 })

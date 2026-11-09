@@ -14,6 +14,8 @@ export class ApiError extends Error {
 }
 
 export const kinds = ['settings', 'character', 'blueprint', 'chapter']
+const runKinds = ['outline', 'draft', 'review', 'revise']
+export const outlineMaxChars = 2400
 export const hash = value => createHash('sha256').update(value).digest('hex')
 export const now = () => new Date().toISOString()
 
@@ -155,6 +157,14 @@ export function openStore(directory) {
         PRIMARY KEY(profile, reference_id, part)
       );
       PRAGMA user_version=6;
+      COMMIT;
+    `)
+  }
+  if (version < 7) {
+    db.exec(`
+      BEGIN IMMEDIATE;
+      ALTER TABLE runs ADD COLUMN outline_id TEXT;
+      PRAGMA user_version=7;
       COMMIT;
     `)
   }
@@ -348,7 +358,7 @@ export function openStore(directory) {
   function parseRun(value) {
     object(value)
     const kind = value.kind
-    if (!['draft', 'review', 'revise'].includes(kind)) throw new ApiError(400, 'AI 操作无效')
+    if (!runKinds.includes(kind)) throw new ApiError(400, 'AI 操作无效')
     const guidance = string(value.guidance ?? '', 6000)
     const baseRev = revision(value.baseRev)
     const refs = value.referenceIds ?? []
@@ -364,15 +374,47 @@ export function openStore(directory) {
         new Set(spans.map(span => span.id)).size !== spans.length) {
       throw new ApiError(400, '引用的资料片段无效')
     }
-    return { kind, guidance, baseRev, refs, referenceQuery,
-      spans: spans.map(({ id, start, end }) => ({ id, start, end })) }
+    const outlineId = value.outlineId ?? null
+    if (outlineId !== null && (kind !== 'draft' || typeof outlineId !== 'string' || !/^[a-f0-9-]{36}$/i.test(outlineId))) {
+      throw new ApiError(400, '只有写稿可以引用已完成的细纲')
+    }
+    return { kind, guidance, baseRev, refs, referenceQuery, outlineId, spans: spans.map(({ id, start, end }) => ({ id, start, end })) }
+  }
+
+  function requestFingerprint(id, { kind, baseRev, guidance, refs, referenceQuery, spans, outlineId }) {
+    const fingerprint = [id, baseRev, kind, guidance]
+    if (refs.length || referenceQuery) fingerprint.push(refs)
+    if (referenceQuery) fingerprint.push(referenceQuery)
+    if (spans.length) fingerprint.push(spans)
+    if (outlineId) fingerprint.push({ outlineId })
+    return hash(JSON.stringify(fingerprint))
+  }
+
+  function outlineBinding(sourceHash, outline) {
+    return 'outline:' + hash(JSON.stringify([sourceHash, outline.id, hash(outline.output)]))
+  }
+
+  function completedOutline(doc, id) {
+    const row = get('SELECT * FROM runs WHERE id=? AND document_id=?', id, doc.id)
+    if (!row || row.kind !== 'outline' || row.status !== 'done' || !row.output.trim() ||
+        row.output.length > outlineMaxChars || row.base_rev !== doc.rev) {
+      throw new ApiError(409, '细纲已失效或尚未完成，请为当前章节重新生成')
+    }
+    return row
   }
 
   function runContext(doc, request) {
     match(doc, request.baseRev)
     if (doc.kind !== 'chapter' || doc.status !== 'draft') throw new ApiError(422, 'AI 操作需要未定稿章节')
-    if (request.kind !== 'draft' && !doc.body.trim()) throw new ApiError(422, '请先填写正文')
-    return { doc, ...sources(doc, request.refs, request.spans), guidance: request.guidance, referenceQuery: request.referenceQuery }
+    if (['review', 'revise'].includes(request.kind) && !doc.body.trim()) throw new ApiError(422, '请先填写正文')
+    const context = { doc, ...sources(doc, request.refs, request.spans), guidance: request.guidance, referenceQuery: request.referenceQuery }
+    if (!request.outlineId) return context
+    const outline = completedOutline(doc, request.outlineId)
+    const expected = requestFingerprint(doc.id, { ...request, kind: 'outline', outlineId: null })
+    if (outline.source_hash !== context.sourceHash || outline.request_hash !== expected) {
+      throw new ApiError(409, '细纲与当前资料或作者要求不一致，请重新生成或取消引用')
+    }
+    return { ...context, outline: outline.output, sourceHash: outlineBinding(context.sourceHash, outline) }
   }
 
   function previewRun(pid, id, value, prepare) {
@@ -382,12 +424,8 @@ export function openStore(directory) {
 
   function startRun(pid, id, value, prepare) {
     const request = parseRun(value)
-    const { kind, baseRev, guidance, refs, referenceQuery, spans } = request
-    const fingerprint = [id, baseRev, kind, guidance]
-    if (refs.length || referenceQuery) fingerprint.push(refs)
-    if (referenceQuery) fingerprint.push(referenceQuery)
-    if (spans.length) fingerprint.push(spans)
-    const requestHash = hash(JSON.stringify(fingerprint))
+    const { kind, refs, outlineId } = request
+    const requestHash = requestFingerprint(id, request)
     return tx(() => {
       const doc = document(pid, id)
       const jobId = string(value.mutationId, 80, true)
@@ -402,8 +440,8 @@ export function openStore(directory) {
       if (get("SELECT id FROM runs WHERE status='running'")) throw new ApiError(409, '已有生成任务正在运行')
       const context = runContext(doc, request)
       const messages = prepare(kind, context)
-      run("INSERT INTO runs (id,document_id,base_rev,kind,status,created,request_hash,source_hash,reference_ids) VALUES (?,?,?,?,'running',?,?,?,?)",
-        jobId, id, doc.rev, kind, now(), requestHash, context.sourceHash, JSON.stringify(refs))
+      run("INSERT INTO runs (id,document_id,base_rev,kind,status,created,request_hash,source_hash,reference_ids,outline_id) VALUES (?,?,?,?,'running',?,?,?,?,?)",
+        jobId, id, doc.rev, kind, now(), requestHash, context.sourceHash, JSON.stringify(refs), outlineId)
       return { job: getRun(pid, jobId), messages }
     })
   }
@@ -527,11 +565,16 @@ export function openStore(directory) {
       const job = getRun(pid, id)
       const doc = document(pid, job.document_id)
       if (job.applied_rev !== null) return doc
-      if (job.kind === 'review' || !job.output.trim() || job.status === 'running') throw new ApiError(422, '此任务没有可应用的正文')
+      if (!['draft', 'revise'].includes(job.kind) || !job.output.trim() || job.status === 'running') {
+        throw new ApiError(422, '此任务没有可应用的正文')
+      }
       match(doc, job.base_rev)
       if (doc.status === 'final') throw new ApiError(422, '请先重新打开定稿')
       const bindings = sources(doc, JSON.parse(job.reference_ids))
-      if (![bindings.sourceHash, bindings.previousHash, bindings.legacyHash].includes(job.source_hash)) {
+      const valid = job.outline_id
+        ? outlineBinding(bindings.sourceHash, completedOutline(doc, job.outline_id)) === job.source_hash
+        : [bindings.sourceHash, bindings.previousHash, bindings.legacyHash].includes(job.source_hash)
+      if (!valid) {
         throw new ApiError(409, '生成时的设定、蓝图或前文已变化，请核对候选并重新生成')
       }
       checkpoint(doc, 'before-ai')
@@ -589,16 +632,29 @@ export function openStore(directory) {
         }
         checkpoint(document(p.id, doc.id), 'import')
       }
+      const importedRuns = new Map()
       for (const source of data.runs ?? []) {
         object(source)
+        string(source.id, 160, true)
         const id = mapping.get(source.document_id)
         const status = source.status === 'running' ? 'interrupted' : source.status
-        if (!id || !['draft','review','revise'].includes(source.kind) ||
+        if (!id || !runKinds.includes(source.kind) || importedRuns.has(source.id) ||
             !['done','cancelled','failed','interrupted'].includes(status)) throw new ApiError(400, '备份中的任务无效')
+        const runId = randomUUID()
+        importedRuns.set(source.id, { id: runId, document: id, kind: source.kind })
         run(`INSERT INTO runs (id,document_id,base_rev,kind,status,output,error,created,applied_rev,request_hash,source_hash)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?)`, randomUUID(), id, revision(source.base_rev),
+          VALUES (?,?,?,?,?,?,?,?,?,?,?)`, runId, id, revision(source.base_rev),
           source.kind, status, string(source.output, 180_000), string(source.error, 500),
           string(source.created, 50), source.applied_rev === null ? null : revision(source.applied_rev), '', '')
+      }
+      for (const source of data.runs ?? []) {
+        if (source.outline_id == null) continue
+        const draft = importedRuns.get(source.id)
+        const outline = importedRuns.get(source.outline_id)
+        if (draft.kind !== 'draft' || outline?.kind !== 'outline' || outline.document !== draft.document) {
+          throw new ApiError(400, '备份中的写稿细纲引用无效')
+        }
+        run('UPDATE runs SET outline_id=? WHERE id=?', outline.id, draft.id)
       }
       return p
     })
