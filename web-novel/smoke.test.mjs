@@ -122,6 +122,7 @@ test('novel workflow through HTTP across devices, generation, export and restart
   let upstreamCalls = 0
   let embeddingCalls = 0
   let lastPrompt = ''
+  const revisedProse = '保留开场\n船已离港。\n\n雾从海面升起。\n灯塔整夜发亮。\n'
   const reviewIssue = { title: '补足场景动作', severity: 'major', quote: '电脑上的稿', reason: '场景过于简略', suggestion: '补写登船动作' }
   const upstream = createServer(async (req, res) => {
     const chunks = []
@@ -148,6 +149,7 @@ test('novel workflow through HTTP across devices, generation, export and restart
     const instruction = input.messages[0].content
     let output = '候选正文'
     if (instruction.includes('生成写前细纲')) output = '1. 抵达灯塔并核对钥匙。'
+    if (instruction.includes('返回修订后的完整正文') && lastPrompt.includes('逐段合并')) output = revisedProse
     if (instruction.includes('审查当前正文')) {
       output = lastPrompt.includes('纯文本回退') ? '这里是一条纯文本意见。' : '```json\n' + JSON.stringify({ issues: [
         reviewIssue,
@@ -300,9 +302,11 @@ test('novel workflow through HTTP across devices, generation, export and restart
     assert.match(lastPrompt, /港口常年起雾/)
     assert.match(lastPrompt, /主角抵达码头/)
     assert.equal(upstreamCalls, 1)
+    const staleMerge = (await request(staleRun + '/merge')).result
     await request(docs + '/' + settings.id, { method: 'PUT',
       value: { title: settings.title, body: '晴天', baseRev: 1, mutationId: randomUUID() } })
     await request(staleRun + '/apply', { method: 'POST', status: 409 })
+    await request(staleRun + '/merge', { method: 'POST', value: { plan: staleMerge.plan, picks: [0] }, status: 409 })
     assert.equal((await request(doc + '/history')).result.some(item => item.rev === 2), false)
     const review = await run('review', 2)
     const reviewResult = await awaitRun(review, job => job.status === 'done')
@@ -380,6 +384,40 @@ test('novel workflow through HTTP across devices, generation, export and restart
     const updatedDraft = await nextRun('draft', updatedPlan.id)
     await awaitRun(base + '/runs/' + updatedDraft.id, job => job.status === 'done')
     assert.equal((await request(base + '/runs/' + updatedDraft.id + '/apply', { method: 'POST' })).result.body, '候选正文')
+    const original = '保留开场\r\n  船停在原地。\r\n\r\n灯塔整夜发亮。\r\n保留结尾'
+    await request(nextDoc, { method: 'PUT', value: { title: next.title, body: original, baseRev: 2, mutationId: randomUUID() } })
+    async function nextRevision(rev) {
+      const { result: job } = await request(nextDoc + '/runs', { method: 'POST', status: 202,
+        value: { kind: 'revise', baseRev: rev, guidance: '逐段合并', mutationId: randomUUID() } })
+      const path = base + '/runs/' + job.id
+      assert.equal((await awaitRun(path, row => row.status === 'done')).output, revisedProse)
+      return path + '/merge'
+    }
+    const merge = await nextRevision(3)
+    const previewMerge = (await request(merge)).result
+    assert.deepEqual(previewMerge.changes, [
+      { line: 2, before: '  船停在原地。\r\n', after: '船已离港。\n' },
+      { line: 4, before: '', after: '雾从海面升起。\n' },
+      { line: 5, before: '保留结尾', after: '' },
+    ])
+    const selection = { plan: previewMerge.plan, picks: [1] }
+    await request(merge, { method: 'POST', value: { ...selection, plan: 'wrong' }, status: 409 })
+    await request(merge, { method: 'POST', value: { ...selection, picks: [1, 1] }, status: 400 })
+    assert.equal((await request(nextDoc)).result.body, original)
+    const applyOptions = { method: 'POST', value: selection }
+    const [merged, replay] = await Promise.all([request(merge, applyOptions), request(merge, { ...applyOptions, cookie: b })])
+    assert.deepEqual(merged.result, replay.result)
+    assert.equal(merged.result.rev, 4)
+    assert.equal(merged.result.body, original.replace('灯塔', '雾从海面升起。\n灯塔'))
+    await request(merge, { method: 'POST', value: { ...selection, picks: [0] }, status: 409 })
+    const revisions = (await request(nextDoc + '/history')).result
+    assert.equal(revisions.find(item => item.rev === 3).body, original)
+    assert.equal(revisions.find(item => item.rev === 4).body, merged.result.body)
+    const staleRevision = await nextRevision(4)
+    const stalePreview = (await request(staleRevision)).result
+    await request(nextDoc, { method: 'PUT', cookie: b, value: { title: next.title, body: '另一设备继续写。', baseRev: 4, mutationId: randomUUID() } })
+    await request(staleRevision, { method: 'POST', value: { plan: stalePreview.plan, picks: [0] }, status: 409 })
+    assert.equal((await request(merge, applyOptions)).result.body, '另一设备继续写。')
     const hits = (await request(base + '/search?q=' + encodeURIComponent('码头'))).result
     assert.equal(hits[0].kind, 'blueprint')
     assert.match(hits[0].excerpt, /码头/)

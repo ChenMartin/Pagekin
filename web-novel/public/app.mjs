@@ -1357,18 +1357,100 @@ click('cancel-run', async () => {
   await api(`/projects/${project}/runs/${state.job.id}/cancel`, 'POST')
   await viewRun(state, state.job.id)
 })
-click('apply-run', () => {
-  const state = editor
-  const job = state.job
-  dialog('比较并确认 AI 候选', [compare('当前正文', state.body, '候选正文', job.output)], () => mutateEditor(state, async () => {
-    const updated = await api(`/projects/${state.doc.project_id}/runs/${job.id}/apply`, 'POST')
+async function applyCandidate(state, job, path, value) {
+  const action = dialogAction
+  await mutateEditor(state, async () => {
+    const updated = await api(path, 'POST', value)
+    if (dialogAction === action) $('dialog').close()
     if (editor === state) {
       const next = showEditor(updated)
       await loadRecovery(next)
-      await viewRun(next, job.id)
+      await viewRun(next, job.id).catch(() => note('正文已保存，任务状态暂未刷新。'))
     }
-    $('dialog').close()
-  }), '应用为新版本')
+  })
+}
+
+function chooseRevision(state, job, path, { plan, changes }) {
+  if (!changes.length) {
+    const message = document.createElement('p')
+    message.textContent = '修稿候选与当前正文没有可应用的改动。'
+    return dialog('比较修稿候选', [message])
+  }
+  const selected = new Set()
+  const pageSize = 12
+  let page = 0
+  const pageCount = Math.ceil(changes.length / pageSize)
+  const status = document.createElement('p')
+  status.setAttribute('role', 'status')
+  const errorMessage = document.createElement('p')
+  errorMessage.setAttribute('role', 'alert')
+  const list = document.createElement('div')
+  list.className = 'revision-list'
+  const controls = document.createElement('div')
+  controls.className = 'tools'
+  const previous = actionButton('上一页', () => { page--; renderPage() })
+  const next = actionButton('下一页', () => { page++; renderPage() })
+  previous.hidden = next.hidden = pageCount === 1
+  const selectAll = actionButton('全选改动', () => { changes.forEach((_, i) => selected.add(i)); renderPage() })
+  const clear = actionButton('清空选择', () => { selected.clear(); renderPage() })
+  controls.append(previous, next, selectAll, clear)
+
+  function summarize() {
+    status.textContent = `已选 ${selected.size} / ${changes.length} 处 · 第 ${page + 1} / ${pageCount} 页`
+  }
+
+  function renderPage() {
+    previous.disabled = page === 0
+    next.disabled = page + 1 === pageCount
+    const start = page * pageSize
+    list.replaceChildren(...changes.slice(start, start + pageSize).map(({ line, before, after }, offset) => {
+      const i = start + offset
+      const item = document.createElement('article')
+      const label = document.createElement('label')
+      const check = document.createElement('input')
+      check.type = 'checkbox'
+      check.checked = selected.has(i)
+      check.addEventListener('change', () => {
+        if (check.checked) selected.add(i)
+        else selected.delete(i)
+        summarize()
+      })
+      const kind = !before ? '插入' : !after ? '删除' : '替换'
+      label.append(check, `采纳改动 ${i + 1} · 第 ${line} 行 · ${kind}`)
+      const lineEndingOnly = before.replace(/\r?\n$|\r$/, '') === after.replace(/\r?\n$|\r$/, '')
+      const display = text => {
+        if (!text) return '（无）'
+        if (lineEndingOnly) return text + (/[\r\n]$/.test(text) ? '（末尾有换行）' : '\n（末尾无换行）')
+        return text.trim() ? text : '（空行或空白）'
+      }
+      item.append(label, compare('原稿', display(before), '修稿', display(after)))
+      return item
+    }))
+    list.scrollTop = 0
+    summarize()
+  }
+
+  renderPage()
+  dialog('选择要接受的修稿改动', [status, controls, list, errorMessage], async () => {
+    errorMessage.textContent = ''
+    if (!selected.size) { errorMessage.textContent = '请至少勾选一处改动。'; return }
+    try { await applyCandidate(state, job, path, { plan, picks: [...selected] }) }
+    catch (error) { errorMessage.textContent = error.message }
+  }, '应用选中的改动')
+}
+
+click('apply-run', async () => {
+  const state = editor
+  const job = state.job
+  const path = `/projects/${state.doc.project_id}/runs/${job.id}`
+  if (job.kind === 'revise' && job.status === 'done') {
+    await clean(state)
+    const plan = await api(path + '/merge')
+    if (editor === state && state.job?.id === job.id) chooseRevision(state, job, path + '/merge', plan)
+    return
+  }
+  dialog('比较并确认 AI 候选', [compare('当前正文', state.body, '候选正文', job.output)],
+    () => applyCandidate(state, job, path + '/apply'), '应用为新版本')
 })
 click('close-dialog', () => $('dialog').close())
 click('open-find', () => findPanel($('find-panel').hidden))

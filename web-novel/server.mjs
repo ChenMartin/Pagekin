@@ -407,6 +407,8 @@ async function route(req, res) {
       return json(res, { ok: true })
     }
     if (method === 'POST' && action === 'apply') return json(res, storage.applyRun(pid, id))
+    if (action === 'merge' && method === 'GET') return json(res, storage.previewRevision(pid, id))
+    if (action === 'merge' && method === 'POST') return json(res, storage.applyRevision(pid, id, await body(req)))
   }
   if (method === 'GET' && id === undefined && resource === 'backup') {
     res.setHeader('Content-Disposition', 'attachment; filename="pagekin-backup.json"')

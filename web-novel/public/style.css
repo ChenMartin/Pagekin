@@ -69,6 +69,12 @@ dialog::backdrop { background: #0008; }
 .manuscript-list section { padding: .45rem 0; border-top: 1px solid var(--line); }
 .manuscript-list details { margin: .25rem 0; }
 .compare { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.revision-list { max-height: 46dvh; overflow-y: auto; }
+.revision-list article { border-top: 1px solid var(--line); padding: .65rem 0; }
+#dialog-body .revision-list label { display: flex; align-items: center; gap: .45rem; min-height: 2.65rem; margin: 0; }
+.revision-list input { width: auto; min-height: auto; flex-shrink: 0; }
+.revision-list h3 { margin: .25rem 0; font-size: 1rem; }
+.revision-list pre { margin: 0; max-height: 12rem; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 @media (max-width: 720px) {
   #workspace { grid-template-columns: minmax(0, 1fr); gap: .65rem; }

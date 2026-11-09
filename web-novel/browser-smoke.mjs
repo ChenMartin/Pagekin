@@ -13,6 +13,8 @@ const executable = process.env.BROWSER_EXE
 if (!executable) throw new Error('Set BROWSER_EXE to a Chromium executable')
 const root = await mkdtemp(join(tmpdir(), 'pagekin-browser-'))
 const password = 'browser-test-local-only'
+const revisionLines = Array.from({ length: 14 }, (_, index) => `原稿第 ${index + 1} 段`)
+const revisionCandidate = revisionLines.join('\n\n').replaceAll('原稿', '修稿')
 let app, browser, socket
 const modelMock = createServer(async (req, res) => {
   const chunks = []
@@ -20,10 +22,13 @@ const modelMock = createServer(async (req, res) => {
   const payload = JSON.parse(Buffer.concat(chunks))
   if (req.url === '/v1/chat/completions') {
     res.writeHead(200, { 'Content-Type': 'text/event-stream' })
-    const content = payload.messages[0].content.includes('审查当前正文') ? JSON.stringify({ issues: [
+    const instruction = payload.messages[0].content
+    let content = '本章先调查船票。'
+    if (instruction.includes('返回修订后的完整正文')) content = revisionCandidate
+    if (instruction.includes('审查当前正文')) content = JSON.stringify({ issues: [
       { title: '补写动作', severity: 'major', quote: '断网的本机', reason: '缺少动作', suggestion: '加入登船动作' },
       { title: '模型误引', severity: 'minor', quote: '原文没有这句话', reason: '引文待核对', suggestion: '调整灯塔描写' },
-    ] }) : '本章先调查船票。'
+    ] })
     res.end('data: ' + JSON.stringify({ choices: [{ delta: { content }, finish_reason: 'stop' }] }) + '\n\ndata: [DONE]\n\n')
     return
   }
@@ -308,7 +313,26 @@ try {
   assert.equal(await evaluate("document.querySelector('#documents').options.length"), 4)
   await click('#previous-chapter')
   await until(() => evaluate("document.querySelector('#title').value === '第二章' && " + readOnly), 'Existing chapter changed after import')
-  console.log('Browser workflow passed (' + (enhanced ? 'CodeMirror' : 'plain') + '): autosave, recovery, context, review, conflicts, editing and import')
+  await click('#next-chapter')
+  await until(() => evaluate("document.querySelector('#title').value === '靠岸'"), 'Imported draft did not reopen')
+  await fillBody(revisionLines.join('\n\n'))
+  await saved(2)
+  await click('#ai summary')
+  await click('[data-run=revise]')
+  await visible('#apply-run')
+  await click('#apply-run')
+  await visible('.revision-list input')
+  assert.equal(await evaluate("document.querySelectorAll('.revision-list input:checked').length"), 0)
+  await click('.revision-list input')
+  await evaluate("Array.from(document.querySelectorAll('#dialog-body button')).find(button => button.textContent === '下一页').click()")
+  await until(() => evaluate("document.querySelector('.revision-list').textContent.includes('采纳改动 14')"), 'Revision preview did not change pages')
+  await click('.revision-list article:last-child input')
+  assert.match(await evaluate("document.querySelector('#dialog-body [role=status]').textContent"), /已选 2 \/ 14/)
+  await click('#dialog-submit')
+  await saved(3)
+  const expected = revisionLines.map((line, index) => [0, 13].includes(index) ? line.replace('原稿', '修稿') : line).join('\n\n')
+  assert.equal(await evaluate(bodyText), expected)
+  console.log('Browser workflow passed (' + (enhanced ? 'CodeMirror' : 'plain') + '): autosave, recovery, context, review, revision merge, conflicts, editing and import')
 } finally {
   socket?.close()
   for (const child of [browser, app]) {

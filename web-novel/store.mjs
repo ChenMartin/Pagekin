@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { manuscriptChapterLimit } from './public/manuscript.mjs'
 import { schemaVersion } from './version.mjs'
 import { reviewReport } from './review-report.mjs'
+import { mergeRevision, revisionChanges } from './revision-merge.mjs'
 
 export class ApiError extends Error {
   constructor(status, message, details) {
@@ -570,6 +571,23 @@ export function openStore(directory) {
       ORDER BY title_match=0,kind,number,title,id LIMIT 40`, pid, pid, query, query)
   }
 
+  function checkCandidate(doc, job) {
+    match(doc, job.base_rev)
+    if (doc.status === 'final') throw new ApiError(422, '请先重新打开定稿')
+    const bindings = sources(doc, JSON.parse(job.reference_ids))
+    const valid = job.outline_id
+      ? outlineBinding(bindings.sourceHash, completedOutline(doc, job.outline_id)) === job.source_hash
+      : [bindings.sourceHash, bindings.previousHash, bindings.legacyHash].includes(job.source_hash)
+    if (!valid) throw new ApiError(409, '生成时的设定、蓝图或前文已变化，请核对候选并重新生成')
+  }
+
+  function saveCandidate(doc, job, body) {
+    checkpoint(doc, 'before-ai')
+    const saved = update(doc, { title: doc.title, body }, 'draft', 'ai')
+    run('UPDATE runs SET applied_rev=? WHERE id=?', saved.rev, job.id)
+    return saved
+  }
+
   function applyRun(pid, id) {
     return tx(() => {
       const job = getRun(pid, id)
@@ -578,19 +596,55 @@ export function openStore(directory) {
       if (!['draft', 'revise'].includes(job.kind) || !job.output.trim() || job.status === 'running') {
         throw new ApiError(422, '此任务没有可应用的正文')
       }
-      match(doc, job.base_rev)
-      if (doc.status === 'final') throw new ApiError(422, '请先重新打开定稿')
-      const bindings = sources(doc, JSON.parse(job.reference_ids))
-      const valid = job.outline_id
-        ? outlineBinding(bindings.sourceHash, completedOutline(doc, job.outline_id)) === job.source_hash
-        : [bindings.sourceHash, bindings.previousHash, bindings.legacyHash].includes(job.source_hash)
-      if (!valid) {
-        throw new ApiError(409, '生成时的设定、蓝图或前文已变化，请核对候选并重新生成')
-      }
-      checkpoint(doc, 'before-ai')
-      const saved = update(doc, { title: doc.title, body: job.output }, 'draft', 'ai')
-      run('UPDATE runs SET applied_rev=? WHERE id=?', saved.rev, id)
-      return saved
+      checkCandidate(doc, job)
+      return saveCandidate(doc, job, job.output)
+    })
+  }
+
+  function completedRevision(pid, id) {
+    const job = getRun(pid, id)
+    if (job.kind !== 'revise' || job.status !== 'done' || !job.output.trim()) {
+      throw new ApiError(422, '此任务没有已完成的修稿候选')
+    }
+    return job
+  }
+
+  function revisionPlan(job, body) {
+    const changes = revisionChanges(body, job.output)
+    return { changes, plan: hash(JSON.stringify([job.id, job.base_rev, changes])) }
+  }
+
+  function previewRevision(pid, id) {
+    const job = completedRevision(pid, id)
+    const doc = document(pid, job.document_id)
+    if (job.applied_rev !== null) throw new ApiError(409, '此候选已应用')
+    checkCandidate(doc, job)
+    const { changes, plan } = revisionPlan(job, doc.body)
+    return { plan, changes: changes.map(({ start, end, line, after }) => ({ line, before: doc.body.slice(start, end), after })) }
+  }
+
+  function applyRevision(pid, id, value) {
+    object(value)
+    return tx(() => {
+      const job = completedRevision(pid, id)
+      const doc = document(pid, job.document_id)
+      const applied = job.applied_rev !== null
+      if (!applied) checkCandidate(doc, job)
+      const original = applied ? get('SELECT body FROM history WHERE document_id=? AND rev=?', doc.id, job.base_rev) : doc
+      if (!original) throw new ApiError(409, '缺少修稿使用的正文版本')
+      const { changes, plan } = revisionPlan(job, original.body)
+      if (value.plan !== plan) throw new ApiError(409, '修稿预览已过期，请重新打开候选')
+      const picks = value.picks
+      if (!Array.isArray(picks) || !picks.length || picks.length > changes.length || new Set(picks).size !== picks.length ||
+          picks.some(i => !Number.isSafeInteger(i) || i < 0 || i >= changes.length)) throw new ApiError(400, '请选择有效的修稿改动')
+      const merged = mergeRevision(original.body, changes, new Set(picks))
+      if (!merged.trim() || merged === original.body) throw new ApiError(422, '选中的改动未形成可保存的新正文')
+      string(merged, 180_000)
+      if (!applied) return saveCandidate(doc, job, merged)
+      // A lost response can be retried after a later edit without applying a second selection.
+      const saved = get('SELECT body FROM history WHERE document_id=? AND rev=?', doc.id, job.applied_rev)
+      if (saved?.body !== merged) throw new ApiError(409, '此候选已应用其他改动')
+      return doc
     })
   }
 
@@ -672,5 +726,5 @@ export function openStore(directory) {
 
   return { db, get, all, run, tx, project, document, createProject, renameProject, addDocument, importChapters, eventHead, projectEvents, pruneEvents,
     save, chapters, search, addReference, reference, threads, saveThread,
-    transition, history, restore, getRun, runDetail, startRun, previewRun, applyRun, backup, importBackup }
+    transition, history, restore, getRun, runDetail, startRun, previewRun, applyRun, previewRevision, applyRevision, backup, importBackup }
 }
