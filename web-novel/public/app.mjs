@@ -16,6 +16,40 @@ let draftDb
 let composing = false
 let projectStream
 let syncTimer
+let enhancedBody
+
+const bodyControl = () => enhancedBody ?? $('body')
+
+function resetBody(value) {
+  if (enhancedBody) enhancedBody.reset(value)
+  else $('body').value = value
+}
+
+function setComposing(value) {
+  if (composing === value) return
+  composing = value
+  paint()
+  if (!value && editor) schedule(editor)
+}
+
+async function enableEnhancedEditor() {
+  if (enhancedBody) return
+  const host = $('body-editor-host')
+  const fallback = $('body')
+  try {
+    const { createEditor } = await import('./editor.bundle.mjs')
+    enhancedBody = createEditor(host, {
+      value: fallback.value, maxLength: fallback.maxLength,
+      nonce: document.querySelector('meta[name="editor-style-nonce"]').content,
+      onEdit: edit, onComposition: setComposing, onLimit: () => note('正文超过长度限制'),
+    })
+    fallback.hidden = true
+    host.hidden = false
+    $('editor-notices').hidden = false
+  } catch {
+    note('增强编辑器加载失败，已切换到普通文本编辑器')
+  }
+}
 
 function uuid() {
   const bytes = crypto.getRandomValues(new Uint8Array(16))
@@ -86,7 +120,7 @@ function paint(state = editor) {
   if (!state || state !== editor) return
   const locked = state.doc.status === 'final'
   $('title').readOnly = locked || Boolean(state.mutating)
-  $('body').readOnly = locked || Boolean(state.mutating)
+  bodyControl().readOnly = locked || Boolean(state.mutating)
   $('save').disabled = locked || Boolean(state.conflict) || Boolean(state.mutating)
   $('status').disabled = Boolean(state.mutating)
   $('replace-tools').hidden = locked
@@ -131,7 +165,7 @@ function edit() {
   const state = editor
   if (!state || state.doc.status === 'final' || state.mutating) return
   state.title = $('title').value
-  state.body = $('body').value
+  state.body = bodyControl().value
   state.edit++
   state.localOk = null
   void persistLocal(state)
@@ -182,7 +216,7 @@ function revealMatch(input, offset) {
 }
 
 function locate(direction, reportOnly = false) {
-  const input = $('body')
+  const input = bodyControl()
   const pattern = findPattern()
   if (!pattern) {
     $('find-result').textContent = ''
@@ -205,7 +239,8 @@ function locate(direction, reportOnly = false) {
   if (hit && !reportOnly) {
     input.focus({ preventScroll: true })
     input.setSelectionRange(hit.start, hit.end)
-    revealMatch(input, hit.start)
+    if (enhancedBody) enhancedBody.reveal(hit.start)
+    else revealMatch(input, hit.start)
   }
   return { current, count, matchedLength }
 }
@@ -216,7 +251,7 @@ function editableForReplace(state) {
 
 function replaceBody(state, next, start, end = start) {
   if (!editableForReplace(state)) throw new Error('请在文档可编辑时替换')
-  const input = $('body')
+  const input = bodyControl()
   if (next.length > input.maxLength) throw new Error('替换后的正文超过长度限制')
   if (input.value === next) return
   const previous = { body: input.value, start: input.selectionStart, end: input.selectionEnd }
@@ -235,7 +270,7 @@ function replaceOne() {
   const range = locate(1, true)?.current
   if (!range) { locate(1); return }
   const replacement = $('replace-query').value
-  const value = $('body').value
+  const value = bodyControl().value
   replaceBody(state, value.slice(0, range.start) + replacement + value.slice(range.end), range.start + replacement.length)
 }
 
@@ -245,15 +280,15 @@ function replaceAll() {
   if (!pattern || !editableForReplace(state)) return
   const { count, matchedLength } = locate(1, true)
   if (!count) return
-  const value = $('body').value
+  const value = bodyControl().value
   const replacement = $('replace-query').value
-  if (value.length - matchedLength + count * replacement.length > $('body').maxLength) {
+  if (value.length - matchedLength + count * replacement.length > bodyControl().maxLength) {
     throw new Error('替换后的正文超过长度限制')
   }
   const summary = document.createElement('p')
   summary.textContent = '将在当前文档中替换 ' + count + ' 处匹配。'
   dialog('确认全部替换', [summary], () => {
-    if (!editableForReplace(state) || $('body').value !== value) throw new Error('正文已变化，请重新查找')
+    if (!editableForReplace(state) || bodyControl().value !== value) throw new Error('正文已变化，请重新查找')
     $('dialog').close()
     replaceBody(state, value.replace(pattern, () => replacement), 0)
   }, '替换全部')
@@ -395,7 +430,7 @@ function showEditor(doc) {
   $('empty').hidden = true
   $('editor').hidden = false
   $('title').value = doc.title
-  $('body').value = doc.body
+  resetBody(doc.body)
   $('guidance').value = ''
   $('reference-query').value = ''
   $('ai').open = false
@@ -657,7 +692,7 @@ function newDocument(content = '', title = '') {
     await refreshDocuments(doc.id)
     await openDocument(doc.id)
     $('dialog').close()
-    $('body').focus()
+    bodyControl().focus()
   })
 }
 
@@ -796,7 +831,7 @@ async function recover() {
         // A pending request may have committed before its response was lost.
         state.conflict = current.rev !== draft.baseRev && !draft.pending ? current : null
         $('title').value = state.title
-        $('body').value = state.body
+        resetBody(state.body)
         await persistLocal(state)
         state.recovered = state.recovered.filter(entry => entry.key !== draft.key)
         paint(state)
@@ -1088,8 +1123,9 @@ $('documents').addEventListener('change', event => {
 $('kind').addEventListener('change', () => runAction(() => refreshDocuments(editor?.doc.id)))
 for (const element of [$('title'), $('body')]) {
   element.addEventListener('input', edit)
-  element.addEventListener('compositionstart', () => { composing = true; paint() })
-  element.addEventListener('compositionend', () => { composing = false; paint(); if (editor) schedule(editor) })
+  element.addEventListener('compositionstart', () => setComposing(true))
+  element.addEventListener('compositionend', () => setComposing(false))
+  element.addEventListener('blur', () => setComposing(false))
 }
 click('save', () => flush(editor, true))
 click('recover', recover)
@@ -1165,7 +1201,7 @@ click('apply-run', () => {
 })
 click('close-dialog', () => $('dialog').close())
 click('open-find', () => findPanel($('find-panel').hidden))
-click('close-find', () => { findPanel(false); $('body').focus({ preventScroll: true }) })
+click('close-find', () => { findPanel(false); bodyControl().focus({ preventScroll: true }) })
 click('find-back', () => locate(-1))
 click('find-next', () => locate(1))
 click('replace-one', replaceOne)
@@ -1210,7 +1246,7 @@ document.addEventListener('keydown', event => {
   }
   if (event.key === 'Escape' && !$('find-panel').hidden) {
     findPanel(false)
-    $('body').focus({ preventScroll: true })
+    bodyControl().focus({ preventScroll: true })
   }
   if (editor && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
     event.preventDefault()
@@ -1240,6 +1276,7 @@ async function boot() {
     const session = await api('/session')
     model = session.model
     $('release-version').textContent = session.version ? 'v' + session.version : ''
+    if (session.enhancedEditor) await enableEnhancedEditor()
   } catch (error) {
     if (error.status !== 401) throw error
     $('login').hidden = false

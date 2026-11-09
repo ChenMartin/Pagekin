@@ -148,7 +148,16 @@ test('novel workflow through HTTP across devices, generation, export and restart
   }
   try {
     server = await launch(directory, upstream.address().port)
-    assert.match((await request('/')).result, /小说工作区/)
+    const page = await request('/')
+    assert.match(page.result, /小说工作区/)
+    if (process.env.PAGEKIN_TEST_EDITOR === 'enhanced') {
+      const nonce = /<meta name="editor-style-nonce" content="([A-Za-z0-9+/=]+)">/.exec(page.result)?.[1]
+      assert.ok(nonce)
+      assert.match(page.response.headers.get('content-security-policy'), /style-src 'self' 'nonce-[A-Za-z0-9+/=]+'/)
+      assert.ok(page.response.headers.get('content-security-policy').includes("'nonce-" + nonce + "'"))
+      assert.match((await request('/editor.bundle.mjs')).result, /createEditor/)
+      assert.match((await request('/editor.notices.txt')).result, /@codemirror\/view/)
+    }
     assert.deepEqual((await request('/healthz')).result, { ok: true, version: releaseVersion })
     await request('/api/projects', { status: 401 })
     await request('/api/session', { method: 'POST', value: { password }, status: 403, origin: 'http://evil.test' })

@@ -6,7 +6,7 @@ fnOS 候选版的镜像载入、配置和验收步骤见 [v0.1.0-rc.1 发布说�
 
 ## 本机启动
 
-使用 Node.js 24。在 PowerShell 中从本目录执行，访问 http://127.0.0.1:3100。
+使用 Node.js 24。在 PowerShell 中从本目录执行，访问 http://127.0.0.1:3100。直接启动可使用普通文本编辑器。
 
 ```powershell
 $env:APP_PASSWORD = Read-Host "设置一个至少 12 字符的访问密码"
@@ -15,6 +15,8 @@ node server.mjs
 ```
 
 本机数据默认位于 `web-novel/data`。通过 `APP_DATA_DIR` 可指定独立目录。一个数据目录对应一个运行实例。
+
+如需从源码在本机使用增强编辑器，在启动前运行 `npm ci --ignore-scripts` 和 `npm run build:editor`。从当前源码构建 Docker 镜像时会自动完成这一步，首次构建需访问 npm registry。设置 `APP_EDITOR=plain` 可为输入法兼容排查启用普通文本编辑器。
 
 ## fnOS 部署
 
@@ -57,6 +59,8 @@ PAGEKIN_VOLUME=web-novel_novels_recovered docker compose run --rm --no-deps -T p
 
 正文上方可打开“查找／替换”，也可按 Ctrl+F 或 Cmd+F。支持跳到上一处或下一处、区分大小写、替换当前或全部匹配。替换按普通文本处理，全部替换会显示确认；继续编辑前可通过“撤销替换”还原最近一次替换。定稿允许查找。正文可用“上一章”和“下一章”切换，未同步稿件沿用本机草稿保护。
 
+构建增强编辑器资源后，正文默认使用 CodeMirror 6，提供 Markdown 语法高亮、自动换行和键盘撤销／重做。切换文档会重置编辑器内的撤销记录，各章持久化版本可从“历史版本”查看。
+
 编辑时写入 IndexedDB 本机草稿。停止输入约 1.5 秒后提交，前台持续输入每 10 秒兜底提交。状态栏在收到服务器确认后显示已保存到 NAS。断网重新连接会重试。刷新后打开对应文档，点“查看本机草稿”比较和恢复。同一章节被另一设备更新时，界面提示比较两稿，服务端保留较新的版本，直到作者选择如何处理。
 
 其他设备保存后，已打开的章节会显示“NAS 上有更新，查看最新版本”。点击可加载新版。有未同步编辑时会保留本机稿，并提供冲突对比。短暂掉线后可补收事件，超出保留窗口时重新读取目录和版本。书名可在作品菜单中修改。
@@ -93,10 +97,10 @@ node desktop-copy.mjs 'D:\作品\我的小说\.ai-novel\project.db' '.\我的小
 
 ## 当前实现范围
 
-此版本使用独立 Web 入口、浏览器原生文本编辑器和独立 Web SQLite schema。后续仍需完成原有生成流程的完整复用、CodeMirror、知识库语义检索和移动真机验收。
+此版本使用独立 Web 入口和 Web SQLite schema。从当前源码构建的镜像含增强编辑器，v0.1.0-rc.1 已发布的离线镜像使用普通文本编辑器。原有生成流程的完整复用、知识库语义检索和移动真机验收仍在后续范围。
 
 ```sh
 node --test smoke.test.mjs
 ```
 
-可选浏览器回归检查。将 `BROWSER_EXE` 指向 Edge 或 Chromium 的可执行文件，再运行 `node browser-smoke.mjs`。测试使用独立的临时浏览器配置和 SQLite 数据库。
+可选浏览器回归检查。将 `BROWSER_EXE` 指向 Edge 或 Chromium 的可执行文件，再运行 `node browser-smoke.mjs`。可设置 `PAGEKIN_TEST_EDITOR=enhanced` 或 `plain` 强制检查对应模式。增强模式测试包括浏览器合成中文输入事件。测试使用独立的临时浏览器配置和 SQLite 数据库。

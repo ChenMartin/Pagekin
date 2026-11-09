@@ -34,6 +34,7 @@ try {
   app = spawn(process.execPath, [entry], {
     env: { ...process.env, APP_PASSWORD: password, APP_PASSWORD_FILE: '', APP_SECURE_COOKIE: '0',
       APP_ORIGIN: '', APP_HOST: '127.0.0.1', PORT: '0', APP_DATA_DIR: join(root, 'data'),
+      APP_EDITOR: process.env.PAGEKIN_TEST_EDITOR === 'plain' ? 'plain' : 'auto',
       LLM_MODEL: 'preview-only', LLM_BASE_URL: 'http://127.0.0.1:1', LLM_API_KEY: '', LLM_CONTEXT_CHARS: '8000' },
     stdio: ['ignore', 'pipe', 'inherit'],
   })
@@ -81,6 +82,16 @@ try {
     el.dispatchEvent(new Event('input', { bubbles: true }));
   })()`)
   const saved = revision => until(() => evaluate(`document.querySelector('#save-state')?.textContent === '已保存到 NAS · v${revision}'`), 'Autosave did not complete')
+  let enhanced = false
+  const bodyText = "(document.querySelector('#body').hidden ? Array.from(document.querySelectorAll('.cm-content .cm-line'), line => line.textContent).join('\\n') : document.querySelector('#body').value)"
+  const readOnly = "(document.querySelector('#body').hidden ? document.querySelector('.cm-content')?.getAttribute('aria-readonly') === 'true' : document.querySelector('#body').readOnly)"
+  async function fillBody(text) {
+    if (!enhanced) return fill('#body', text)
+    await evaluate("document.querySelector('.cm-content').focus()")
+    await command('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, modifiers: 2 })
+    await command('Input.dispatchKeyEvent', { type: 'keyUp', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, modifiers: 2 })
+    await command('Input.insertText', { text })
+  }
   const modal = async (selector, value) => {
     await visible(selector)
     await fill(selector, value)
@@ -100,15 +111,26 @@ try {
   assert.equal(await evaluate("document.querySelector('#projects').selectedOptions[0].textContent"), '测试作品改名')
   await click('#new-document')
   await modal('#dialog input', '测试章节')
-  await visible('#body')
-  await fill('#body', '自动保存的中文稿')
+  await visible('#editor')
+  enhanced = await evaluate("!document.querySelector('#body-editor-host').hidden")
+  if (process.env.PAGEKIN_TEST_EDITOR === 'enhanced') assert.equal(enhanced, true, 'CodeMirror did not load')
+  if (process.env.PAGEKIN_TEST_EDITOR === 'plain') assert.equal(enhanced, false)
+  if (enhanced) {
+    const nonce = await evaluate("document.querySelector('meta[name=editor-style-nonce]').content")
+    assert.ok(await evaluate(`Array.from(document.querySelectorAll('style')).some(style => style.nonce === ${JSON.stringify(nonce)})`), 'CodeMirror style was not nonce-authorized')
+    await evaluate("document.querySelector('.cm-content').focus()")
+    await command('Input.imeSetComposition', { text: '自动保存的中文稿', selectionStart: 8, selectionEnd: 8 })
+    await delay(1700)
+    assert.equal(await evaluate("document.querySelector('#save-state').textContent.includes('v2')"), false, 'IME preedit was committed early')
+    await command('Input.insertText', { text: '自动保存的中文稿' })
+  } else await fillBody('自动保存的中文稿')
   await saved(2)
   await command('Page.reload')
-  assert.equal(await until(() => evaluate("document.querySelector('#body')?.value"), 'Chapter did not reopen'), '自动保存的中文稿')
+  assert.equal(await until(() => evaluate(bodyText), 'Chapter did not reopen'), '自动保存的中文稿')
 
   await command('Network.enable')
   await command('Network.setBlockedURLs', { urls: ['*/api/projects/*/documents/*'] })
-  await fill('#body', '暂时断网的本机稿')
+  await fillBody('暂时断网的本机稿')
   await until(() => evaluate("document.querySelector('#save-state').textContent.includes('连接失败，将重试')"), 'Offline save did not stay in IndexedDB')
   await command('Network.setBlockedURLs', { urls: [] })
   await command('Page.reload')
@@ -117,7 +139,7 @@ try {
   await click('#dialog-body button')
   await click('#dialog-submit')
   await saved(3)
-  assert.equal(await evaluate("document.querySelector('#body').value"), '暂时断网的本机稿')
+  assert.equal(await evaluate(bodyText), '暂时断网的本机稿')
   await click('#reference-library')
   await visible('#dialog-body button')
   await evaluate(`(() => {
@@ -152,7 +174,7 @@ try {
     return response.status;
   })()`), 200)
   await visible('#reload-remote')
-  await fill('#body', '这台设备的稿')
+  await fillBody('这台设备的稿')
   await click('#reload-remote')
   await visible('#conflict')
   await click('#conflict')
@@ -172,34 +194,37 @@ try {
   await until(() => evaluate('innerWidth === 390 && document.documentElement.scrollWidth <= innerWidth'), 'Narrow layout overflows')
   await click('#new-document')
   await modal('#dialog input', '第二章')
-  await fill('#body', '灯塔.A、灯塔.a、灯塔Za')
+  await fillBody('灯塔.A、灯塔.a、灯塔Za')
   await saved(2)
   await click('#open-find')
   await fill('#find-query', '灯塔.A')
   await until(() => evaluate("document.querySelector('#find-result').textContent.includes('2 处')"), 'Literal find did not count matches')
   await click('#find-next')
-  assert.equal(await evaluate("(() => { const el = document.querySelector('#body'); return el.value.slice(el.selectionStart, el.selectionEnd) })()"), '灯塔.A')
+  const selectedText = enhanced ? 'window.getSelection().toString()'
+    : "(() => { const el = document.querySelector('#body'); return el.value.slice(el.selectionStart, el.selectionEnd) })()"
+  await until(() => evaluate(selectedText + " === '灯塔.A'"), 'Find did not select a match')
   await fill('#replace-query', '海岸')
   await click('#replace-all')
   await until(() => evaluate("document.querySelector('#dialog').open && document.querySelector('#dialog-title').textContent === '确认全部替换'"), 'Replace confirmation missing')
   await click('#dialog-submit')
   await saved(3)
-  assert.equal(await evaluate("document.querySelector('#body').value"), '海岸、海岸、灯塔Za')
+  assert.equal(await evaluate(bodyText), '海岸、海岸、灯塔Za')
   await click('#undo-replace')
   await saved(4)
-  assert.equal(await evaluate("document.querySelector('#body').value"), '灯塔.A、灯塔.a、灯塔Za')
+  assert.equal(await evaluate(bodyText), '灯塔.A、灯塔.a、灯塔Za')
   await click('#previous-chapter')
-  await until(() => evaluate("document.querySelector('#body').value === '另一设备的新稿'"), 'Previous chapter did not load')
+  await until(() => evaluate(bodyText + " === '另一设备的新稿'"), 'Previous chapter did not load')
   await click('#next-chapter')
-  await until(() => evaluate("document.querySelector('#body').value === '灯塔.A、灯塔.a、灯塔Za'"), 'Next chapter did not load')
-  await fill('#body', '上面的文字\n'.repeat(140) + '章节末尾')
+  await until(() => evaluate(bodyText + " === '灯塔.A、灯塔.a、灯塔Za'"), 'Next chapter did not load')
+  await fillBody('上面的文字\n'.repeat(140) + '章节末尾')
   await saved(5)
   await click('#open-find')
   await fill('#find-query', '章节末尾')
   await click('#find-next')
-  assert.ok(await evaluate("document.querySelector('#body').scrollTop > 1000"), 'Find did not reveal a match outside the viewport')
+  await until(() => evaluate((enhanced ? "document.querySelector('.cm-scroller')" : "document.querySelector('#body')") + '.scrollTop > 1000'),
+    'Find did not reveal a match outside the viewport')
   await click('#status')
-  await until(() => evaluate("document.querySelector('#body').readOnly && document.querySelector('#status').textContent === '重新打开定稿'"), 'Chapter did not finalize')
+  await until(() => evaluate(readOnly + " && document.querySelector('#status').textContent === '重新打开定稿'"), 'Chapter did not finalize')
   await click('#open-find')
   await fill('#find-query', '章节末尾')
   await click('#find-next')
@@ -217,11 +242,11 @@ try {
   await click('.manuscript-list section:nth-child(2) input')
   await click('#dialog-submit')
   await until(() => evaluate("document.querySelector('#title').value === '靠岸'"), 'Selected chapter was not imported')
-  assert.equal(await evaluate("document.querySelector('#body').value"), '码头上有人。')
+  assert.equal(await evaluate(bodyText), '码头上有人。')
   assert.equal(await evaluate("document.querySelector('#documents').options.length"), 4)
   await click('#previous-chapter')
-  await until(() => evaluate("document.querySelector('#title').value === '第二章' && document.querySelector('#body').readOnly"), 'Existing chapter changed after import')
-  console.log('Browser workflow passed: autosave, recovery, context preview, remote updates, threads, editing and import')
+  await until(() => evaluate("document.querySelector('#title').value === '第二章' && " + readOnly), 'Existing chapter changed after import')
+  console.log('Browser workflow passed (' + (enhanced ? 'CodeMirror' : 'plain') + '): autosave, recovery, context, conflicts, editing and import')
 } finally {
   socket?.close()
   for (const child of [browser, app]) {

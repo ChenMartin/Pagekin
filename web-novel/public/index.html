@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="editor-style-nonce" content="__PAGEKIN_STYLE_NONCE__">
   <title>书童 · 小说工作区</title>
   <link rel="stylesheet" href="/style.css">
   <script type="module" src="/app.mjs"></script>
@@ -95,6 +96,7 @@
         <input id="title" maxlength="160" placeholder="文档标题">
         <label class="sr" for="body">正文</label>
         <textarea id="body" maxlength="180000" placeholder="开始写作…" spellcheck="false"></textarea>
+        <div id="body-editor-host" hidden></div>
         <div class="tools">
           <button id="save" class="primary">立即保存</button>
           <button id="history">历史版本</button>
@@ -102,6 +104,7 @@
           <button id="recover" hidden>查看本机草稿</button>
           <button id="conflict" hidden>处理冲突</button>
           <span id="length"></span>
+          <a id="editor-notices" href="/editor.notices.txt" target="_blank" rel="noopener" hidden>编辑器许可证</a>
         </div>
         <details id="ai" hidden>
           <summary>AI 写稿、审稿与修稿</summary>

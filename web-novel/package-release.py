@@ -18,6 +18,7 @@ def package(output: Path) -> Path:
         "server.mjs", "store.mjs", "writing-context.mjs", "desktop-archive.mjs", "desktop-copy.mjs",
         "version.mjs", "maintenance.mjs", "public/index.html", "public/app.mjs",
         "public/manuscript.mjs", "public/style.css",
+        "package.json", "package-lock.json", "build-editor.mjs", "editor/codemirror.mjs",
     ]
     sources = [(name, root / name) for name in files] + [("LICENSE", root.parent / "LICENSE")]
     output.mkdir(parents=True, exist_ok=True)

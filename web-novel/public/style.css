@@ -42,6 +42,12 @@ a { color: var(--accent); }
 .find-mirror { position: fixed; inset: 0 auto auto 0; visibility: hidden; pointer-events: none; }
 #find-result { color: var(--muted); }
 #body { margin-top: .65rem; min-height: 48vh; resize: vertical; font-family: "Songti SC", SimSun, Georgia, serif; font-size: 1.15rem; line-height: 1.85; }
+#body-editor-host { margin-top: .65rem; border: 1px solid var(--line); border-radius: .35rem; background: var(--panel); }
+#body-editor-host .cm-editor { min-height: 48vh; max-height: 68vh; }
+#body-editor-host .cm-scroller { overflow: auto; font-family: "Songti SC", SimSun, Georgia, serif; font-size: 1.15rem; line-height: 1.85; }
+#body-editor-host .cm-content { padding: .65rem .4rem; }
+#body-editor-host .cm-editor.cm-focused { outline: 2px solid var(--accent); outline-offset: 1px; }
+#editor-notices { font-size: .8rem; }
 details { margin-top: 1rem; padding: .75rem; border: 1px solid var(--line); border-radius: .35rem; }
 summary { cursor: pointer; }
 details label { display: block; margin-top: .65rem; }

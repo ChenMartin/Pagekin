@@ -1,6 +1,6 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { createServer } from 'node:http'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -44,12 +44,19 @@ const files = new Map([
   ['/manuscript.mjs', ['manuscript.mjs', 'text/javascript']],
   ['/style.css', ['style.css', 'text/css']],
 ].map(([path, [file, type]]) => [path, [readFileSync(new URL(`./public/${file}`, import.meta.url)), type]]))
+const editorBundle = new URL('./public/editor.bundle.mjs', import.meta.url)
+const enhancedEditor = process.env.APP_EDITOR !== 'plain' && existsSync(editorBundle)
+if (enhancedEditor) {
+  files.set('/editor.bundle.mjs', [readFileSync(editorBundle), 'text/javascript'])
+  files.set('/editor.notices.txt', [readFileSync(new URL('./public/editor.notices.txt', import.meta.url)), 'text/plain'])
+}
+const csp = "default-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'"
 
 function headers(res) {
   res.setHeader('Cache-Control', 'no-store')
   res.setHeader('X-Content-Type-Options', 'nosniff')
   res.setHeader('Referrer-Policy', 'no-referrer')
-  res.setHeader('Content-Security-Policy', "default-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'")
+  res.setHeader('Content-Security-Policy', csp)
 }
 
 function json(res, value, status = 200) {
@@ -295,8 +302,14 @@ async function route(req, res) {
   if (method === 'GET' && path === '/healthz') return json(res, { ok: storage.get('SELECT 1 ok').ok === 1, version: releaseVersion })
   const file = method === 'GET' && files.get(path)
   if (file) {
+    let bytes = file[0]
+    if (path === '/' && enhancedEditor) {
+      const nonce = randomBytes(18).toString('base64')
+      res.setHeader('Content-Security-Policy', csp + "; style-src 'self' 'nonce-" + nonce + "'")
+      bytes = bytes.toString('utf8').replace('__PAGEKIN_STYLE_NONCE__', nonce)
+    }
     res.writeHead(200, { 'Content-Type': `${file[1]}; charset=utf-8` })
-    return res.end(file[0])
+    return res.end(bytes)
   }
   if (method !== 'GET') verifyOrigin(req)
   if (method === 'POST' && path === '/api/session') return login(req, res, await body(req, 4096))
@@ -310,7 +323,7 @@ async function route(req, res) {
     cookie(res, '', 0)
     return json(res, { ok: true })
   }
-  if (method === 'GET' && path === '/api/session') return json(res, { model: !!model, version: releaseVersion })
+  if (method === 'GET' && path === '/api/session') return json(res, { model: !!model, version: releaseVersion, enhancedEditor })
   if (path === '/api/projects' && method === 'GET') {
     return json(res, storage.all('SELECT * FROM projects ORDER BY created DESC'))
   }

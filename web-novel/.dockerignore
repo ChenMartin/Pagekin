@@ -6,5 +6,12 @@
 !writing-context.mjs
 !version.mjs
 !maintenance.mjs
+!package.json
+!package-lock.json
+!build-editor.mjs
+!editor/
+!editor/**
 !public/
 !public/**
+public/editor.bundle.mjs
+public/editor.notices.txt
