@@ -122,6 +122,7 @@ test('novel workflow through HTTP across devices, generation, export and restart
   let upstreamCalls = 0
   let embeddingCalls = 0
   let lastPrompt = ''
+  const reviewIssue = { title: '补足场景动作', severity: 'major', quote: '电脑上的稿', reason: '场景过于简略', suggestion: '补写登船动作' }
   const upstream = createServer(async (req, res) => {
     const chunks = []
     for await (const part of req) chunks.push(part)
@@ -144,7 +145,16 @@ test('novel workflow through HTTP across devices, generation, export and restart
     upstreamCalls++
     lastPrompt = input.messages.at(-1).content
     res.writeHead(200, { 'Content-Type': 'text/event-stream' })
-    const output = input.messages[0].content.includes('生成写前细纲') ? '1. 抵达灯塔并核对钥匙。' : '候选正文'
+    const instruction = input.messages[0].content
+    let output = '候选正文'
+    if (instruction.includes('生成写前细纲')) output = '1. 抵达灯塔并核对钥匙。'
+    if (instruction.includes('审查当前正文')) {
+      output = lastPrompt.includes('纯文本回退') ? '这里是一条纯文本意见。' : '```json\n' + JSON.stringify({ issues: [
+        reviewIssue,
+        { ...reviewIssue, title: '引文重复', severity: 'minor', quote: '电脑' },
+        { ...reviewIssue, title: '引文缺失', quote: '离开灯塔' },
+      ] }) + '\n```'
+    }
     res.write('data: ' + JSON.stringify({ choices: [{ delta: { content: output } }] }) + '\n\n')
     if (lastPrompt.includes('hold')) return
     res.end('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n')
@@ -260,7 +270,7 @@ test('novel workflow through HTTP across devices, generation, export and restart
     assert.match(initial, /event: sync/)
     const cursor = /^id: (\d+)/.exec(initial)[1]
     await request('/api/projects/' + second.id + '/documents/' + chapter.id, { status: 404 })
-    const save = { title: '抵达', body: '电脑上的稿', baseRev: 1, mutationId: randomUUID(), checkpoint: true }
+    const save = { title: '抵达', body: '电脑上的稿\n合上电脑。', baseRev: 1, mutationId: randomUUID() }
     const receipt = (await request(doc, { method: 'PUT', value: save })).result
     assert.equal(receipt.rev, 2)
     const event = await readProjectEvent(eventUrl, b, cursor)
@@ -270,7 +280,7 @@ test('novel workflow through HTTP across devices, generation, export and restart
     await request(doc, { method: 'PUT', value: { ...save, body: '不同内容' }, status: 422 })
     const stale = await request(doc, { method: 'PUT', cookie: b, status: 409,
       value: { ...save, body: '手机旧稿', mutationId: randomUUID() } })
-    assert.equal(stale.result.current.body, '电脑上的稿')
+    assert.equal(stale.result.current.body, save.body)
     const run = async (kind, baseRev, guidance = '') => {
       const value = { kind, baseRev, guidance, mutationId: randomUUID() }
       const { result } = await request(doc + '/runs', { method: 'POST', value, status: 202 })
@@ -293,14 +303,23 @@ test('novel workflow through HTTP across devices, generation, export and restart
     await request(docs + '/' + settings.id, { method: 'PUT',
       value: { title: settings.title, body: '晴天', baseRev: 1, mutationId: randomUUID() } })
     await request(staleRun + '/apply', { method: 'POST', status: 409 })
+    assert.equal((await request(doc + '/history')).result.some(item => item.rev === 2), false)
     const review = await run('review', 2)
-    await awaitRun(review, job => job.status === 'done')
+    const reviewResult = await awaitRun(review, job => job.status === 'done')
+    assert.deepEqual(reviewResult.reviewReport.issues[0], { ...reviewIssue, evidence: 'verified' })
+    assert.deepEqual(reviewResult.reviewReport.issues.map(issue => issue.evidence), ['verified', 'ambiguous', 'missing'])
+    assert.equal((await request(doc + '/history')).result.find(item => item.rev === 2).reason, 'before-review')
     await request(review + '/apply', { method: 'POST', status: 422 })
+    const rawReview = await run('review', 2, '纯文本回退')
+    const rawReviewResult = await awaitRun(rawReview, job => job.status === 'done')
+    assert.equal(rawReviewResult.output, '这里是一条纯文本意见。')
+    assert.equal(rawReviewResult.reviewReport, undefined)
     const revise = await run('revise', 2)
     assert.equal((await awaitRun(revise, job => job.status === 'done')).output, '候选正文')
-    assert.equal((await request(doc)).result.body, '电脑上的稿')
+    assert.equal((await request(doc)).result.body, save.body)
     assert.equal((await request(revise + '/apply', { method: 'POST' })).result.rev, 3)
     assert.equal((await request(revise + '/apply', { method: 'POST' })).result.rev, 3)
+    assert.deepEqual((await request(review)).result.reviewReport, reviewResult.reviewReport)
     const paused = await run('draft', 3, 'hold')
     await awaitRun(paused, job => !!job.output)
     await request(paused + '/cancel', { method: 'POST' })
@@ -310,7 +329,7 @@ test('novel workflow through HTTP across devices, generation, export and restart
     await request(doc, { method: 'PUT', status: 409, value: { ...save, baseRev: 4, mutationId: randomUUID() } })
     await request(doc + '/status', { method: 'POST', value: { baseRev: 4, action: 'reopen' } })
     await request(doc + '/history', { method: 'POST', value: { baseRev: 5, rev: 2 } })
-    assert.equal((await request(doc)).result.body, '电脑上的稿')
+    assert.equal((await request(doc)).result.body, save.body)
     assert.match((await request(base + '/export')).result, /候选正文/)
     assert.doesNotMatch((await request(base + '/export')).result, /电脑上的稿/)
     assert.match((await request(base + '/export?drafts=1')).result, /电脑上的稿/)
@@ -372,6 +391,8 @@ test('novel workflow through HTTP across devices, generation, export and restart
     assert.equal((await request('/api/projects/' + copy.id + '/references')).result.length, 2)
     assert.equal((await request('/api/projects/' + copy.id + '/semantic')).result.chunks, 0)
     const copiedBackup = (await request('/api/projects/' + copy.id + '/backup')).result
+    const copiedReview = copiedBackup.runs.find(row => row.kind === 'review' && row.output === reviewResult.output)
+    assert.deepEqual((await request('/api/projects/' + copy.id + '/runs/' + copiedReview.id)).result.reviewReport, reviewResult.reviewReport)
     const copiedDraft = copiedBackup.runs.find(row => row.outline_id && row.applied_rev)
     assert.notEqual(copiedDraft.outline_id, updatedPlan.id)
     assert.equal(copiedBackup.runs.find(row => row.id === copiedDraft.outline_id).kind, 'outline')
@@ -385,7 +406,7 @@ test('novel workflow through HTTP across devices, generation, export and restart
     server = await launch(directory, upstream.address().port)
     assert.equal((await request(base + '/semantic')).result.indexed, 2)
     assert.equal(JSON.parse((await readProjectEvent(server.base + base + '/events', b, cursor)).split('data: ')[1]).rev, 2)
-    assert.equal((await request(doc)).result.body, '电脑上的稿')
+    assert.equal((await request(doc)).result.body, save.body)
     assert.equal((await request('/api/projects')).result.length, 3)
     const snapshot = join(directory, 'release-snapshot.sqlite')
     assert.equal((await backupDatabase(join(directory, 'novels.sqlite'), snapshot)).projects, 3)
@@ -398,7 +419,7 @@ test('novel workflow through HTTP across devices, generation, export and restart
     server = await launch(restoreDir, upstream.address().port)
     await request('/api/projects', { status: 401 })
     a = await login()
-    assert.equal((await request(doc)).result.body, '电脑上的稿')
+    assert.equal((await request(doc)).result.body, save.body)
   } finally {
     await stop(server)
     upstream.closeAllConnections()

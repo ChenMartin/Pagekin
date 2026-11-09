@@ -400,7 +400,7 @@ async function route(req, res) {
     }
   }
   if (resource === 'runs' && id) {
-    if (method === 'GET' && action === undefined) return json(res, storage.getRun(pid, id))
+    if (method === 'GET' && action === undefined) return json(res, storage.runDetail(pid, id))
     if (method === 'POST' && action === 'cancel') {
       storage.getRun(pid, id)
       active.get(id)?.abort('cancelled')

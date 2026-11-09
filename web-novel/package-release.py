@@ -15,7 +15,7 @@ def package(output: Path) -> Path:
         raise ValueError("Compose image and application version differ")
     files = [
         ".dockerignore", ".env.example", "Dockerfile", "compose.yaml", "README.md", "RELEASE.md",
-        "server.mjs", "store.mjs", "writing-context.mjs", "desktop-archive.mjs", "desktop-copy.mjs",
+        "server.mjs", "store.mjs", "writing-context.mjs", "review-report.mjs", "desktop-archive.mjs", "desktop-copy.mjs",
         "version.mjs", "maintenance.mjs", "semantic.mjs", "public/index.html", "public/app.mjs",
         "public/manuscript.mjs", "public/style.css",
         "package.json", "package-lock.json", "build-editor.mjs", "editor/codemirror.mjs",

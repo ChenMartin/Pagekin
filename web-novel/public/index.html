@@ -130,6 +130,15 @@
           <div id="run-view" hidden>
             <p id="run-status" role="status"></p>
             <pre id="run-output"></pre>
+            <div id="review-report" hidden>
+              <p id="review-summary"></p>
+              <p id="review-stale" hidden>当前正文与审稿版本不同或有待保存的更改。可查看意见，定位和勾选需基于当前版本重新审稿。</p>
+              <fieldset id="review-issues">
+                <legend>审稿问题</legend>
+                <div id="review-list"></div>
+                <button id="use-review-issues" disabled>将勾选的问题加入修稿要求</button>
+              </fieldset>
+            </div>
             <div class="tools">
               <button id="cancel-run" hidden>取消</button>
               <button id="apply-run" hidden>预览并应用候选</button>

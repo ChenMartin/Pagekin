@@ -17,12 +17,17 @@ let app, browser, socket
 const modelMock = createServer(async (req, res) => {
   const chunks = []
   for await (const chunk of req) chunks.push(chunk)
+  const payload = JSON.parse(Buffer.concat(chunks))
   if (req.url === '/v1/chat/completions') {
     res.writeHead(200, { 'Content-Type': 'text/event-stream' })
-    res.end('data: {"choices":[{"delta":{"content":"本章先调查船票。"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n')
+    const content = payload.messages[0].content.includes('审查当前正文') ? JSON.stringify({ issues: [
+      { title: '补写动作', severity: 'major', quote: '断网的本机', reason: '缺少动作', suggestion: '加入登船动作' },
+      { title: '模型误引', severity: 'minor', quote: '原文没有这句话', reason: '引文待核对', suggestion: '调整灯塔描写' },
+    ] }) : '本章先调查船票。'
+    res.end('data: ' + JSON.stringify({ choices: [{ delta: { content }, finish_reason: 'stop' }] }) + '\n\ndata: [DONE]\n\n')
     return
   }
-  const { input } = JSON.parse(Buffer.concat(chunks))
+  const { input } = payload
   res.writeHead(200, { 'Content-Type': 'application/json' })
   res.end(JSON.stringify({ data: input.map((_, index) => ({ index, embedding: [1, 0] })) }))
 })
@@ -204,6 +209,23 @@ try {
   await until(() => evaluate("document.querySelector('#dialog-body').textContent.includes('【已选写前细纲】') && document.querySelector('#dialog-body').textContent.includes('本章先调查船票。')"), 'Selected outline did not enter the draft preview')
   await click('#close-dialog')
   await click('#clear-outline')
+  await click('[data-run=review]')
+  await visible('#review-report')
+  assert.match(await evaluate("document.querySelector('#review-list').textContent"), /在该版本未找到引文/)
+  assert.equal(await evaluate("document.querySelectorAll('#review-list input').length"), 1)
+  await click('#review-list button')
+  assert.equal(await evaluate(enhanced ? 'String(window.getSelection())' : "document.querySelector('#body').value.slice(document.querySelector('#body').selectionStart, document.querySelector('#body').selectionEnd)"), '断网的本机')
+  await click('#review-list input')
+  await click('#use-review-issues')
+  const revisedGuidance = await evaluate("document.querySelector('#guidance').value")
+  assert.match(revisedGuidance, /加入登船动作/)
+  assert.doesNotMatch(revisedGuidance, /调整灯塔描写/)
+  assert.equal(await evaluate(bodyText), '暂时断网的本机稿')
+  await click('#preview-context')
+  await fill('#dialog select', 'revise')
+  await click('#dialog-submit')
+  await until(() => evaluate("document.querySelector('#dialog-body').textContent.includes('加入登船动作')"), 'Selected issue did not enter the revision preview')
+  await click('#close-dialog')
   assert.equal(await evaluate(`(async () => {
     const [project, doc] = JSON.parse(sessionStorage.getItem('pagekin-location'));
     const response = await fetch('/api/projects/' + project + '/documents/' + doc, {
@@ -213,6 +235,7 @@ try {
     return response.status;
   })()`), 200)
   await visible('#reload-remote')
+  assert.equal(await evaluate("document.querySelector('#review-issues').disabled"), true)
   await fillBody('这台设备的稿')
   await click('#reload-remote')
   await visible('#conflict')
@@ -285,7 +308,7 @@ try {
   assert.equal(await evaluate("document.querySelector('#documents').options.length"), 4)
   await click('#previous-chapter')
   await until(() => evaluate("document.querySelector('#title').value === '第二章' && " + readOnly), 'Existing chapter changed after import')
-  console.log('Browser workflow passed (' + (enhanced ? 'CodeMirror' : 'plain') + '): autosave, recovery, context, conflicts, editing and import')
+  console.log('Browser workflow passed (' + (enhanced ? 'CodeMirror' : 'plain') + '): autosave, recovery, context, review, conflicts, editing and import')
 } finally {
   socket?.close()
   for (const child of [browser, app]) {

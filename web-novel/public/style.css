@@ -52,6 +52,13 @@ details { margin-top: 1rem; padding: .75rem; border: 1px solid var(--line); bord
 summary { cursor: pointer; }
 details label { display: block; margin-top: .65rem; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 45vh; overflow: auto; font: inherit; padding: .65rem; background: var(--paper); }
+#review-issues { min-width: 0; margin: 0; border: 1px solid var(--line); border-radius: .35rem; }
+#review-list article { padding: .65rem 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+#review-list h3, #review-list p { margin: 0 0 .45rem; }
+#review-list q { white-space: pre-wrap; }
+#review-list label { display: inline-flex; align-items: center; gap: .4rem; margin: 0; min-height: 2.65rem; }
+#review-list input { width: auto; min-height: auto; }
+#use-review-issues { margin-top: .65rem; }
 dialog { color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: .65rem; width: min(48rem, calc(100% - 2rem)); max-height: 86dvh; }
 dialog::backdrop { background: #0008; }
 #dialog-body label { display: block; margin-bottom: .65rem; }

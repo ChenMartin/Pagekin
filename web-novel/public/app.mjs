@@ -148,6 +148,11 @@ function paint(state = editor) {
   $('reference-query-label').hidden = state.references.size === state.referenceSpans.size
   for (const btn of document.querySelectorAll('[data-run]')) btn.disabled = locked || state.job?.status === 'running'
   $('preview-context').disabled = locked
+  if (state.job?.reviewReport) {
+    const current = currentReview(state)
+    $('review-issues').disabled = !current
+    $('review-stale').hidden = !state.job.reviewReport.issues.length || current
+  }
   $('length').textContent = `${state.body.length.toLocaleString()} 字符`
   $('document-label').textContent = [names[state.doc.kind], state.doc.number && `第 ${state.doc.number} 章`,
     locked && '已定稿'].filter(Boolean).join(' · ')
@@ -959,11 +964,74 @@ async function showHistory() {
   })))
 }
 
+function currentReview(state) {
+  return state === editor && state?.job?.reviewReport && state.job.document_id === state.doc.id && state.job.base_rev === state.doc.rev &&
+    state.remoteRev <= state.doc.rev && state.doc.status === 'draft' && !state.conflict && !state.mutating && !dirty(state) && !composing
+}
+
+function renderReview(state) {
+  const report = state.job?.reviewReport
+  $('review-report').hidden = !report
+  $('review-list').replaceChildren()
+  if (!report) return
+  const { issues } = report
+  const version = `正文 v${state.job.base_rev}`
+  $('review-summary').textContent = issues.length
+    ? `${version} · 模型列出 ${issues.length} 条问题，请核对原文后选择。`
+    : `${version} · 模型未列出问题。`
+  $('review-issues').hidden = issues.length === 0
+  $('use-review-issues').hidden = !issues.some(issue => issue.evidence === 'verified')
+  $('use-review-issues').disabled = true
+  const evidence = { verified: '引文可唯一定位', ambiguous: '引文在原文中出现多次', missing: '在该版本未找到引文', unavailable: '缺少审稿版本的正文快照' }
+  issues.forEach((issue, index) => {
+    const item = document.createElement('article')
+    const title = document.createElement('h3')
+    title.textContent = `${index + 1}. ${issue.title}（${issue.severity === 'major' ? '重要' : '一般'}）`
+    const source = document.createElement('p')
+    const quote = document.createElement('q')
+    quote.textContent = issue.quote
+    source.append(evidence[issue.evidence] + ' · ', quote)
+    const reason = document.createElement('p')
+    reason.textContent = '原因 · ' + issue.reason
+    const suggestion = document.createElement('p')
+    suggestion.textContent = '改法 · ' + issue.suggestion
+    item.append(title, source, reason, suggestion)
+    if (issue.evidence === 'verified') {
+      const tools = document.createElement('div')
+      tools.className = 'tools'
+      const locate = document.createElement('button')
+      locate.textContent = '定位原文'
+      locate.addEventListener('click', () => runAction(() => {
+        if (!currentReview(state)) throw new Error('请为当前版本重新审稿')
+        const input = bodyControl()
+        const start = input.value.indexOf(issue.quote)
+        if (start < 0 || input.value.indexOf(issue.quote, start + 1) >= 0) throw new Error('无法在当前编辑器中唯一定位该引文')
+        input.focus({ preventScroll: true })
+        input.setSelectionRange(start, start + issue.quote.length)
+        if (enhancedBody) enhancedBody.reveal(start)
+        else revealMatch(input, start)
+        $(enhancedBody ? 'body-editor-host' : 'body').scrollIntoView({ block: 'nearest' })
+      }))
+      const label = document.createElement('label')
+      const check = document.createElement('input')
+      check.type = 'checkbox'
+      check.value = index
+      check.setAttribute('aria-label', `采纳第 ${index + 1} 条意见`)
+      label.append(check, '采纳这条意见')
+      tools.append(locate, label)
+      item.append(tools)
+    }
+    $('review-list').append(item)
+  })
+}
+
 function renderJob(state) {
   if (editor !== state) return
   const job = state.job
   $('run-view').hidden = !job
   $('run-output').textContent = job?.output || ''
+  $('run-output').hidden = Boolean(job?.reviewReport)
+  renderReview(state)
   $('run-status').textContent = job ? [runNames[job.kind], runStates[job.status],
     job.applied_rev !== null && '已应用', job.error].filter(Boolean).join(' · ') : ''
   $('cancel-run').hidden = job?.status !== 'running'
@@ -971,7 +1039,7 @@ function renderJob(state) {
     job.status === 'running' || !job.source_hash || !job.output?.trim() || job.applied_rev !== null
   $('use-outline').hidden = job?.kind !== 'outline' || job.status !== 'done' || !job.source_hash ||
     job.base_rev !== state.doc.rev || state.doc.status === 'final'
-  $('use-review').hidden = job?.kind !== 'review' || job.status === 'running' || !job.output
+  $('use-review').hidden = job?.kind !== 'review' || job.status === 'running' || !job.output || Boolean(job.reviewReport)
   paint(state)
 }
 
@@ -1254,18 +1322,35 @@ click('use-outline', () => {
 })
 click('clear-outline', () => { editor.outline = null; paint() })
 $('use-review').addEventListener('pointerdown', event => event.preventDefault())
+function addRevisionGuidance(text) {
+  const guidance = $('guidance')
+  const next = [guidance.value.trim(), text].filter(Boolean).join('\n\n')
+  if (next.length > guidance.maxLength) throw new Error('修稿要求过长，请缩小选择范围')
+  guidance.value = next
+  guidance.focus()
+  note('已加入修稿要求，确认后点击“修稿”')
+}
 click('use-review', () => {
   const selection = window.getSelection()
   const output = $('run-output')
   if (!selection || !output.contains(selection.anchorNode) || !output.contains(selection.focusNode) || !selection.toString().trim()) {
     throw new Error('请先在审稿结果里选中要处理的文字')
   }
-  const guidance = $('guidance')
-  const next = [guidance.value.trim(), selection.toString().trim()].filter(Boolean).join('\n\n')
-  if (next.length > guidance.maxLength) throw new Error('修稿要求过长，请缩小选择范围')
-  guidance.value = next
-  guidance.focus()
-  note('已加入修稿要求，确认后点击“修稿”')
+  addRevisionGuidance(selection.toString().trim())
+})
+$('review-list').addEventListener('change', () => {
+  $('use-review-issues').disabled = !$('review-list').querySelector('input:checked')
+})
+click('use-review-issues', () => {
+  if (!currentReview(editor)) throw new Error('请为当前版本重新审稿')
+  const selected = [...$('review-list').querySelectorAll('input:checked')]
+  if (!selected.length) return
+  addRevisionGuidance(selected.map(check => {
+    const issue = editor.job.reviewReport.issues[check.value]
+    return [issue.title, `原文「${issue.quote}」`, `原因 · ${issue.reason}`, `改法 · ${issue.suggestion}`].join('\n')
+  }).join('\n\n'))
+  for (const check of selected) check.checked = false
+  $('use-review-issues').disabled = true
 })
 click('cancel-run', async () => {
   const state = editor

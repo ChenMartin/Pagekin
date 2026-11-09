@@ -4,6 +4,7 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { manuscriptChapterLimit } from './public/manuscript.mjs'
 import { schemaVersion } from './version.mjs'
+import { reviewReport } from './review-report.mjs'
 
 export class ApiError extends Error {
   constructor(status, message, details) {
@@ -355,6 +356,14 @@ export function openStore(directory) {
     return row
   }
 
+  function runDetail(pid, id) {
+    const job = getRun(pid, id)
+    if (job.kind !== 'review' || job.status !== 'done') return job
+    const snapshot = get('SELECT body FROM history WHERE document_id=? AND rev=?', job.document_id, job.base_rev)
+    const report = reviewReport(job.output, snapshot?.body)
+    return report ? { ...job, reviewReport: report } : job
+  }
+
   function parseRun(value) {
     object(value)
     const kind = value.kind
@@ -435,11 +444,12 @@ export function openStore(directory) {
         if (existing.request_hash !== requestHash) {
           throw new ApiError(409, '任务编号已被使用')
         }
-        return { job: existing }
+        return { job: runDetail(pid, jobId) }
       }
       if (get("SELECT id FROM runs WHERE status='running'")) throw new ApiError(409, '已有生成任务正在运行')
       const context = runContext(doc, request)
       const messages = prepare(kind, context)
+      if (kind === 'review') checkpoint(doc, 'before-review')
       run("INSERT INTO runs (id,document_id,base_rev,kind,status,created,request_hash,source_hash,reference_ids,outline_id) VALUES (?,?,?,?,'running',?,?,?,?,?)",
         jobId, id, doc.rev, kind, now(), requestHash, context.sourceHash, JSON.stringify(refs), outlineId)
       return { job: getRun(pid, jobId), messages }
@@ -662,5 +672,5 @@ export function openStore(directory) {
 
   return { db, get, all, run, tx, project, document, createProject, renameProject, addDocument, importChapters, eventHead, projectEvents, pruneEvents,
     save, chapters, search, addReference, reference, threads, saveThread,
-    transition, history, restore, getRun, startRun, previewRun, applyRun, backup, importBackup }
+    transition, history, restore, getRun, runDetail, startRun, previewRun, applyRun, backup, importBackup }
 }
