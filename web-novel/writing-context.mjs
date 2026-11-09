@@ -47,7 +47,7 @@ export function writingMessages(kind, { doc, materials, previous, earlier, threa
   }
   if (previous) add('上一已定稿章节末尾：' + previous.title, previous.body, 4500, true)
   for (const entry of materials.filter(entry => entry.kind === 'reference')) {
-    add(labels.reference + ' · ' + entry.title, entry.body, 1500, false, referenceQuery)
+    add(labels.reference + ' · ' + entry.title, entry.body, 1500, false, entry.exactExcerpt ? '' : referenceQuery)
   }
   const threadLabels = { planned: '计划埋设', open: '待回收', resolved: '已回收' }
   const threadText = threads.map(thread => {

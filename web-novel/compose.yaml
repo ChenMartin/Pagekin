@@ -18,6 +18,9 @@ services:
       LLM_MODEL: "${LLM_MODEL:-}"
       LLM_API_KEY: "${LLM_API_KEY:-}"
       LLM_CONTEXT_CHARS: "${LLM_CONTEXT_CHARS:-64000}"
+      EMBEDDING_BASE_URL: "${EMBEDDING_BASE_URL:-}"
+      EMBEDDING_MODEL: "${EMBEDDING_MODEL:-}"
+      EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
     volumes:
       - novels:/data
     read_only: true

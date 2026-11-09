@@ -79,6 +79,7 @@ async function launch(directory, port) {
       ...process.env, APP_PASSWORD: password, APP_PASSWORD_FILE: '', APP_SECURE_COOKIE: '0',
       APP_HOST: '127.0.0.1', APP_ORIGIN: '', APP_DATA_DIR: directory, PORT: '0', LLM_MODEL: 'test',
       LLM_BASE_URL: `http://127.0.0.1:${port}/v1`, LLM_API_KEY: '', LLM_CONTEXT_CHARS: '8000',
+      EMBEDDING_BASE_URL: `http://127.0.0.1:${port}/v1`, EMBEDDING_MODEL: 'embedding-test', EMBEDDING_API_KEY: '',
     },
     stdio: ['ignore', 'pipe', 'inherit'],
   })
@@ -119,12 +120,29 @@ async function readProjectEvent(url, cookie, cursor) {
 test('novel workflow through HTTP across devices, generation, export and restart', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'pagekin-web-smoke-'))
   let upstreamCalls = 0
+  let embeddingCalls = 0
   let lastPrompt = ''
   const upstream = createServer(async (req, res) => {
     const chunks = []
     for await (const part of req) chunks.push(part)
+    const input = JSON.parse(Buffer.concat(chunks))
+    if (req.url === '/v1/embeddings') {
+      embeddingCalls++
+      assert.equal(input.model, 'embedding-test')
+      assert.ok(input.input.length <= 8)
+      if (embeddingCalls === 2) {
+        res.writeHead(503)
+        res.end()
+        return
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      const vector = text => /灯塔建于|如何找到海岸标志/.test(text) ? [1, 0, 0] : [0, 1, 0]
+      // A compatible endpoint may return the array in a different order.
+      res.end(JSON.stringify({ data: input.input.map((text, index) => ({ index, embedding: vector(text) })).reverse() }))
+      return
+    }
     upstreamCalls++
-    lastPrompt = JSON.parse(Buffer.concat(chunks)).messages.at(-1).content
+    lastPrompt = input.messages.at(-1).content
     res.writeHead(200, { 'Content-Type': 'text/event-stream' })
     res.write('data: {"choices":[{"delta":{"content":"候选正文"}}]}\n\n')
     if (lastPrompt.includes('hold')) return
@@ -197,11 +215,45 @@ test('novel workflow through HTTP across devices, generation, export and restart
       value: { title: '灯塔史', body: '开头不相关的地理信息'.repeat(300) + '灯塔建于一百年前' } })).result
     await request(base + '/references', { method: 'POST', status: 201, value: { title: '私人笔记', body: '此条未选中' } })
     await request('/api/projects/' + second.id + '/references/' + chosen.id, { status: 404 })
+    await request(base + '/semantic/search', { method: 'POST', status: 422, value: { q: '如何找到海岸标志' } })
+    assert.equal(embeddingCalls, 0)
+    async function buildReferenceIndex() {
+      await request(base + '/semantic/index', { method: 'POST', status: 202, value: {} })
+      for (let attempt = 0; attempt < 40; attempt++) {
+        const state = (await request(base + '/semantic')).result
+        if (state.state !== 'running') return state
+        await delay(50)
+      }
+      assert.fail('Semantic index did not finish')
+    }
+    const failedIndex = await buildReferenceIndex()
+    assert.equal(failedIndex.state, 'failed')
+    assert.equal(failedIndex.indexed, 1)
+    const semanticState = await buildReferenceIndex()
+    assert.equal(semanticState.state, 'complete', JSON.stringify(semanticState))
+    assert.equal(semanticState.indexed, 2)
+    assert.equal(embeddingCalls, 3)
+    const callsAfterIndex = embeddingCalls
+    await request(base + '/semantic/index', { method: 'POST', status: 202, value: {} })
+    assert.equal(embeddingCalls, callsAfterIndex)
+    await request('/api/projects/' + second.id + '/semantic/search',
+      { method: 'POST', status: 422, value: { q: '如何找到海岸标志' } })
+    assert.equal(embeddingCalls, callsAfterIndex)
+    const semanticHits = (await request(base + '/semantic/search', { method: 'POST', value: { q: '如何找到海岸标志' } })).result
+    const hit = semanticHits[0]
+    assert.equal(hit.id, chosen.id)
+    assert.match(hit.excerpt, /灯塔建于/)
     const settings = await create({ kind: 'settings', title: '世界观', body: '港口常年起雾' })
     await create({ kind: 'character', title: '小舟', body: '船长' })
     await create({ kind: 'blueprint', number: 1, title: '寻找线索', body: '主角抵达码头' })
     const chapter = await create({ kind: 'chapter', number: 1, title: '抵达', body: '原稿' })
     const doc = docs + '/' + chapter.id
+    const span = { id: hit.id, start: hit.start, end: hit.end }
+    const selectedContext = { kind: 'draft', baseRev: 1, referenceIds: [chosen.id], referenceSpans: [span] }
+    const preview = (await request(doc + '/context', { method: 'POST', value: selectedContext })).result.messages.at(-1).content
+    assert.ok(preview.includes(hit.excerpt))
+    await request(doc + '/context', { method: 'POST', status: 400,
+      value: { ...selectedContext, referenceSpans: [{ id: hit.id, start: chosen.body.length, end: chosen.body.length + 10 }] } })
     const eventUrl = server.base + base + '/events'
     const initial = await readProjectEvent(eventUrl, b)
     assert.match(initial, /event: sync/)
@@ -292,6 +344,7 @@ test('novel workflow through HTTP across devices, generation, export and restart
     assert.notEqual(copy.id, project.id)
     assert.equal((await request('/api/projects/' + copy.id + '/documents')).result.length, 6)
     assert.equal((await request('/api/projects/' + copy.id + '/references')).result.length, 2)
+    assert.equal((await request('/api/projects/' + copy.id + '/semantic')).result.chunks, 0)
     const copiedThreads = (await request('/api/projects/' + copy.id + '/threads')).result
     assert.equal(copiedThreads[0].resolved, 2)
     assert.notEqual(copiedThreads[0].id, thread.id)
@@ -300,6 +353,7 @@ test('novel workflow through HTTP across devices, generation, export and restart
     await request('/api/import', { method: 'POST', value: brokenBackup, status: 400 })
     await stop(server)
     server = await launch(directory, upstream.address().port)
+    assert.equal((await request(base + '/semantic')).result.indexed, 2)
     assert.equal(JSON.parse((await readProjectEvent(server.base + base + '/events', b, cursor)).split('data: ')[1]).rev, 2)
     assert.equal((await request(doc)).result.body, '电脑上的稿')
     assert.equal((await request('/api/projects')).result.length, 3)
@@ -308,7 +362,7 @@ test('novel workflow through HTTP across devices, generation, export and restart
     const restoreDir = join(directory, 'recovered')
     const restoredDb = join(restoreDir, 'novels.sqlite')
     assert.equal((await restoreDatabase(createReadStream(snapshot), restoredDb)).projects, 3)
-    assert.equal(verifyDatabase(restoredDb).schema, 5)
+    assert.equal(verifyDatabase(restoredDb).schema, 6)
     await assert.rejects(restoreDatabase(createReadStream(snapshot), restoredDb), /目标已有数据库/)
     await stop(server)
     server = await launch(restoreDir, upstream.address().port)
@@ -332,6 +386,7 @@ test('opening an existing Web database migrates v1 and keeps chapter data', asyn
     const doc = store.addDocument(p.id, { kind: 'chapter', number: 1, title: '原章', body: '原文' })
     store.db.exec(`
       DROP TRIGGER document_created_event; DROP TRIGGER document_updated_event; DROP TABLE project_events; DROP TABLE narrative_threads;
+      DROP TABLE reference_vectors;
       DROP TABLE chapter_imports; DROP TABLE reference_material;
       ALTER TABLE runs DROP COLUMN reference_ids; PRAGMA user_version=1;
     `)
@@ -339,7 +394,7 @@ test('opening an existing Web database migrates v1 and keeps chapter data', asyn
     store = undefined
     store = openStore(directory)
     assert.equal(store.document(p.id, doc.id).body, '原文')
-    assert.equal(store.get('PRAGMA user_version').user_version, 5)
+    assert.equal(store.get('PRAGMA user_version').user_version, 6)
     assert.equal(store.addReference(p.id, { title: '资料', body: '参考文字' }).body, '参考文字')
   } finally { store?.db.close(); await rm(directory, { recursive: true, force: true }) }
 })

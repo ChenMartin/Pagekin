@@ -144,6 +144,20 @@ export function openStore(directory) {
       COMMIT;
     `)
   }
+  if (version < 6) {
+    db.exec(`
+      BEGIN IMMEDIATE;
+      CREATE TABLE reference_vectors (
+        profile TEXT NOT NULL, reference_id TEXT NOT NULL REFERENCES reference_material(id),
+        part INTEGER NOT NULL, total_parts INTEGER NOT NULL,
+        start_offset INTEGER NOT NULL, end_offset INTEGER NOT NULL,
+        dimensions INTEGER NOT NULL, vector BLOB NOT NULL,
+        PRIMARY KEY(profile, reference_id, part)
+      );
+      PRAGMA user_version=6;
+      COMMIT;
+    `)
+  }
   db.prepare("UPDATE runs SET status='interrupted',error='服务重启，已保留收到的内容' WHERE status='running'").run()
   const get = (sql, ...args) => db.prepare(sql).get(...args)
   const all = (sql, ...args) => db.prepare(sql).all(...args)
@@ -343,14 +357,22 @@ export function openStore(directory) {
       throw new ApiError(400, '每次可引用最多五份不同的参考资料')
     }
     const referenceQuery = string(value.referenceQuery ?? '', 100).trim()
-    return { kind, guidance, baseRev, refs, referenceQuery }
+    const spans = value.referenceSpans ?? []
+    if (!Array.isArray(spans) || spans.length > refs.length ||
+        spans.some(span => !span || !refs.includes(span.id) || !Number.isSafeInteger(span.start) ||
+          !Number.isSafeInteger(span.end) || span.start < 0 || span.end <= span.start || span.end - span.start > 1200) ||
+        new Set(spans.map(span => span.id)).size !== spans.length) {
+      throw new ApiError(400, '引用的资料片段无效')
+    }
+    return { kind, guidance, baseRev, refs, referenceQuery,
+      spans: spans.map(({ id, start, end }) => ({ id, start, end })) }
   }
 
   function runContext(doc, request) {
     match(doc, request.baseRev)
     if (doc.kind !== 'chapter' || doc.status !== 'draft') throw new ApiError(422, 'AI 操作需要未定稿章节')
     if (request.kind !== 'draft' && !doc.body.trim()) throw new ApiError(422, '请先填写正文')
-    return { doc, ...sources(doc, request.refs), guidance: request.guidance, referenceQuery: request.referenceQuery }
+    return { doc, ...sources(doc, request.refs, request.spans), guidance: request.guidance, referenceQuery: request.referenceQuery }
   }
 
   function previewRun(pid, id, value, prepare) {
@@ -360,10 +382,11 @@ export function openStore(directory) {
 
   function startRun(pid, id, value, prepare) {
     const request = parseRun(value)
-    const { kind, baseRev, guidance, refs, referenceQuery } = request
+    const { kind, baseRev, guidance, refs, referenceQuery, spans } = request
     const fingerprint = [id, baseRev, kind, guidance]
     if (refs.length || referenceQuery) fingerprint.push(refs)
     if (referenceQuery) fingerprint.push(referenceQuery)
+    if (spans.length) fingerprint.push(spans)
     const requestHash = hash(JSON.stringify(fingerprint))
     return tx(() => {
       const doc = document(pid, id)
@@ -385,14 +408,20 @@ export function openStore(directory) {
     })
   }
 
-  function sources(doc, refs) {
+  function sources(doc, refs, spans = []) {
     const materials = all(`
       SELECT id, rev, kind, title, body, number FROM documents WHERE project_id=? AND
         (kind IN ('settings','character') OR (kind='blueprint' AND number=?))
       ORDER BY CASE kind WHEN 'blueprint' THEN 0 WHEN 'settings' THEN 1 ELSE 2 END, created, id LIMIT 100`,
       doc.project_id, doc.number)
     const [previous, ...earlier] = all(finalizedSelect + ' AND d.number<? ORDER BY d.number DESC LIMIT 3', doc.project_id, doc.number)
-    const selected = refs.map(id => ({ ...reference(doc.project_id, id), kind: 'reference', rev: 1 }))
+    const selected = refs.map(id => {
+      const entry = { ...reference(doc.project_id, id), kind: 'reference', rev: 1 }
+      const span = spans.find(candidate => candidate.id === id)
+      if (!span) return entry
+      if (span.end > entry.body.length) throw new ApiError(400, '引用片段已超出资料范围')
+      return { ...entry, body: entry.body.slice(span.start, span.end), exactExcerpt: true }
+    })
     const threads = all(`
       SELECT id,rev,title,body,kind,status,planted,due,resolved FROM narrative_threads
       WHERE project_id=? AND status<>'archived' AND

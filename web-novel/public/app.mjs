@@ -68,7 +68,8 @@ async function api(path, method = 'GET', data) {
   const response = await fetch('/api' + path, {
     method, headers: data === undefined ? {} : { 'Content-Type': 'application/json' },
     body: data === undefined ? undefined : JSON.stringify(data),
-    signal: AbortSignal.timeout(path === '/import' || path.endsWith('/chapter-imports') ? 60_000 : 15_000),
+    signal: AbortSignal.timeout(path === '/import' || path.endsWith('/chapter-imports') ? 60_000
+      : path.endsWith('/semantic/search') ? 25_000 : 15_000),
   })
   const result = await response.json()
   if (!response.ok) throw Object.assign(new Error(result.error || '请求失败'), { status: response.status, current: result.current })
@@ -138,10 +139,10 @@ function paint(state = editor) {
   $('status').textContent = locked ? '重新打开定稿' : '定稿'
   $('ai').hidden = state.doc.kind !== 'chapter' || !model
   $('selected-references').textContent = state.references.size
-    ? '已选资料：' + [...state.references.values()].join('、')
+    ? '已选资料：' + [...state.references].map(([id, title]) => title + (state.referenceSpans.has(id) ? '（片段）' : '')).join('、')
     : '可从参考资料库中选择本次生成所需的资料。'
   $('clear-references').hidden = state.references.size === 0
-  $('reference-query-label').hidden = state.references.size === 0
+  $('reference-query-label').hidden = state.references.size === state.referenceSpans.size
   for (const btn of document.querySelectorAll('[data-run]')) btn.disabled = locked || state.job?.status === 'running'
   $('preview-context').disabled = locked
   $('length').textContent = `${state.body.length.toLocaleString()} 字符`
@@ -424,7 +425,7 @@ function showEditor(doc) {
   editor = {
     doc, title: doc.title, body: doc.body, key: uuid(), edit: 0, acked: 0,
     pending: null, recovered: [], job: null, jobRequest: null,
-    references: new Map(), remoteRev: doc.rev,
+    references: new Map(), referenceSpans: new Map(), remoteRev: doc.rev,
   }
   composing = false
   $('empty').hidden = true
@@ -571,21 +572,80 @@ function searchProject() {
   }, '搜索')
 }
 
-async function viewReference(pid, id) {
+async function viewReference(pid, id, span) {
   const material = await api(`/projects/${pid}/references/${id}`)
   if (project !== pid) return
   const body = document.createElement('pre')
-  body.textContent = material.body
+  body.textContent = span ? material.body.slice(span.start, span.end) : material.body
   const state = editor
   const canSelect = model && state?.doc.kind === 'chapter' && state.doc.status !== 'final'
   dialog(material.title, [body], canSelect ? () => {
     if (state !== editor) throw new Error('当前章节已切换')
     if (state.references.size >= 5 && !state.references.has(id)) throw new Error('最多可选择五份参考资料')
     state.references.set(id, material.title)
+    if (span) state.referenceSpans.set(id, { id, start: span.start, end: span.end })
+    else state.referenceSpans.delete(id)
     paint(state)
     $('ai').open = true
     $('dialog').close()
-  } : undefined, '加入当前章节的 AI 上下文')
+  } : undefined, span ? '引用这个片段' : '加入当前章节的 AI 上下文')
+}
+
+function semanticSearch() {
+  const pid = project
+  const path = '/projects/' + pid + '/semantic'
+  const [label, query] = field('用自然语言描述要找的资料', { maxLength: 400, type: 'search' })
+  const status = document.createElement('p')
+  status.setAttribute('role', 'status')
+  const results = document.createElement('div')
+  const explanation = document.createElement('p')
+  explanation.textContent = '建立索引会将本作品的资料片段发送到配置的语义模型，每批最多 128 个片段。检索时也会发送查询词。'
+  const build = actionButton('建立或继续索引', async () => {
+    build.disabled = true
+    try {
+      await api(path + '/index', 'POST', {})
+      await refresh()
+    } catch (error) {
+      status.textContent = error.message
+      build.disabled = false
+    }
+  })
+  const stillOpen = () => pid === project && $('dialog').open && results.isConnected
+  let indexed = false
+
+  async function refresh() {
+    try {
+      const state = await api(path)
+      if (!stillOpen()) return
+      indexed = state.chunks > 0
+      status.textContent = '已完成 ' + state.indexed + ' / ' + state.count + ' 份资料，' + state.chunks + ' 个片段。'
+        + (state.state === 'running' ? '正在建立索引…' : state.message)
+      build.disabled = state.state === 'running' || state.count === state.indexed || state.chunks >= state.capacity
+      if (state.state === 'running') setTimeout(() => { if (stillOpen()) void refresh() }, 1200)
+    } catch (error) { if (stillOpen()) status.textContent = error.message }
+  }
+
+  build.disabled = true
+  dialog('参考资料语义检索', [explanation, build, status, label, results], async () => {
+    results.replaceChildren()
+    if (!indexed) {
+      results.textContent = '请先为本作品建立索引。'
+      return
+    }
+    try {
+      const hits = await api(path + '/search', 'POST', { q: query.value })
+      if (!stillOpen()) return
+      if (!hits.length) results.textContent = '未找到相关片段，可尝试换一种描述或使用关键词搜索。'
+      for (const hit of hits) {
+        const section = document.createElement('section')
+        const excerpt = document.createElement('pre')
+        excerpt.textContent = hit.excerpt
+        section.append(actionButton(hit.title, () => viewReference(pid, hit.id, hit)), excerpt)
+        results.append(section)
+      }
+    } catch (error) { if (stillOpen()) results.textContent = error.message }
+  }, '语义检索')
+  void refresh()
 }
 
 async function referenceLibrary() {
@@ -929,13 +989,15 @@ async function startRun(kind) {
   await clean(state)
   const guidance = $('guidance').value
   const referenceIds = [...state.references.keys()]
-  const referenceQuery = referenceIds.length ? $('reference-query').value : ''
+  const referenceSpans = [...state.referenceSpans.values()]
+  const referenceQuery = referenceIds.length > referenceSpans.length ? $('reference-query').value : ''
   const previous = state.jobRequest
   if (previous && (previous.kind !== kind || previous.baseRev !== state.doc.rev || previous.guidance !== guidance ||
-      JSON.stringify(previous.referenceIds) !== JSON.stringify(referenceIds) || previous.referenceQuery !== referenceQuery)) {
+      JSON.stringify(previous.referenceIds) !== JSON.stringify(referenceIds) || previous.referenceQuery !== referenceQuery ||
+      JSON.stringify(previous.referenceSpans) !== JSON.stringify(referenceSpans))) {
     throw new Error('上次任务提交状态未知。请用相同操作重试，或查看任务历史。')
   }
-  state.jobRequest ??= { kind, baseRev: state.doc.rev, guidance, referenceIds, referenceQuery, mutationId: uuid() }
+  state.jobRequest ??= { kind, baseRev: state.doc.rev, guidance, referenceIds, referenceQuery, referenceSpans, mutationId: uuid() }
   try {
     state.jobView = (state.jobView ?? 0) + 1
     state.job = await api(docPath(state) + '/runs', 'POST', state.jobRequest)
@@ -960,7 +1022,8 @@ function previewContext() {
       await clean(state)
       const data = await api(docPath(state) + '/context', 'POST', {
         kind: picker.value, baseRev: state.doc.rev, guidance: $('guidance').value, referenceIds: [...state.references.keys()],
-        referenceQuery: state.references.size ? $('reference-query').value : '',
+        referenceQuery: state.references.size > state.referenceSpans.size ? $('reference-query').value : '',
+        referenceSpans: [...state.referenceSpans.values()],
       })
       if (!result.isConnected || state !== editor) return
       const size = document.createElement('p')
@@ -1042,7 +1105,13 @@ click('new-document', () => newDocument())
 click('search-project', searchProject)
 click('narrative-threads', threadList)
 click('reference-library', referenceLibrary)
-click('clear-references', () => { editor.references.clear(); $('reference-query').value = ''; paint() })
+click('semantic-search', semanticSearch)
+click('clear-references', () => {
+  editor.references.clear()
+  editor.referenceSpans.clear()
+  $('reference-query').value = ''
+  paint()
+})
 $('reference-file').addEventListener('change', event => runAction(async () => {
   const pid = project
   const file = event.target.files[0]
@@ -1144,6 +1213,7 @@ click('reload-remote', async () => {
   const referenceQuery = $('reference-query').value
   const next = showEditor(current)
   next.references = state.references
+  next.referenceSpans = state.referenceSpans
   $('guidance').value = guidance
   $('reference-query').value = referenceQuery
   paint(next)
@@ -1275,6 +1345,7 @@ async function boot() {
   try {
     const session = await api('/session')
     model = session.model
+    $('semantic-search').hidden = !session.semanticSearch
     $('release-version').textContent = session.version ? 'v' + session.version : ''
     if (session.enhancedEditor) await enableEnhancedEditor()
   } catch (error) {

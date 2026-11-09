@@ -7,12 +7,20 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
+import { createServer } from 'node:http'
 
 const executable = process.env.BROWSER_EXE
 if (!executable) throw new Error('Set BROWSER_EXE to a Chromium executable')
 const root = await mkdtemp(join(tmpdir(), 'pagekin-browser-'))
 const password = 'browser-test-local-only'
 let app, browser, socket
+const embeddingMock = createServer(async (req, res) => {
+  const chunks = []
+  for await (const chunk of req) chunks.push(chunk)
+  const { input } = JSON.parse(Buffer.concat(chunks))
+  res.writeHead(200, { 'Content-Type': 'application/json' })
+  res.end(JSON.stringify({ data: input.map((_, index) => ({ index, embedding: [1, 0] })) }))
+})
 
 async function until(action, message) {
   const deadline = Date.now() + 8000
@@ -28,6 +36,8 @@ async function until(action, message) {
 }
 
 try {
+  embeddingMock.listen(0, '127.0.0.1')
+  await once(embeddingMock, 'listening')
   const entry = process.env.PAGEKIN_TEST_APP_DIR
     ? join(process.env.PAGEKIN_TEST_APP_DIR, 'server.mjs')
     : fileURLToPath(new URL('./server.mjs', import.meta.url))
@@ -35,6 +45,8 @@ try {
     env: { ...process.env, APP_PASSWORD: password, APP_PASSWORD_FILE: '', APP_SECURE_COOKIE: '0',
       APP_ORIGIN: '', APP_HOST: '127.0.0.1', PORT: '0', APP_DATA_DIR: join(root, 'data'),
       APP_EDITOR: process.env.PAGEKIN_TEST_EDITOR === 'plain' ? 'plain' : 'auto',
+      EMBEDDING_BASE_URL: `http://127.0.0.1:${embeddingMock.address().port}/v1`,
+      EMBEDDING_MODEL: 'preview-embedding', EMBEDDING_API_KEY: '',
       LLM_MODEL: 'preview-only', LLM_BASE_URL: 'http://127.0.0.1:1', LLM_API_KEY: '', LLM_CONTEXT_CHARS: '8000' },
     stdio: ['ignore', 'pipe', 'inherit'],
   })
@@ -165,6 +177,18 @@ try {
   await click('#dialog-submit')
   await until(() => evaluate("document.querySelector('#dialog-body').textContent.includes('古灯塔的背景资料') && document.querySelector('#dialog-body').textContent.includes('预览不会调用模型')"), 'AI context preview did not show selected material')
   await click('#close-dialog')
+  await click('#semantic-search')
+  await visible('#dialog input[type=search]')
+  await until(() => evaluate("!document.querySelector('#dialog-body button').disabled"), 'Index control did not load')
+  await click('#dialog-body button')
+  await until(() => evaluate("document.querySelector('#dialog-body').textContent.includes('已完成 1 / 1')"), 'Reference index did not complete')
+  await fill('#dialog input[type=search]', '海岸的导航建筑')
+  await click('#dialog-submit')
+  await until(() => evaluate("document.querySelector('#dialog-body').textContent.includes('古灯塔的背景资料')"), 'Semantic search did not find the reference')
+  await click('#dialog-body section button')
+  await until(() => evaluate("document.querySelector('#dialog-submit').textContent === '引用这个片段'"), 'Semantic excerpt did not open')
+  await click('#dialog-submit')
+  await until(() => evaluate("document.querySelector('#selected-references').textContent.includes('（片段）')"), 'Semantic excerpt was not selected')
   assert.equal(await evaluate(`(async () => {
     const [project, doc] = JSON.parse(sessionStorage.getItem('pagekin-location'));
     const response = await fetch('/api/projects/' + project + '/documents/' + doc, {
@@ -256,5 +280,7 @@ try {
       await exited
     }
   }
+  embeddingMock.closeAllConnections()
+  await new Promise(resolve => embeddingMock.close(resolve))
   await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
 }

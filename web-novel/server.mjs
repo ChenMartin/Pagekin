@@ -11,6 +11,7 @@ import { archiveLimit } from './desktop-archive.mjs'
 import { manuscriptRequestBytes } from './public/manuscript.mjs'
 import { writingMessages } from './writing-context.mjs'
 import { releaseVersion } from './version.mjs'
+import { openSemantic } from './semantic.mjs'
 
 const password = process.env.APP_PASSWORD_FILE
   ? readFileSync(process.env.APP_PASSWORD_FILE, 'utf8').replace(/\r?\n$/, '')
@@ -20,6 +21,7 @@ const passwordHash = hash(password)
 const safeCookie = process.env.APP_SECURE_COOKIE !== '0'
 const origin = process.env.APP_ORIGIN ? new URL(process.env.APP_ORIGIN).origin : ''
 const storage = openStore(process.env.APP_DATA_DIR || fileURLToPath(new URL('./data', import.meta.url)))
+const semantic = openSemantic(storage)
 const sessionSeconds = 7 * 86400
 const attempts = new Map()
 const active = new Map()
@@ -323,7 +325,9 @@ async function route(req, res) {
     cookie(res, '', 0)
     return json(res, { ok: true })
   }
-  if (method === 'GET' && path === '/api/session') return json(res, { model: !!model, version: releaseVersion, enhancedEditor })
+  if (method === 'GET' && path === '/api/session') return json(res, {
+    model: !!model, version: releaseVersion, enhancedEditor, semanticSearch: !!semantic,
+  })
   if (path === '/api/projects' && method === 'GET') {
     return json(res, storage.all('SELECT * FROM projects ORDER BY created DESC'))
   }
@@ -340,6 +344,12 @@ async function route(req, res) {
   const [, api, projects, pid, resource, id, action, extra] = path.split('/')
   if (api !== 'api' || projects !== 'projects' || !pid || extra !== undefined) throw new ApiError(404, '接口不存在')
   storage.project(pid)
+  if (resource === 'semantic' && action === undefined) {
+    if (!semantic) throw new ApiError(422, '管理员尚未配置语义模型')
+    if (method === 'GET' && id === undefined) return json(res, semantic.status(pid))
+    if (method === 'POST' && id === 'index') return json(res, semantic.start(pid), 202)
+    if (method === 'POST' && id === 'search') return json(res, await semantic.search(pid, await body(req, 4096)))
+  }
   if (method === 'PATCH' && resource === undefined) return json(res, storage.renameProject(pid, await body(req)))
   if (method === 'GET' && id === undefined && resource === 'events') return subscribe(req, res, pid, token)
   if (resource === 'threads' && action === undefined) {
@@ -421,6 +431,7 @@ server.listen(Number(process.env.PORT || '3100'), process.env.APP_HOST || '127.0
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.once(signal, () => {
+    semantic?.close()
     clearInterval(eventTimer)
     for (const client of eventClients) client.res.end()
     for (const controller of active.values()) controller.abort('shutdown')

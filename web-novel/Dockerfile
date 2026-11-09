@@ -9,7 +9,7 @@ RUN npm run build:editor
 
 FROM base
 WORKDIR /app
-COPY --chown=node:node server.mjs store.mjs desktop-archive.mjs desktop-copy.mjs writing-context.mjs version.mjs maintenance.mjs ./
+COPY --chown=node:node server.mjs store.mjs desktop-archive.mjs desktop-copy.mjs writing-context.mjs version.mjs maintenance.mjs semantic.mjs ./
 COPY --chown=node:node public ./public
 COPY --from=editor-build --chown=node:node /build/public/editor.bundle.mjs /build/public/editor.notices.txt ./public/
 RUN mkdir /data && chown node:node /data
