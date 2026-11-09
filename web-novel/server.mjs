@@ -12,6 +12,7 @@ import { manuscriptRequestBytes } from './public/manuscript.mjs'
 import { writingMessages } from './writing-context.mjs'
 import { releaseVersion } from './version.mjs'
 import { openSemantic } from './semantic.mjs'
+import { continuationAddition } from './continuation.mjs'
 
 const password = process.env.APP_PASSWORD_FILE
   ? readFileSync(process.env.APP_PASSWORD_FILE, 'utf8').replace(/\r?\n$/, '')
@@ -225,15 +226,20 @@ function providerError(status) {
   return `模型服务返回 HTTP ${status}，请检查模型配置、额度与上下文长度`
 }
 
-async function generate(job, messages) {
+async function generate(job, messages, prefix = '') {
   const controller = new AbortController()
   active.set(job.id, controller)
   let raw = ''
   let lastWrite = 0
   let status = 'failed'
   let error = '生成失败，请检查模型配置或网络'
-  const visible = () => raw.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '').replace(/<\/?think>/gi, '')
-    .replace(/<(?:t(?:h(?:i(?:n(?:k)?)?)?)?)?$/i, '')
+  const visible = () => {
+    const output = raw.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '').replace(/<\/?think>/gi, '')
+      .replace(/<(?:t(?:h(?:i(?:n(?:k)?)?)?)?)?$/i, '')
+    if (!prefix) return output
+    const addition = continuationAddition(prefix, output)
+    return addition ? prefix + '\n\n' + addition : prefix
+  }
   const timeout = setTimeout(() => controller.abort('timeout'), 8 * 60_000)
   try {
     const response = await fetch(endpoint, {
@@ -268,16 +274,22 @@ async function generate(job, messages) {
         const delta = choice?.delta?.content
         if (typeof delta === 'string') raw += delta
         if (choice?.finish_reason) finish = choice.finish_reason
-        if (raw.length > 180_000) { raw = raw.slice(0, 180_000); throw new Error('输出超过限制') }
+        if (raw.length > 180_000) {
+          raw = raw.slice(0, 180_000)
+          error = '输出超过限制，已保留收到的内容'
+          throw new Error(error)
+        }
         if (Date.now() - lastWrite >= 650) {
-          storage.run("UPDATE runs SET output=? WHERE id=? AND status='running'", visible(), job.id)
+          storage.run("UPDATE runs SET output=? WHERE id=? AND status='running'", visible().slice(0, 180_000), job.id)
           lastWrite = Date.now()
         }
       }
       if (pending.length > 1_000_000) throw new Error('模型响应格式无效')
     }
-    if (!visible().trim()) error = '模型没有返回可用内容'
-    else if (job.kind === 'outline' && visible().length > outlineMaxChars) error = '生成细纲过长，请缩短要求后重新生成'
+    const output = visible()
+    if (!output.slice(prefix.length).trim()) error = prefix ? '模型没有返回新的续写内容' : '模型没有返回可用内容'
+    else if (output.length > 180_000) error = '合并后的候选超过限制，已保留收到的内容'
+    else if (job.kind === 'outline' && output.length > outlineMaxChars) error = '生成细纲过长，请缩短要求后重新生成'
     else if (finish === 'stop') { status = 'done'; error = '' }
     else error = '模型输出未正常完成，已保留收到的内容'
   } catch {
@@ -290,7 +302,7 @@ async function generate(job, messages) {
   } finally {
     clearTimeout(timeout)
     active.delete(job.id)
-    storage.run('UPDATE runs SET status=?,error=?,output=? WHERE id=?', status, error, visible(), job.id)
+    storage.run('UPDATE runs SET status=?,error=?,output=? WHERE id=?', status, error, visible().slice(0, 180_000), job.id)
   }
   return status
 }
@@ -302,7 +314,7 @@ function runBatch(id) {
     while (!stopping) {
       const next = storage.nextBatchRun(id, prepareMessages)
       if (!next) return
-      const status = await generate(next.job, next.messages)
+      const status = await generate(next.job, next.messages, next.prefix)
       if (status !== 'done') {
         storage.pauseBatch(id, stopping ? '服务停止，待手动继续' : '当前章节未完成，可以继续重试')
         return
@@ -444,7 +456,7 @@ async function route(req, res) {
       const value = await body(req)
       const { job, messages } = storage.startRun(pid, id, value, prepareMessages)
       if (messages) void generate(job, messages).catch(() => console.error('无法记录任务结果'))
-      return json(res, job, 202)
+      return json(res, storage.runDetail(pid, job.id), 202)
     }
     if (id && action === 'context' && method === 'POST') {
       const messages = storage.previewRun(pid, id, await body(req), prepareMessages)
@@ -453,6 +465,12 @@ async function route(req, res) {
   }
   if (resource === 'runs' && id) {
     if (method === 'GET' && action === undefined) return json(res, storage.runDetail(pid, id))
+    if (method === 'POST' && action === 'continue') {
+      if (!endpoint) throw new ApiError(422, '管理员尚未配置模型')
+      const { job, messages, prefix } = storage.continueRun(pid, id, await body(req, 4096), prepareMessages)
+      if (messages) void generate(job, messages, prefix).catch(() => console.error('无法记录续写结果'))
+      return json(res, storage.runDetail(pid, job.id), 202)
+    }
     if (method === 'POST' && action === 'cancel') {
       storage.getRun(pid, id)
       active.get(id)?.abort('cancelled')

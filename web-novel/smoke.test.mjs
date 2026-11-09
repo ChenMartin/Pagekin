@@ -154,13 +154,22 @@ test('novel workflow through HTTP across devices, generation, export and restart
       if (batchTitle === '失败演练' && attempt === 1) { res.writeHead(503).end(); return }
       const hold = (batchTitle === '暂停演练' && attempt === 1) || (batchTitle === '失败演练' && attempt === 2) || batchTitle === '取消演练'
       res.writeHead(200, { 'Content-Type': 'text/event-stream' })
-      const content = (hold ? '部分候选 · ' : '完整候选 · ') + batchTitle
+      const content = (hold ? '部分候选 · ' : '完整候选 · ') + batchTitle + (batchTitle === '暂停演练' ? '。' : '')
       res.write('data: ' + JSON.stringify({ choices: [{ delta: { content } }] }) + '\n\n')
       if (!hold) res.end('data: [DONE]\n\n')
       return
     }
     res.writeHead(200, { 'Content-Type': 'text/event-stream' })
     const instruction = input.messages[0].content
+    if (lastPrompt.includes('分段续跑试验')) {
+      const anchor = '他带着写满名字的船票走到码头。'
+      const second = '渡轮靠岸后，守门人认出了他的名字。'
+      const continuing = instruction.includes('中断后续写')
+      const last = continuing && lastPrompt.includes(second)
+      const content = last ? second + '两人一同登上了甲板。' : continuing ? anchor + second + '远处' : '开头照常保留。' + anchor + '突然'
+      res.end('data: ' + JSON.stringify({ choices: [{ delta: { content }, finish_reason: last ? 'stop' : 'length' }] }) + '\n\ndata: [DONE]\n\n')
+      return
+    }
     let output = '候选正文'
     if (instruction.includes('生成写前细纲')) output = '1. 抵达灯塔并核对钥匙。'
     if (instruction.includes('返回修订后的完整正文') && lastPrompt.includes('逐段合并')) output = revisedProse
@@ -465,7 +474,7 @@ test('novel workflow through HTTP across devices, generation, export and restart
     const restoreDir = join(directory, 'recovered')
     const restoredDb = join(restoreDir, 'novels.sqlite')
     assert.equal((await restoreDatabase(createReadStream(snapshot), restoredDb)).projects, 3)
-    assert.equal(verifyDatabase(restoredDb).schema, 9)
+    assert.equal(verifyDatabase(restoredDb).schema, 10)
     await assert.rejects(restoreDatabase(createReadStream(snapshot), restoredDb), /目标已有数据库/)
     await stop(server)
     server = await launch(restoreDir, upstream.address().port)
@@ -522,6 +531,8 @@ test('novel workflow through HTTP across devices, generation, export and restart
     const failure = await awaitBatch(batchPath, row => row.status === 'paused' && row.items[3].status === 'failed')
     assert.equal(failure.items[0].run_id, firstPhase.items[0].run_id)
     assert.notEqual(failure.items[1].run_id, pausedRun)
+    assert.match(batchPrompts[2].text, /【已保存候选末尾】[\s\S]*部分候选 · 暂停演练。/)
+    assert.equal((await request(batchRuns + failure.items[1].run_id)).result.continued_from, pausedRun)
     assert.equal(failure.items[2].status, 'skipped')
     await request(batchPath + '/resume', { method: 'POST' })
     const beforeRestart = await awaitBatch(batchPath, row => row.items[3].status === 'running')
@@ -587,6 +598,36 @@ test('novel workflow through HTTP across devices, generation, export and restart
     assert.notEqual(restoredSkills.bindings.draft, draftStyle.id)
     assert.equal((await request(newPath + '/' + restoredSkills.bindings.draft)).result.body, draftStyle.body)
     await request(skillPath + '/' + outlineStyle.id, { method: 'DELETE' })
+
+    const partial = await run('draft', 6, '分段续跑试验')
+    const firstPiece = await awaitRun(partial, row => row.status === 'failed')
+    assert.equal(firstPiece.canContinue, true)
+    assert.equal(firstPiece.request_data, undefined)
+    assert.match(firstPiece.output, /突然$/)
+    const nextPieceValue = { mutationId: randomUUID() }
+    const nextPieceOptions = { method: 'POST', status: 202, value: nextPieceValue }
+    const nextPiece = (await request(partial + '/continue', nextPieceOptions)).result
+    assert.equal(nextPiece.continued_from, firstPiece.id)
+    assert.equal((await request(partial + '/continue', nextPieceOptions)).result.id, nextPiece.id)
+    const nextPiecePath = base + '/runs/' + nextPiece.id
+    const secondPiece = await awaitRun(nextPiecePath, row => row.status === 'failed')
+    assert.equal(secondPiece.canContinue, true)
+    assert.equal(secondPiece.output, '开头照常保留。他带着写满名字的船票走到码头。\n\n渡轮靠岸后，守门人认出了他的名字。远处')
+    assert.match(lastPrompt, /短句与可见动作/)
+    assert.match(lastPrompt, /【已保存候选末尾】[\s\S]*写满名字的船票/)
+    const { result: finalPiece } = await request(nextPiecePath + '/continue', { method: 'POST', status: 202, value: { mutationId: randomUUID() } })
+    const continued = await awaitRun(base + '/runs/' + finalPiece.id, row => row.status === 'done')
+    assert.equal(continued.output, secondPiece.output.slice(0, -2) + '\n\n两人一同登上了甲板。')
+    assert.equal((await request(doc)).result.body, save.body)
+    const continuedBackup = (await request(base + '/backup')).result
+    const continuedCopy = (await request('/api/import', { method: 'POST', status: 201, value: continuedBackup })).result
+    const copiedChain = (await request('/api/projects/' + continuedCopy.id + '/backup')).result.runs
+    const copiedChild = copiedChain.find(row => row.output === continued.output)
+    assert.notEqual(copiedChild.continued_from, nextPiece.id)
+    assert.equal(copiedChain.find(row => row.id === copiedChild.continued_from).output, secondPiece.output)
+    await request(skillPath + '/bindings', { method: 'PUT', value: { baseRev: 2, bindings: {} } })
+    await request(partial + '/continue', { method: 'POST', value: { mutationId: randomUUID() }, status: 409 })
+    await request(base + '/runs/' + finalPiece.id + '/apply', { method: 'POST', status: 409 })
   } finally {
     await stop(server)
     upstream.closeAllConnections()
@@ -608,13 +649,14 @@ test('opening an existing Web database migrates v1 and keeps chapter data', asyn
       DROP TRIGGER document_created_event; DROP TRIGGER document_updated_event; DROP TABLE project_events; DROP TABLE narrative_threads;
       DROP TABLE reference_vectors;
       DROP TABLE chapter_imports; DROP TABLE reference_material;
+      ALTER TABLE runs DROP COLUMN continued_from; ALTER TABLE runs DROP COLUMN request_data;
       ALTER TABLE runs DROP COLUMN outline_id; ALTER TABLE runs DROP COLUMN reference_ids; PRAGMA user_version=1;
     `)
     store.db.close()
     store = undefined
     store = openStore(directory)
     assert.equal(store.document(p.id, doc.id).body, '原文')
-    assert.equal(store.get('PRAGMA user_version').user_version, 9)
+    assert.equal(store.get('PRAGMA user_version').user_version, 10)
     assert.equal(store.addReference(p.id, { title: '资料', body: '参考文字' }).body, '参考文字')
   } finally { store?.db.close(); await rm(directory, { recursive: true, force: true }) }
 })

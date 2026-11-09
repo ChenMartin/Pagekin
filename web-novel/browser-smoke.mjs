@@ -24,12 +24,18 @@ const modelMock = createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/event-stream' })
     const instruction = payload.messages[0].content
     let content = '本章先调查船票。'
+    let finish = 'stop'
+    if (payload.messages.at(-1).content.includes('浏览器续跑演练')) {
+      const anchor = '船票背面写着失踪水手的名字。'
+      if (instruction.includes('中断后续写')) content = anchor + '　　她听见了开船的汽笛。'
+      else { content = anchor + '忽然'; finish = 'length' }
+    }
     if (instruction.includes('返回修订后的完整正文')) content = revisionCandidate
     if (instruction.includes('审查当前正文')) content = JSON.stringify({ issues: [
       { title: '补写动作', severity: 'major', quote: '断网的本机', reason: '缺少动作', suggestion: '加入登船动作' },
       { title: '模型误引', severity: 'minor', quote: '原文没有这句话', reason: '引文待核对', suggestion: '调整灯塔描写' },
     ] })
-    res.end('data: ' + JSON.stringify({ choices: [{ delta: { content }, finish_reason: 'stop' }] }) + '\n\ndata: [DONE]\n\n')
+    res.end('data: ' + JSON.stringify({ choices: [{ delta: { content }, finish_reason: finish }] }) + '\n\ndata: [DONE]\n\n')
     return
   }
   const { input } = payload
@@ -374,7 +380,13 @@ try {
   await click('#dialog-submit')
   await until(() => evaluate("document.querySelector('#dialog-body').textContent.includes('叙事节奏采用短句。')"), 'Bound writing Skill did not enter the draft preview')
   await click('#close-dialog')
-  console.log('Browser workflow passed (' + (enhanced ? 'CodeMirror' : 'plain') + '): autosave, recovery, context, review, revision merge, batch writing, writing skills, conflicts, editing and import')
+  await fill('#guidance', '浏览器续跑演练')
+  await click('[data-run=draft]')
+  await visible('#continue-run')
+  await click('#continue-run')
+  await until(() => evaluate("document.querySelector('#run-status').textContent.includes('已完成 · 分段续跑')"), 'Continuation did not complete')
+  assert.equal(await evaluate("document.querySelector('#run-output').textContent"), '船票背面写着失踪水手的名字。\n\n　　她听见了开船的汽笛。')
+  console.log('Browser workflow passed (' + (enhanced ? 'CodeMirror' : 'plain') + '): autosave, recovery, context, review, revision merge, batch writing, writing skills, continuation, conflicts, editing and import')
 } finally {
   socket?.close()
   for (const child of [browser, app]) {

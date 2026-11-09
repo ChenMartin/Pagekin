@@ -1,6 +1,6 @@
 # 书童 Web 小说工作区
 
-把小说工作区部署在 NAS 后，可在电脑、iPad 和手机上打开同一个作品。当前开发分支使用 SQLite schema 9，提供 CodeMirror、参考资料语义检索、写前细纲、批量写作和逐条审稿。已发布的离线候选镜像使用 schema 5，载入和测试步骤见 [v0.1.0-rc.1 发布说明](RELEASE.md)。
+把小说工作区部署在 NAS 后，可在电脑、iPad 和手机上打开同一个作品。`v0.1.0-rc.2` 使用 SQLite schema 10，提供 CodeMirror、参考资料语义检索、批量写作、分段续跑和逐条审稿。离线载入和升级步骤见 [v0.1.0-rc.2 发布说明](RELEASE.md)。
 
 | 能力 | 可用操作 |
 | --- | --- |
@@ -95,7 +95,9 @@ PAGEKIN_VOLUME=web-novel_novels_recovered docker compose run --rm --no-deps -T p
 
 在作品菜单打开“批量写作”，每批可选择 1–20 个空白且未定稿的章节，并填写通用写作要求。NAS 按章号一次生成一章，关闭页面后也会继续。相邻上一章的候选可作为未定稿的衔接参考。逐章确认候选后再定稿，定稿或编辑前章可能使后续候选的来源失效。
 
-批次可暂停、继续或取消。暂停会中断当前请求，继续时重试未完成的章节，已完成的候选保留。模型失败或服务重启后，从批次列表手动继续。排队期间被修改的章节会跳过，原稿保留。作品 JSON 保留候选，整库快照也保存批次进度。
+批次可暂停、继续或取消。暂停会中断当前请求。模型失败或服务重启后，从批次列表手动继续。若未完成的候选还有完整句段，且生成资料一致，可以从该处续写。其他情况下重新生成未完成的章节。排队期间被修改的章节会跳过，原稿保留。作品 JSON 保留候选，整库快照也保存批次进度。
+
+单章写稿或修稿中断后，从任务历史打开候选。如果有可复用的完整句段，可以点“从完整句段继续生成”。续写保留已完成的前缀，末尾未完成的文字留在原任务。服务端从候选末尾接写，去除能精确匹配的重复片段，另存合并后的候选。正文、生成资料或 Skill 变化后，需重新生成。跨服务重启的续跑依赖当前整库；作品 JSON 恢复保留候选和来源关系。
 
 在作品菜单打开“写作 Skill”，可粘贴提示词或载入本机 UTF-8 的 `SKILL.md`、Markdown 或 TXT 文件，核对后安装。每部作品最多 40 个，每个最多 8000 字符。分别为细纲、写稿、审稿和修稿选择 Skill，实际文本可在“预览发送内容”核对。导入以文本为单位，引用的资料可由作者合并到文本中。作品 JSON 包含已安装的文本和绑定。
 
@@ -131,7 +133,7 @@ node desktop-copy.mjs 'D:\作品\我的小说\.ai-novel\project.db' '.\我的小
 
 两种方式都导入设定、人物卡、蓝图、正文和草稿历史，保留定稿与重开稿的关系。头像、桌面知识库、模型配置和运行记录需另行处理。数据库文件仍有 WAL 或回滚日志时，转换工具会提示关闭桌面版后重试。原归档和源数据库可继续在桌面版使用。
 
-升级时保留完整数据卷备份。当前源码启动会将 Web SQLite schema 升级到 v9，并新增批次、章节队列和写作 Skill。回到只支持 v5 的 v0.1.0-rc.1 镜像时，使用升级前的数据库快照。
+升级时保留完整数据卷备份。`v0.1.0-rc.2` 启动会将 Web SQLite schema 升级到 v10，保留既有正文、历史和参考资料。回到只支持 v5 的 v0.1.0-rc.1 镜像时，使用升级前的数据库快照。
 
 ## 导入 TXT 或 Markdown 整稿
 
@@ -141,7 +143,7 @@ node desktop-copy.mjs 'D:\作品\我的小说\.ai-novel\project.db' '.\我的小
 
 ## 当前实现范围
 
-当前实现覆盖小说工作区。单章分段续跑和实机验收进度见 [实施进度](https://github.com/ChenMartin/Pagekin/blob/codex/web-novel-fnos/docs/research/nas-web/07-implementation-progress.md)。剧本、分镜及制片的范围见 [小说到成片设计](https://github.com/ChenMartin/Pagekin/blob/codex/web-novel-fnos/docs/research/nas-web/06-novel-to-film.md)。
+当前实现覆盖小说工作区。功能和实机验收进度见 [实施进度](https://github.com/ChenMartin/Pagekin/blob/codex/web-novel-fnos/docs/research/nas-web/07-implementation-progress.md)。剧本、分镜及制片的范围见 [小说到成片设计](https://github.com/ChenMartin/Pagekin/blob/codex/web-novel-fnos/docs/research/nas-web/06-novel-to-film.md)。
 
 ## 开发与验证
 

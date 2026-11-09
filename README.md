@@ -42,7 +42,7 @@ docker compose up -d --build
 
 默认端口为 3100，默认绑定 NAS 宿主机的回环地址。配置 HTTPS 或局域网联调参数后再从其他设备访问。手写可直接使用，AI 和语义检索分别配置自己的模型服务。 [部署、使用与升级](web-novel/README.md)
 
-已发布的 `v0.1.0-rc.1` 离线镜像与本分支的当前源码有功能和数据库版本差异。更新前先备份数据卷。 [候选版验收](web-novel/RELEASE.md) · [当前实施进度](docs/research/nas-web/07-implementation-progress.md) · [小说到成片设计](docs/research/nas-web/06-novel-to-film.md)
+`v0.1.0-rc.2` 提供 fnOS 用的 Linux amd64 离线镜像，使用 Web SQLite schema 10。升级前先备份数据卷。 [候选版验收](web-novel/RELEASE.md) · [当前实施进度](docs/research/nas-web/07-implementation-progress.md) · [小说到成片设计](docs/research/nas-web/06-novel-to-film.md)
 
 ## 上游桌面版
 

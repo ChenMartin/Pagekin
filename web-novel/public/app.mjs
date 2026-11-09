@@ -1034,8 +1034,9 @@ function renderJob(state) {
   $('run-output').hidden = Boolean(job?.reviewReport)
   renderReview(state)
   $('run-status').textContent = job ? [runNames[job.kind], runStates[job.status],
-    job.applied_rev !== null && '已应用', job.error].filter(Boolean).join(' · ') : ''
+    job.continued_from && '分段续跑', job.applied_rev !== null && '已应用', job.error].filter(Boolean).join(' · ') : ''
   $('cancel-run').hidden = job?.status !== 'running'
+  $('continue-run').hidden = !job?.canContinue
   $('apply-run').hidden = !job || !['draft', 'revise'].includes(job.kind) ||
     job.status === 'running' || !job.source_hash || !job.output?.trim() || job.applied_rev !== null
   $('use-outline').hidden = job?.kind !== 'outline' || job.status !== 'done' || !job.source_hash ||
@@ -1577,6 +1578,27 @@ click('cancel-run', async () => {
   const state = editor
   await api(`/projects/${project}/runs/${state.job.id}/cancel`, 'POST')
   await viewRun(state, state.job.id)
+})
+click('continue-run', async () => {
+  const state = editor
+  const from = state.job
+  const button = $('continue-run')
+  button.disabled = true
+  try {
+    await clean(state)
+    if (state.continueRequest?.from !== from.id) state.continueRequest = { from: from.id, mutationId: uuid() }
+    const job = await api(`/projects/${state.doc.project_id}/runs/${from.id}/continue`, 'POST', {
+      mutationId: state.continueRequest.mutationId,
+    })
+    state.continueRequest = null
+    if (editor === state && state.job?.id === from.id) {
+      state.job = job
+      renderJob(state)
+    }
+  } catch (error) {
+    if (error.status && error.status < 500) state.continueRequest = null
+    throw error
+  } finally { button.disabled = false }
 })
 async function applyCandidate(state, job, path, value) {
   const action = dialogAction

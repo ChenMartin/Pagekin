@@ -6,6 +6,7 @@ import { manuscriptChapterLimit } from './public/manuscript.mjs'
 import { schemaVersion } from './version.mjs'
 import { reviewReport } from './review-report.mjs'
 import { mergeRevision, revisionChanges } from './revision-merge.mjs'
+import { continuationPrefix } from './continuation.mjs'
 
 export class ApiError extends Error {
   constructor(status, message, details) {
@@ -205,6 +206,15 @@ export function openStore(directory) {
       COMMIT;
     `)
   }
+  if (version < 10) {
+    db.exec(`
+      BEGIN IMMEDIATE;
+      ALTER TABLE runs ADD COLUMN request_data TEXT;
+      ALTER TABLE runs ADD COLUMN continued_from TEXT;
+      PRAGMA user_version=10;
+      COMMIT;
+    `)
+  }
   db.prepare("UPDATE runs SET status='interrupted',error='服务重启，已保留收到的内容' WHERE status='running'").run()
   db.prepare("UPDATE writing_batches SET status='paused',error='服务重启，待手动继续' WHERE status='running'").run()
   const get = (sql, ...args) => db.prepare(sql).get(...args)
@@ -394,11 +404,20 @@ export function openStore(directory) {
   }
 
   function runDetail(pid, id) {
-    const job = getRun(pid, id)
-    if (job.kind !== 'review' || job.status !== 'done') return job
+    const { request_data, ...job } = getRun(pid, id)
+    if (job.kind !== 'review' || job.status !== 'done') return { ...job, canContinue: Boolean(resumable({ ...job, request_data })) }
     const snapshot = get('SELECT body FROM history WHERE document_id=? AND rev=?', job.document_id, job.base_rev)
     const report = reviewReport(job.output, snapshot?.body)
     return report ? { ...job, reviewReport: report } : job
+  }
+
+  function resumable(job, batchId = null) {
+    if (!job.request_data || !['draft', 'revise'].includes(job.kind) || !['failed', 'interrupted', 'cancelled'].includes(job.status) ||
+        job.applied_rev !== null) return null
+    const { request, batch } = JSON.parse(job.request_data)
+    if (batch !== batchId) return null
+    const prefix = continuationPrefix(job.output)
+    return prefix && prefix.length < 180_000 ? { request, prefix } : null
   }
 
   function parseRun(value) {
@@ -555,15 +574,36 @@ export function openStore(directory) {
     }
   }
 
-  function insertRun(doc, request, jobId, prepare, previousCandidate) {
+  function insertRun(doc, request, jobId, prepare, { previousCandidate, batch = null, from = null, prefix = '' } = {}) {
     const { kind, refs, outlineId } = request
     const context = runContext(doc, request)
-    const messages = prepare(kind, { ...context, previousCandidate })
     const sourceHash = previousCandidate ? batchBinding(context.sourceHash, previousCandidate) : context.sourceHash
+    if (from && sourceHash !== from.source_hash) throw new ApiError(409, '上次生成的资料或写作 Skill 已变化，请重新生成')
+    const messages = prepare(kind, { ...context, previousCandidate, continuation: prefix })
     if (kind === 'review') checkpoint(doc, 'before-review')
-    run("INSERT INTO runs (id,document_id,base_rev,kind,status,created,request_hash,source_hash,reference_ids,outline_id) VALUES (?,?,?,?,'running',?,?,?,?,?)",
-      jobId, doc.id, doc.rev, kind, now(), requestFingerprint(doc.id, request), sourceHash, JSON.stringify(refs), outlineId)
-    return { job: getRun(doc.project_id, jobId), messages }
+    const requestHash = from ? 'continue:' + hash(from.id) : requestFingerprint(doc.id, request)
+    run(`INSERT INTO runs (id,document_id,base_rev,kind,status,output,created,request_hash,source_hash,reference_ids,outline_id,request_data,continued_from)
+      VALUES (?,?,?,?,'running',?,?,?,?,?,?,?,?)`, jobId, doc.id, doc.rev, kind, prefix, now(), requestHash, sourceHash,
+    JSON.stringify(refs), outlineId, JSON.stringify({ request, batch }), from?.id ?? null)
+    return { job: getRun(doc.project_id, jobId), messages, prefix }
+  }
+
+  function continueRun(pid, id, value, prepare) {
+    object(value)
+    const jobId = string(value.mutationId, 80, true)
+    if (!/^[a-f0-9-]{36}$/i.test(jobId)) throw new ApiError(400, '任务编号无效')
+    return tx(() => {
+      const from = getRun(pid, id)
+      const existing = get('SELECT continued_from FROM runs WHERE id=?', jobId)
+      if (existing) {
+        if (existing.continued_from !== id) throw new ApiError(409, '任务编号已被使用')
+        return { job: getRun(pid, jobId) }
+      }
+      const resume = resumable(from)
+      if (!resume) throw new ApiError(422, '此任务没有可继续的完整句段')
+      writingAvailable()
+      return insertRun(document(pid, from.document_id), resume.request, jobId, prepare, { from, prefix: resume.prefix })
+    })
   }
 
   function startRun(pid, id, value, prepare) {
@@ -674,7 +714,7 @@ export function openStore(directory) {
         pauseBatch(id, '写稿 Skill 绑定已变化，请恢复原绑定或新建批次')
         return null
       }
-      const items = all(`SELECT i.document_id,i.base_rev FROM writing_batch_items i
+      const items = all(`SELECT i.document_id,i.base_rev,i.run_id FROM writing_batch_items i
         JOIN documents d ON d.id=i.document_id LEFT JOIN runs r ON r.id=i.run_id
         WHERE i.batch_id=? AND i.skipped='' AND COALESCE(r.status,'')<>'done' ORDER BY d.number`, id)
       for (const item of items) {
@@ -686,8 +726,19 @@ export function openStore(directory) {
         }
         const request = parseRun({ kind: 'draft', baseRev: item.base_rev, guidance: batch.guidance })
         const jobId = randomUUID()
+        const options = { batch: id, previousCandidate: batchPredecessor(id, doc) }
+        const from = item.run_id ? getRun(batch.project_id, item.run_id) : null
+        const resume = from && resumable(from, id)
         let result
-        try { result = insertRun(doc, request, jobId, prepare, batchPredecessor(id, doc)) }
+        try {
+          if (resume) {
+            try { result = insertRun(doc, resume.request, jobId, prepare, { ...options, from, prefix: resume.prefix }) }
+            catch (error) {
+              if (!(error instanceof ApiError) || error.status !== 409) throw error
+            }
+          }
+          result ??= insertRun(doc, request, jobId, prepare, options)
+        }
         catch (error) {
           if (!(error instanceof ApiError)) throw error
           skip(error.message)
@@ -915,7 +966,8 @@ export function openStore(directory) {
       references: all('SELECT title,body FROM reference_material WHERE project_id=? ORDER BY created,id', pid),
       threads: threads(pid).map(({ title, body, kind, status, planted, due, resolved }) => ({ title, body, kind, status, planted, due, resolved })),
       writingSkills: { library: all('SELECT id,title,body FROM writing_skills WHERE project_id=? ORDER BY created,id', pid), bindings: skillProfile(pid).bindings },
-      runs: all('SELECT r.* FROM runs r JOIN documents d ON r.document_id=d.id WHERE d.project_id=?', pid),
+      runs: all('SELECT r.* FROM runs r JOIN documents d ON r.document_id=d.id WHERE d.project_id=?', pid)
+        .map(({ request_data, ...job }) => job),
     }))
   }
 
@@ -993,13 +1045,20 @@ export function openStore(directory) {
           string(source.created, 50), source.applied_rev === null ? null : revision(source.applied_rev), '', '')
       }
       for (const source of data.runs ?? []) {
-        if (source.outline_id == null) continue
         const draft = importedRuns.get(source.id)
-        const outline = importedRuns.get(source.outline_id)
-        if (draft.kind !== 'draft' || outline?.kind !== 'outline' || outline.document !== draft.document) {
-          throw new ApiError(400, '备份中的写稿细纲引用无效')
+        if (source.outline_id != null) {
+          const outline = importedRuns.get(source.outline_id)
+          if (draft.kind !== 'draft' || outline?.kind !== 'outline' || outline.document !== draft.document) {
+            throw new ApiError(400, '备份中的写稿细纲引用无效')
+          }
+          run('UPDATE runs SET outline_id=? WHERE id=?', outline.id, draft.id)
         }
-        run('UPDATE runs SET outline_id=? WHERE id=?', outline.id, draft.id)
+        if (source.continued_from != null) {
+          const predecessor = importedRuns.get(source.continued_from)
+          if (!['draft', 'revise'].includes(draft.kind) || !predecessor || predecessor.kind !== draft.kind ||
+              predecessor.document !== draft.document || predecessor.id === draft.id) throw new ApiError(400, '备份中的续跑来源无效')
+          run('UPDATE runs SET continued_from=? WHERE id=?', predecessor.id, draft.id)
+        }
       }
       return p
     })
@@ -1007,7 +1066,7 @@ export function openStore(directory) {
 
   return { db, get, all, run, tx, project, document, createProject, renameProject, addDocument, importChapters, eventHead, projectEvents, pruneEvents,
     save, chapters, search, addReference, reference, threads, saveThread,
-    transition, history, restore, getRun, runDetail, startRun, previewRun, applyRun, previewRevision, applyRevision, backup, importBackup,
+    transition, history, restore, getRun, runDetail, startRun, previewRun, continueRun, applyRun, previewRevision, applyRevision, backup, importBackup,
     listBatches, batchChapters, getBatch, createBatch, changeBatch, nextBatchRun, pauseBatch,
     listSkills, writingSkill, installSkill, bindSkills, deleteSkill }
 }

@@ -1,8 +1,8 @@
-# 书童 Web 小说工作区 v0.1.0-rc.1
+# 书童 Web 小说工作区 v0.1.0-rc.2
 
-发布日期为 2026-11-09。此候选版面向 Intel J5005 / fnOS / Docker Compose 的小说工作区实机测试。剧本、分镜和制片属于后续阶段。
+此候选版面向 Intel J5005 / fnOS / Docker Compose。包括参考资料语义检索、写前细纲、逐条审稿、按段应用修订、批量写作、分阶段写作 Skill 和中断续跑。
 
-发布包包括 Compose 配置、应用源码、桌面作品转换工具和整库维护命令。镜像文件另行提供，镜像名为 `pagekin-web-novel:0.1.0-rc.1`，平台为 `linux/amd64`。应用使用 Web SQLite schema 5。
+部署 ZIP 包括 Compose 配置、应用源码、桌面作品转换工具和整库维护命令。镜像名为 `pagekin-web-novel:0.1.0-rc.2`，平台为 `linux/amd64`，使用 Web SQLite schema 10。可用随包提供的 `SHA256SUMS.txt` 核对两个文件。
 
 ## fnOS 快速部署
 
@@ -11,7 +11,7 @@
 3. 将镜像文件放到解压后的 Compose 目录，在 NAS 终端进入该目录执行。
 
 ```sh
-docker load -i pagekin-web-novel-0.1.0-rc.1-linux-amd64.tar.gz
+docker load -i pagekin-web-novel-0.1.0-rc.2-linux-amd64.tar.gz
 docker compose config --quiet
 docker compose up -d --no-build --pull never
 docker compose ps
@@ -19,11 +19,23 @@ docker compose ps
 
 镜像载入后即可离线启动。也可仅用部署 ZIP 通过 `docker compose up -d --build` 构建，首次构建需要拉取官方 Node 基础镜像。Dockerfile 固定了基础镜像摘要。
 
-浏览器访问所配置的地址，登录后页头会显示 `v0.1.0-rc.1`。也可访问同一地址的 `/healthz`，预期返回 `{"ok":true,"version":"0.1.0-rc.1"}`。完整配置及升级恢复见 [使用说明](README.md)。
+浏览器访问所配置的地址，登录后页头会显示 `v0.1.0-rc.2`。也可访问同一地址的 `/healthz`，预期返回 `{"ok":true,"version":"0.1.0-rc.2"}`。完整配置见 [使用说明](README.md)。
+
+## 从 v0.1.0-rc.1 升级
+
+在原 Compose 目录运行以下命令，将升级前的整库快照复制到容器外，并停止旧服务。
+
+```sh
+docker compose exec -T pagekin node maintenance.mjs backup /data/backups/before-rc2.sqlite
+docker compose cp pagekin:/data/backups/before-rc2.sqlite ./before-rc2.sqlite
+docker compose stop pagekin
+```
+
+把原 `.env` 复制到新包目录，保留原端口、访问地址、项目名和 `PAGEKIN_VOLUME`，再按上面的命令载入和启动新镜像。新服务启动时会升级原卷。需要回到 rc.1 时，用升级前的快照恢复到独立卷，再用旧 Compose 和旧镜像启动。 [备份与恢复](README.md#fnos-部署)
 
 ## 已验证
 
-在 Ubuntu WSL 的 linux/amd64 Docker 上构建镜像，容器使用 Node.js 24.22.2，以非 root 用户运行。压缩镜像通过 `docker load`。解压后的部署包通过 Compose v2.40.3 离线启动、重启、在线整库备份与新卷恢复测试。镜像内 4 项测试和部署 ZIP 的 Edge 回归通过。AI 请求使用模拟服务测试。
+在 Ubuntu WSL 用 Docker Compose v2.40.3，从 rc.1 升级到 rc.2，SQLite 从 schema 5 升至 10，原正文和历史可读。离线镜像重新载入、服务重启、在线备份和独立卷恢复均通过。Windows 和 Linux amd64 容器的 HTTP 回归各通过 4 项，Edge 普通编辑器与 CodeMirror 的全流程回归均通过。AI 流程使用模拟模型。
 
 ## 实机验收
 
