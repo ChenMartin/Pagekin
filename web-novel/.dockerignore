@@ -1,0 +1,10 @@
+*
+!server.mjs
+!store.mjs
+!desktop-archive.mjs
+!desktop-copy.mjs
+!writing-context.mjs
+!version.mjs
+!maintenance.mjs
+!public/
+!public/**

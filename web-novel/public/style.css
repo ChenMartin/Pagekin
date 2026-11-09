@@ -1,0 +1,66 @@
+:root {
+  color-scheme: light dark;
+  --paper: light-dark(#faf7ef, #1c1d1b);
+  --panel: light-dark(#fffdf8, #242622);
+  --ink: light-dark(#252b25, #ecece2);
+  --muted: light-dark(#565f52, #b6beaf);
+  --line: light-dark(#d9d6c9, #454a40);
+  --accent: light-dark(#285445, #9bd2bb);
+  --accent-ink: light-dark(#fff, #17291f);
+  font-family: system-ui, "Microsoft YaHei", sans-serif;
+  background: var(--paper);
+  color: var(--ink);
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; }
+.masthead { padding: .75rem max(1rem, calc((100% - 80rem) / 2)); min-height: 4rem; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.masthead strong { font-size: 1.4rem; color: var(--accent); }
+.masthead span, #length, #save-state, #document-label { color: var(--muted); }
+main { max-width: 82rem; padding: 1rem; margin: auto; }
+form#login { max-width: 24rem; margin: 3rem auto; display: grid; gap: 1rem; }
+#notice { background: var(--panel); border: 1px solid var(--line); padding: .75rem; overflow-wrap: anywhere; }
+#workspace { display: grid; grid-template-columns: minmax(12rem, 17rem) minmax(0, 1fr); gap: 1.5rem; align-items: start; }
+aside, #editor, #empty { min-width: 0; padding: 1rem; border: 1px solid var(--line); border-radius: .65rem; background: var(--panel); }
+aside select { margin: .35rem 0 .65rem; }
+hr { border: 0; border-top: 1px solid var(--line); margin: 1rem 0; }
+.tools { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-block: .5rem; }
+input, textarea, select, button { font: inherit; color: inherit; border: 1px solid var(--line); border-radius: .35rem; background: var(--panel); }
+input, textarea, select { width: 100%; min-height: 2.65rem; padding: .5rem .65rem; }
+button, .tools a { min-height: 2.65rem; padding: .45rem .65rem; display: inline-flex; align-items: center; }
+button { cursor: pointer; }
+button:disabled { cursor: default; opacity: .6; }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+a { color: var(--accent); }
+.editor-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .25rem 1rem; }
+.editor-head p { margin: 0 0 .75rem; }
+#title { font-size: 1.25rem; font-weight: 600; }
+.find-panel { border: 1px solid var(--line); border-radius: .35rem; padding: .65rem; margin-bottom: .65rem; }
+.find-panel input:not([type=checkbox]) { margin-block: .25rem; }
+.find-panel .check { display: inline-flex; align-items: center; min-height: 2.65rem; gap: .35rem; }
+.find-panel input[type=checkbox] { width: auto; min-height: auto; }
+.find-mirror { position: fixed; inset: 0 auto auto 0; visibility: hidden; pointer-events: none; }
+#find-result { color: var(--muted); }
+#body { margin-top: .65rem; min-height: 48vh; resize: vertical; font-family: "Songti SC", SimSun, Georgia, serif; font-size: 1.15rem; line-height: 1.85; }
+details { margin-top: 1rem; padding: .75rem; border: 1px solid var(--line); border-radius: .35rem; }
+summary { cursor: pointer; }
+details label { display: block; margin-top: .65rem; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 45vh; overflow: auto; font: inherit; padding: .65rem; background: var(--paper); }
+dialog { color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: .65rem; width: min(48rem, calc(100% - 2rem)); max-height: 86dvh; }
+dialog::backdrop { background: #0008; }
+#dialog-body label { display: block; margin-bottom: .65rem; }
+#dialog-body button { display: block; margin-bottom: .4rem; }
+#dialog-body .manuscript-check { display: flex; align-items: baseline; gap: .45rem; overflow-wrap: anywhere; }
+.manuscript-check input { width: auto; min-height: auto; flex-shrink: 0; }
+.manuscript-list { max-height: 40vh; overflow-y: auto; }
+.manuscript-list section { padding: .45rem 0; border-top: 1px solid var(--line); }
+.manuscript-list details { margin: .25rem 0; }
+.compare { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+@media (max-width: 720px) {
+  #workspace { grid-template-columns: minmax(0, 1fr); gap: .65rem; }
+  main { padding: .65rem; }
+  aside, #editor, #empty { padding: .75rem; }
+  #body { min-height: 44vh; }
+  .compare { grid-template-columns: minmax(0, 1fr); }
+}

@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>书童 · 小说工作区</title>
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.mjs"></script>
+</head>
+<body>
+  <header class="masthead">
+    <div><strong>书童</strong> <span>小说工作区</span> <small id="release-version"></small></div>
+    <button id="logout" hidden>退出登录</button>
+  </header>
+  <main>
+    <form id="login" hidden>
+      <h1>打开书房</h1>
+      <label>访问密码 <input name="password" type="password" autocomplete="current-password" required></label>
+      <button class="primary">登录</button>
+    </form>
+    <p id="notice" role="status" hidden></p>
+    <div id="workspace" hidden>
+      <aside aria-label="作品与文档">
+        <label for="projects">作品</label>
+        <select id="projects"></select>
+        <div class="tools">
+          <button id="new-project">新建作品</button>
+          <button id="import-backup">恢复备份</button>
+          <input id="backup-file" type="file" accept=".json,.ainovel,application/json" hidden>
+        </div>
+        <div id="project-tools" hidden>
+          <div class="tools">
+            <button id="rename-project">修改书名</button>
+            <a id="export">导出定稿</a>
+            <a id="export-all">导出全部正文</a>
+            <a id="backup">备份作品</a>
+            <button id="search-project">搜索作品</button>
+            <button id="narrative-threads">剧情线索与伏笔</button>
+            <button id="reference-library">参考资料</button>
+            <input id="reference-file" type="file" accept=".txt,.md,text/plain,text/markdown" hidden>
+          </div>
+          <hr>
+          <label for="kind">创作资料</label>
+          <select id="kind">
+            <option value="settings">设定与架构</option>
+            <option value="character">人物</option>
+            <option value="blueprint">章节蓝图</option>
+            <option value="chapter" selected>正文</option>
+          </select>
+          <div class="tools">
+            <button id="new-document">新建</button>
+            <button id="import-text">导入单章</button>
+            <button id="import-manuscript">导入整稿</button>
+            <input id="text-file" type="file" accept=".txt,.md,text/plain,text/markdown" hidden>
+            <input id="manuscript-file" type="file" accept=".txt,.md,text/plain,text/markdown" hidden>
+          </div>
+          <label for="documents">打开文档</label>
+          <select id="documents"></select>
+        </div>
+      </aside>
+      <section id="empty">
+        <h1>书房</h1>
+        <p>选择一部作品，或新建作品开始写作。</p>
+      </section>
+      <section id="editor" aria-label="写作编辑器" hidden>
+        <div class="editor-head">
+          <p id="document-label"></p>
+          <p id="save-state" role="status"></p>
+        </div>
+        <button id="reload-remote" hidden>NAS 上有更新，查看最新版本</button>
+        <div class="tools">
+          <button id="open-find" type="button" aria-expanded="false" aria-controls="find-panel">查找／替换</button>
+          <button id="previous-chapter" type="button" hidden>上一章</button>
+          <button id="next-chapter" type="button" hidden>下一章</button>
+        </div>
+        <section id="find-panel" class="find-panel" aria-label="文档内查找与替换" hidden>
+          <label>查找 <input id="find-query" type="search" maxlength="200" autocomplete="off"></label>
+          <div class="tools">
+            <label class="check"><input id="find-case" type="checkbox"> 区分大小写</label>
+            <button id="find-back" type="button">上一处</button>
+            <button id="find-next" type="button">下一处</button>
+            <button id="close-find" type="button">关闭</button>
+          </div>
+          <div id="replace-tools">
+            <label>替换为 <input id="replace-query" maxlength="2000" autocomplete="off"></label>
+            <div class="tools">
+              <button id="replace-one" type="button">替换当前</button>
+              <button id="replace-all" type="button">全部替换</button>
+              <button id="undo-replace" type="button" hidden>撤销替换</button>
+            </div>
+          </div>
+          <output id="find-result" role="status"></output>
+        </section>
+        <label class="sr" for="title">文档标题</label>
+        <input id="title" maxlength="160" placeholder="文档标题">
+        <label class="sr" for="body">正文</label>
+        <textarea id="body" maxlength="180000" placeholder="开始写作…" spellcheck="false"></textarea>
+        <div class="tools">
+          <button id="save" class="primary">立即保存</button>
+          <button id="history">历史版本</button>
+          <button id="status">定稿</button>
+          <button id="recover" hidden>查看本机草稿</button>
+          <button id="conflict" hidden>处理冲突</button>
+          <span id="length"></span>
+        </div>
+        <details id="ai" hidden>
+          <summary>AI 写稿、审稿与修稿</summary>
+          <p id="selected-references"></p>
+          <button id="clear-references" hidden>清除已选资料</button>
+          <label id="reference-query-label" hidden>资料定位词（可选）
+            <input id="reference-query" maxlength="100" placeholder="如：灯塔入口">
+          </label>
+          <label>作者要求或选定的审稿意见
+            <textarea id="guidance" rows="3" maxlength="6000"></textarea>
+          </label>
+          <div class="tools">
+            <button data-run="draft">写稿</button>
+            <button data-run="review">审稿</button>
+            <button data-run="revise">修稿</button>
+            <button id="preview-context">预览发送内容</button>
+            <button id="runs">任务历史</button>
+          </div>
+          <div id="run-view" hidden>
+            <p id="run-status" role="status"></p>
+            <pre id="run-output"></pre>
+            <div class="tools">
+              <button id="cancel-run" hidden>取消</button>
+              <button id="apply-run" hidden>预览并应用候选</button>
+              <button id="use-review" hidden>选中文字后加入修稿要求</button>
+            </div>
+          </div>
+        </details>
+      </section>
+    </div>
+  </main>
+  <dialog id="dialog">
+    <form id="dialog-form">
+      <h2 id="dialog-title"></h2>
+      <div id="dialog-body"></div>
+      <div class="tools"><button type="button" id="close-dialog">关闭</button><button class="primary" id="dialog-submit">确定</button></div>
+    </form>
+  </dialog>
+</body>
+</html>

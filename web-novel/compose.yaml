@@ -1,0 +1,39 @@
+name: web-novel
+services:
+  pagekin:
+    build: .
+    image: pagekin-web-novel:0.1.0-rc.1
+    platform: linux/amd64
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 20s
+    ports:
+      - "${PAGEKIN_BIND:-127.0.0.1}:${PAGEKIN_PORT:-3100}:3100"
+    environment:
+      APP_PASSWORD: "${APP_PASSWORD:?Set APP_PASSWORD in .env}"
+      APP_ORIGIN: "${APP_ORIGIN:-}"
+      APP_SECURE_COOKIE: "${APP_SECURE_COOKIE:-1}"
+      LLM_BASE_URL: "${LLM_BASE_URL:-https://api.openai.com/v1}"
+      LLM_MODEL: "${LLM_MODEL:-}"
+      LLM_API_KEY: "${LLM_API_KEY:-}"
+      LLM_CONTEXT_CHARS: "${LLM_CONTEXT_CHARS:-64000}"
+    volumes:
+      - novels:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=100m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3100/healthz').then(r=>{if(!r.ok)process.exitCode=1}).catch(()=>{process.exitCode=1})"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+volumes:
+  novels:
+    name: "${PAGEKIN_VOLUME:-web-novel_novels}"
