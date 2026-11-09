@@ -25,8 +25,10 @@ const semantic = openSemantic(storage)
 const sessionSeconds = 7 * 86400
 const attempts = new Map()
 const active = new Map()
+const batchWorkers = new Set()
 const eventClients = new Set()
 let archiveImporting = false
+let stopping = false
 const model = process.env.LLM_MODEL || ''
 const contextLimit = Number(process.env.LLM_CONTEXT_CHARS || '64000')
 if (!Number.isInteger(contextLimit) || contextLimit < 4000 || contextLimit > 250000) {
@@ -281,14 +283,37 @@ async function generate(job, messages) {
   } catch {
     if (controller.signal.aborted) {
       const reason = controller.signal.reason
-      status = reason === 'cancelled' ? 'cancelled' : reason === 'shutdown' ? 'interrupted' : 'failed'
-      error = reason === 'timeout' ? '模型响应超时' : reason === 'shutdown' ? '服务停止' : '已取消'
+      status = reason === 'cancelled' ? 'cancelled' : ['paused', 'shutdown'].includes(reason) ? 'interrupted' : 'failed'
+      error = reason === 'timeout' ? '模型响应超时' : reason === 'shutdown' ? '服务停止'
+        : reason === 'paused' ? '批次已暂停，保留已收到的内容' : '已取消'
     }
   } finally {
     clearTimeout(timeout)
     active.delete(job.id)
     storage.run('UPDATE runs SET status=?,error=?,output=? WHERE id=?', status, error, visible(), job.id)
   }
+  return status
+}
+
+function runBatch(id) {
+  if (batchWorkers.has(id) || stopping) return
+  batchWorkers.add(id)
+  const work = async () => {
+    while (!stopping) {
+      const next = storage.nextBatchRun(id, prepareMessages)
+      if (!next) return
+      const status = await generate(next.job, next.messages)
+      if (status !== 'done') {
+        storage.pauseBatch(id, stopping ? '服务停止，待手动继续' : '当前章节未完成，可以继续重试')
+        return
+      }
+    }
+  }
+  void work().catch(error => {
+    console.error('批量写作执行失败：', error.code ?? error.name)
+    try { storage.pauseBatch(id, '批量任务处理失败，请检查存储后继续') }
+    catch { console.error('无法记录批次状态') }
+  }).finally(() => batchWorkers.delete(id))
 }
 
 function exportText(pid, allChapters) {
@@ -345,6 +370,27 @@ async function route(req, res) {
   const [, api, projects, pid, resource, id, action, extra] = path.split('/')
   if (api !== 'api' || projects !== 'projects' || !pid || extra !== undefined) throw new ApiError(404, '接口不存在')
   storage.project(pid)
+  if (resource === 'batches') {
+    if (method === 'GET' && id === 'eligible' && action === undefined) return json(res, storage.batchChapters(pid))
+    if (method === 'GET' && action === undefined) return json(res, id ? storage.getBatch(pid, id) : storage.listBatches(pid))
+    if (method === 'POST' && id === undefined) {
+      if (!endpoint) throw new ApiError(422, '管理员尚未配置模型')
+      const batch = storage.createBatch(pid, await body(req, 32_000))
+      if (batch.status === 'running') runBatch(batch.id)
+      return json(res, storage.getBatch(pid, batch.id), 202)
+    }
+    if (method === 'POST' && id && ['pause', 'resume', 'cancel'].includes(action)) {
+      if (action === 'resume' && !endpoint) throw new ApiError(422, '管理员尚未配置模型')
+      const batch = storage.changeBatch(pid, id, action)
+      if (batch.status === 'running') runBatch(id)
+      if (['pause', 'cancel'].includes(action)) {
+        for (const item of batch.items.filter(item => item.status === 'running')) {
+          active.get(item.run_id)?.abort(action === 'pause' ? 'paused' : 'cancelled')
+        }
+      }
+      return json(res, storage.getBatch(pid, id))
+    }
+  }
   if (resource === 'semantic' && action === undefined) {
     if (!semantic) throw new ApiError(422, '管理员尚未配置语义模型')
     if (method === 'GET' && id === undefined) return json(res, semantic.status(pid))
@@ -434,6 +480,7 @@ server.listen(Number(process.env.PORT || '3100'), process.env.APP_HOST || '127.0
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.once(signal, () => {
+    stopping = true
     semantic?.close()
     clearInterval(eventTimer)
     for (const client of eventClients) client.res.end()
@@ -441,7 +488,7 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
     server.close(() => {
       const deadline = Date.now() + 5000
       const wait = setInterval(() => {
-        if (active.size && Date.now() < deadline) return
+        if ((active.size || batchWorkers.size) && Date.now() < deadline) return
         clearInterval(wait)
         storage.db.close()
       }, 50)

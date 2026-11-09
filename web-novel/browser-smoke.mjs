@@ -332,7 +332,28 @@ try {
   await saved(3)
   const expected = revisionLines.map((line, index) => [0, 13].includes(index) ? line.replace('原稿', '修稿') : line).join('\n\n')
   assert.equal(await evaluate(bodyText), expected)
-  console.log('Browser workflow passed (' + (enhanced ? 'CodeMirror' : 'plain') + '): autosave, recovery, context, review, revision merge, conflicts, editing and import')
+  for (const title of ['批次甲', '批次乙']) {
+    await click('#new-document')
+    await modal('#dialog input', title)
+  }
+  await click('#batch-writing')
+  await visible('#dialog-body button')
+  await click('#dialog-body button')
+  await visible('.batch-list input')
+  assert.equal(await evaluate("document.querySelectorAll('.batch-list input').length"), 2)
+  await click('.batch-list label:last-child input')
+  await click('.batch-list label:first-child input')
+  await click('#dialog-submit')
+  await until(() => evaluate("document.querySelector('#dialog-body [role=status]')?.textContent.includes('已结束 · 已生成 2 / 2 章')"), 'Batch did not complete')
+  assert.match(await evaluate("document.querySelector('.batch-list section').textContent"), /批次甲/)
+  await click('.batch-list section:first-child button')
+  await until(() => evaluate("!document.querySelector('#dialog').open && document.querySelector('#run-output').textContent.includes('本章先调查船票。')"), 'Batch candidate did not open')
+  assert.equal(await evaluate(`(async () => {
+    const [project, doc] = JSON.parse(sessionStorage.getItem('pagekin-location'));
+    const response = await fetch('/api/projects/' + project + '/documents/' + doc);
+    return (await response.json()).body;
+  })()`), '')
+  console.log('Browser workflow passed (' + (enhanced ? 'CodeMirror' : 'plain') + '): autosave, recovery, context, review, revision merge, batch writing, conflicts, editing and import')
 } finally {
   socket?.close()
   for (const child of [browser, app]) {

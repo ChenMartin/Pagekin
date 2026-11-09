@@ -4,6 +4,7 @@ const $ = id => document.getElementById(id)
 const names = { settings: '设定与架构', character: '人物', blueprint: '蓝图', chapter: '正文', reference: '参考资料' }
 const runNames = { draft: '写稿', outline: '写前细纲', review: '审稿', revise: '修稿' }
 const runStates = { running: '生成中', done: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断' }
+const batchStates = { running: '进行中', paused: '已暂停', done: '已结束', cancelled: '已取消' }
 const threadKinds = { plot: '剧情线索', foreshadow: '伏笔' }
 const threadStates = { planned: '计划埋设', open: '待回收', resolved: '已回收', archived: '已归档' }
 let project = ''
@@ -1129,6 +1130,141 @@ async function listRuns() {
     })) : [document.createTextNode('暂无任务')])
 }
 
+async function listBatches(pid) {
+  const batches = await api(`/projects/${pid}/batches`)
+  if (pid !== project) return
+  const rows = batches.map(batch => actionButton(
+    `${batchStates[batch.status]} · 已生成 ${batch.completed} / ${batch.total} 章 · ${new Date(batch.created).toLocaleString()}`, async () => {
+      const current = await api(`/projects/${pid}/batches/${batch.id}`)
+      if (pid === project) showBatch(pid, current)
+    }))
+  dialog('批量写作', [actionButton('新建写作批次', () => newBatch(pid)), ...rows])
+}
+
+async function newBatch(pid) {
+  if (editor) await clean(editor)
+  const chapters = await api(`/projects/${pid}/batches/eligible`)
+  if (pid !== project) return
+  const help = document.createElement('p')
+  help.textContent = chapters.length ? '每批可选 1–20 个空白章节，按章号依次生成待确认候选。'
+    : '暂无空白且未定稿的章节。请先新建正文章节。'
+  const back = actionButton('返回批次列表', () => listBatches(pid))
+  if (!chapters.length) return dialog('新建写作批次', [help, back])
+  const list = document.createElement('div')
+  list.className = 'batch-list'
+  for (const chapter of chapters) {
+    const label = document.createElement('label')
+    const check = document.createElement('input')
+    check.type = 'checkbox'
+    check.value = chapter.id
+    label.append(check, numberedTitle(chapter))
+    list.append(label)
+  }
+  const label = document.createElement('label')
+  const guidance = document.createElement('textarea')
+  guidance.maxLength = 6000
+  guidance.rows = 3
+  label.append('本批通用写作要求（可选）', guidance)
+  const error = document.createElement('p')
+  error.setAttribute('role', 'alert')
+  let pending
+  dialog('新建写作批次', [help, list, label, error, back], async () => {
+    const checked = new Set([...list.querySelectorAll('input:checked')].map(check => check.value))
+    if (!checked.size || checked.size > 20) { error.textContent = '请选择 1–20 个空白章节。'; return }
+    const request = { chapters: chapters.filter(row => checked.has(row.id)).map(row => ({ id: row.id, baseRev: row.rev })), guidance: guidance.value }
+    const fingerprint = JSON.stringify(request)
+    if (pending && pending.fingerprint !== fingerprint) { error.textContent = '上次提交结果未知。请按原选择重试，或查看批次列表。'; return }
+    pending ??= { fingerprint, value: { ...request, mutationId: uuid() } }
+    error.textContent = ''
+    try {
+      const batch = await api(`/projects/${pid}/batches`, 'POST', pending.value)
+      if (list.isConnected && $('dialog').open && pid === project) showBatch(pid, batch)
+    } catch (failure) {
+      if (failure.status && failure.status < 500) pending = null
+      error.textContent = failure.message
+    }
+  }, '开始生成候选')
+}
+
+function showBatch(pid, first) {
+  const panel = document.createElement('section')
+  const path = `/projects/${pid}/batches/${first.id}`
+  const status = document.createElement('p')
+  status.setAttribute('role', 'status')
+  const controls = document.createElement('div')
+  controls.className = 'tools'
+  const list = document.createElement('div')
+  list.className = 'batch-list'
+  const error = document.createElement('p')
+  error.setAttribute('role', 'alert')
+  panel.append(status, controls, error, list)
+  let batch
+  let timer
+  let command = 0
+  const visible = () => panel.isConnected && $('dialog').open && pid === project
+
+  function schedule() {
+    clearTimeout(timer)
+    if (batch.status !== 'running' && !batch.items.some(item => item.status === 'running')) return
+    timer = setTimeout(async () => {
+      if (!visible()) return
+      if (document.hidden) { schedule(); return }
+      const observed = command
+      try {
+        const next = await api(path)
+        if (visible() && command === observed) render(next)
+      } catch { if (visible() && command === observed) schedule() }
+    }, 1500)
+  }
+
+  async function change(action) {
+    command++
+    clearTimeout(timer)
+    for (const button of controls.querySelectorAll('button')) button.disabled = true
+    error.textContent = ''
+    try {
+      const next = await api(path + '/' + action, 'POST')
+      if (visible()) render(next, true)
+    } catch (failure) {
+      error.textContent = failure.message
+      if (visible()) render(batch, true)
+    }
+  }
+
+  function render(next, force = false) {
+    if (force || JSON.stringify(next) !== JSON.stringify(batch)) {
+      batch = next
+      const active = batch.items.some(item => item.status === 'running')
+      const complete = batch.items.filter(item => item.status === 'done').length
+      status.textContent = [`${batchStates[batch.status]} · 已生成 ${complete} / ${batch.items.length} 章`, batch.error].filter(Boolean).join(' · ')
+      controls.replaceChildren(actionButton('返回批次列表', () => listBatches(pid)))
+      if (batch.status === 'running') controls.append(actionButton('暂停批次', () => change('pause')))
+      if (batch.status === 'paused') {
+        const resume = actionButton('继续批次', () => change('resume'))
+        resume.disabled = active
+        controls.append(resume)
+      }
+      if (['running', 'paused'].includes(batch.status)) controls.append(actionButton('取消批次', () => change('cancel')))
+      list.replaceChildren(...batch.items.map(item => {
+        const row = document.createElement('section')
+        const state = item.status === 'queued' ? '待生成' : item.status === 'skipped' ? '已跳过' : runStates[item.status]
+        row.textContent = [numberedTitle(item), state, item.error].filter(Boolean).join(' · ')
+        if (item.run_id) row.append(actionButton(item.status === 'done' ? '查看候选' : '查看任务', async () => {
+          await openDocument(item.id)
+          if (editor?.doc.id !== item.id || project !== pid) return
+          await viewRun(editor, item.run_id)
+          if (panel.isConnected) $('dialog').close()
+        }))
+        return row
+      }))
+    }
+    schedule()
+  }
+
+  dialog('批量写作进度', [panel])
+  render(first)
+}
+
 function runAction(action) {
   Promise.resolve().then(action).catch(error => note(error.message))
 }
@@ -1145,6 +1281,7 @@ $('login').addEventListener('submit', event => {
   })
 })
 click('logout', async () => { await leave(); await api('/session', 'DELETE'); location.reload() })
+click('batch-writing', () => listBatches(project))
 click('new-project', () => {
   const [label, title] = field('作品名称', { maxLength: 160 })
   dialog('新建作品', [label], async () => {
@@ -1528,6 +1665,7 @@ async function boot() {
   try {
     const session = await api('/session')
     model = session.model
+    $('batch-writing').hidden = !model
     $('semantic-search').hidden = !session.semanticSearch
     $('release-version').textContent = session.version ? 'v' + session.version : ''
     if (session.enhancedEditor) await enableEnhancedEditor()

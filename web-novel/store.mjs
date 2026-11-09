@@ -170,7 +170,27 @@ export function openStore(directory) {
       COMMIT;
     `)
   }
+  if (version < 8) {
+    db.exec(`
+      BEGIN IMMEDIATE;
+      CREATE TABLE writing_batches (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
+        status TEXT NOT NULL CHECK(status IN ('running','paused','done','cancelled')),
+        guidance TEXT NOT NULL, fingerprint TEXT NOT NULL, created TEXT NOT NULL, error TEXT NOT NULL DEFAULT ''
+      );
+      CREATE UNIQUE INDEX writing_batches_single_active ON writing_batches(status) WHERE status='running';
+      CREATE INDEX writing_batches_project ON writing_batches(project_id,created);
+      CREATE TABLE writing_batch_items (
+        batch_id TEXT NOT NULL REFERENCES writing_batches(id), document_id TEXT NOT NULL REFERENCES documents(id),
+        base_rev INTEGER NOT NULL, run_id TEXT UNIQUE REFERENCES runs(id), skipped TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY(batch_id,document_id)
+      );
+      PRAGMA user_version=8;
+      COMMIT;
+    `)
+  }
   db.prepare("UPDATE runs SET status='interrupted',error='服务重启，已保留收到的内容' WHERE status='running'").run()
+  db.prepare("UPDATE writing_batches SET status='paused',error='服务重启，待手动继续' WHERE status='running'").run()
   const get = (sql, ...args) => db.prepare(sql).get(...args)
   const all = (sql, ...args) => db.prepare(sql).all(...args)
   const run = (sql, ...args) => db.prepare(sql).run(...args)
@@ -432,9 +452,25 @@ export function openStore(directory) {
     return prepare(request.kind, runContext(document(pid, id), request))
   }
 
+  function writingAvailable() {
+    if (get("SELECT id FROM runs WHERE status='running'") || get("SELECT id FROM writing_batches WHERE status='running'")) {
+      throw new ApiError(409, '已有生成任务正在运行')
+    }
+  }
+
+  function insertRun(doc, request, jobId, prepare, previousCandidate) {
+    const { kind, refs, outlineId } = request
+    const context = runContext(doc, request)
+    const messages = prepare(kind, { ...context, previousCandidate })
+    const sourceHash = previousCandidate ? batchBinding(context.sourceHash, previousCandidate) : context.sourceHash
+    if (kind === 'review') checkpoint(doc, 'before-review')
+    run("INSERT INTO runs (id,document_id,base_rev,kind,status,created,request_hash,source_hash,reference_ids,outline_id) VALUES (?,?,?,?,'running',?,?,?,?,?)",
+      jobId, doc.id, doc.rev, kind, now(), requestFingerprint(doc.id, request), sourceHash, JSON.stringify(refs), outlineId)
+    return { job: getRun(doc.project_id, jobId), messages }
+  }
+
   function startRun(pid, id, value, prepare) {
     const request = parseRun(value)
-    const { kind, refs, outlineId } = request
     const requestHash = requestFingerprint(id, request)
     return tx(() => {
       const doc = document(pid, id)
@@ -447,14 +483,122 @@ export function openStore(directory) {
         }
         return { job: runDetail(pid, jobId) }
       }
-      if (get("SELECT id FROM runs WHERE status='running'")) throw new ApiError(409, '已有生成任务正在运行')
-      const context = runContext(doc, request)
-      const messages = prepare(kind, context)
-      if (kind === 'review') checkpoint(doc, 'before-review')
-      run("INSERT INTO runs (id,document_id,base_rev,kind,status,created,request_hash,source_hash,reference_ids,outline_id) VALUES (?,?,?,?,'running',?,?,?,?,?)",
-        jobId, id, doc.rev, kind, now(), requestHash, context.sourceHash, JSON.stringify(refs), outlineId)
-      return { job: getRun(pid, jobId), messages }
+      writingAvailable()
+      return insertRun(doc, request, jobId, prepare)
     })
+  }
+
+  function batchBinding(sourceHash, predecessor) {
+    return 'batch:' + hash(JSON.stringify([sourceHash, predecessor.id, hash(predecessor.body)]))
+  }
+
+  function batchPredecessor(batchId, doc) {
+    return get(`SELECT r.id,d.number,d.title,r.output body FROM writing_batch_items i
+      JOIN documents d ON d.id=i.document_id JOIN runs r ON r.id=i.run_id
+      WHERE i.batch_id=? AND d.number=? AND r.status='done'
+        AND (d.rev=r.base_rev OR (d.rev=r.applied_rev AND d.body=r.output))
+        AND NOT EXISTS (SELECT 1 FROM history WHERE document_id=d.id AND status='final')`, batchId, doc.number - 1)
+  }
+
+  function getBatch(pid, id) {
+    const batch = get('SELECT id,status,created,error FROM writing_batches WHERE project_id=? AND id=?', pid, id)
+    if (!batch) throw new ApiError(404, '批量写作任务不存在')
+    const items = all(`SELECT d.id,d.number,d.title,i.run_id,CASE WHEN i.skipped<>'' THEN 'skipped' ELSE COALESCE(r.status,'queued') END status,
+        CASE WHEN i.skipped<>'' THEN i.skipped ELSE COALESCE(r.error,'') END error
+      FROM writing_batch_items i JOIN documents d ON d.id=i.document_id LEFT JOIN runs r ON r.id=i.run_id
+      WHERE i.batch_id=? ORDER BY d.number`, id)
+    return { ...batch, items }
+  }
+
+  function listBatches(pid) {
+    return all(`SELECT b.id,b.status,b.created,COUNT(i.document_id) total,SUM(CASE WHEN r.status='done' THEN 1 ELSE 0 END) completed
+      FROM writing_batches b JOIN writing_batch_items i ON i.batch_id=b.id LEFT JOIN runs r ON r.id=i.run_id
+      WHERE b.project_id=? GROUP BY b.id ORDER BY b.created DESC,b.id DESC LIMIT 30`, pid)
+  }
+
+  function batchChapters(pid) {
+    return all(`SELECT id,number,title,rev FROM documents
+      WHERE project_id=? AND kind='chapter' AND status='draft' AND trim(body,?)='' ORDER BY number`, pid,
+    '\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff')
+  }
+
+  function createBatch(pid, value) {
+    object(value)
+    const id = string(value.mutationId, 80, true)
+    const guidance = string(value.guidance ?? '', 6000)
+    if (!/^[a-f0-9-]{36}$/i.test(id) || !Array.isArray(value.chapters) || !value.chapters.length || value.chapters.length > 20) {
+      throw new ApiError(400, '每批请选择 1–20 个章节')
+    }
+    const chapters = value.chapters.map(item => [string(object(item).id, 80, true), revision(item.baseRev)])
+      .sort(([left], [right]) => left.localeCompare(right))
+    if (new Set(chapters.map(([doc]) => doc)).size !== chapters.length) throw new ApiError(400, '请选择不同的章节')
+    const fingerprint = hash(JSON.stringify([pid, chapters, guidance]))
+    return tx(() => {
+      const existing = get('SELECT fingerprint FROM writing_batches WHERE id=?', id)
+      if (existing) {
+        if (existing.fingerprint !== fingerprint) throw new ApiError(409, '批次编号已被使用')
+        return getBatch(pid, id)
+      }
+      writingAvailable()
+      for (const [docId, baseRev] of chapters) {
+        const doc = document(pid, docId)
+        match(doc, baseRev)
+        if (doc.kind !== 'chapter' || doc.status !== 'draft' || doc.body.trim()) throw new ApiError(422, '批量写作只接收空白且未定稿的章节')
+      }
+      run("INSERT INTO writing_batches (id,project_id,status,guidance,fingerprint,created) VALUES (?,?,'running',?,?,?)", id, pid, guidance, fingerprint, now())
+      for (const [docId, baseRev] of chapters) run('INSERT INTO writing_batch_items (batch_id,document_id,base_rev) VALUES (?,?,?)', id, docId, baseRev)
+      return getBatch(pid, id)
+    })
+  }
+
+  function changeBatch(pid, id, action) {
+    return tx(() => {
+      const batch = getBatch(pid, id)
+      if (action === 'resume' && batch.status === 'paused') {
+        writingAvailable()
+        run("UPDATE writing_batches SET status='running',error='' WHERE id=?", id)
+      }
+      if (action === 'pause' && batch.status === 'running') run("UPDATE writing_batches SET status='paused',error='' WHERE id=?", id)
+      if (action === 'cancel' && ['running', 'paused'].includes(batch.status)) {
+        run("UPDATE writing_batches SET status='cancelled',error='' WHERE id=?", id)
+      }
+      return getBatch(pid, id)
+    })
+  }
+
+  function nextBatchRun(id, prepare) {
+    return tx(() => {
+      const batch = get("SELECT * FROM writing_batches WHERE id=? AND status='running'", id)
+      if (!batch) return null
+      const items = all(`SELECT i.document_id,i.base_rev FROM writing_batch_items i
+        JOIN documents d ON d.id=i.document_id LEFT JOIN runs r ON r.id=i.run_id
+        WHERE i.batch_id=? AND i.skipped='' AND COALESCE(r.status,'')<>'done' ORDER BY d.number`, id)
+      for (const item of items) {
+        const doc = document(batch.project_id, item.document_id)
+        const skip = message => run('UPDATE writing_batch_items SET skipped=? WHERE batch_id=? AND document_id=?', message, id, doc.id)
+        if (doc.rev !== item.base_rev || doc.status !== 'draft' || doc.body.trim()) {
+          skip('章节已被编辑或定稿，保留当前正文')
+          continue
+        }
+        const request = parseRun({ kind: 'draft', baseRev: item.base_rev, guidance: batch.guidance })
+        const jobId = randomUUID()
+        let result
+        try { result = insertRun(doc, request, jobId, prepare, batchPredecessor(id, doc)) }
+        catch (error) {
+          if (!(error instanceof ApiError)) throw error
+          skip(error.message)
+          continue
+        }
+        run('UPDATE writing_batch_items SET run_id=? WHERE batch_id=? AND document_id=?', jobId, id, doc.id)
+        return result
+      }
+      run("UPDATE writing_batches SET status='done' WHERE id=?", id)
+      return null
+    })
+  }
+
+  function pauseBatch(id, error) {
+    run("UPDATE writing_batches SET status='paused',error=? WHERE id=? AND status='running'", error, id)
   }
 
   function sources(doc, refs, spans = []) {
@@ -575,9 +719,14 @@ export function openStore(directory) {
     match(doc, job.base_rev)
     if (doc.status === 'final') throw new ApiError(422, '请先重新打开定稿')
     const bindings = sources(doc, JSON.parse(job.reference_ids))
-    const valid = job.outline_id
+    let valid = job.outline_id
       ? outlineBinding(bindings.sourceHash, completedOutline(doc, job.outline_id)) === job.source_hash
       : [bindings.sourceHash, bindings.previousHash, bindings.legacyHash].includes(job.source_hash)
+    if (job.source_hash.startsWith('batch:')) {
+      const item = get('SELECT batch_id FROM writing_batch_items WHERE run_id=?', job.id)
+      const predecessor = item && batchPredecessor(item.batch_id, doc)
+      valid = predecessor && batchBinding(bindings.sourceHash, predecessor) === job.source_hash
+    }
     if (!valid) throw new ApiError(409, '生成时的设定、蓝图或前文已变化，请核对候选并重新生成')
   }
 
@@ -726,5 +875,6 @@ export function openStore(directory) {
 
   return { db, get, all, run, tx, project, document, createProject, renameProject, addDocument, importChapters, eventHead, projectEvents, pruneEvents,
     save, chapters, search, addReference, reference, threads, saveThread,
-    transition, history, restore, getRun, runDetail, startRun, previewRun, applyRun, previewRevision, applyRevision, backup, importBackup }
+    transition, history, restore, getRun, runDetail, startRun, previewRun, applyRun, previewRevision, applyRevision, backup, importBackup,
+    listBatches, batchChapters, getBatch, createBatch, changeBatch, nextBatchRun, pauseBatch }
 }

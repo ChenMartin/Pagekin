@@ -122,6 +122,7 @@ test('novel workflow through HTTP across devices, generation, export and restart
   let upstreamCalls = 0
   let embeddingCalls = 0
   let lastPrompt = ''
+  const batchPrompts = []
   const revisedProse = '保留开场\n船已离港。\n\n雾从海面升起。\n灯塔整夜发亮。\n'
   const reviewIssue = { title: '补足场景动作', severity: 'major', quote: '电脑上的稿', reason: '场景过于简略', suggestion: '补写登船动作' }
   const upstream = createServer(async (req, res) => {
@@ -145,6 +146,19 @@ test('novel workflow through HTTP across devices, generation, export and restart
     }
     upstreamCalls++
     lastPrompt = input.messages.at(-1).content
+    const batchTitle = ['排队首章', '暂停演练', '被别处编辑', '失败演练', '最后一章', '取消演练']
+      .find(title => lastPrompt.split('\n', 1)[0].endsWith('章：' + title))
+    if (batchTitle) {
+      batchPrompts.push({ title: batchTitle, text: lastPrompt })
+      const attempt = batchPrompts.filter(row => row.title === batchTitle).length
+      if (batchTitle === '失败演练' && attempt === 1) { res.writeHead(503).end(); return }
+      const hold = (batchTitle === '暂停演练' && attempt === 1) || (batchTitle === '失败演练' && attempt === 2) || batchTitle === '取消演练'
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' })
+      const content = (hold ? '部分候选 · ' : '完整候选 · ') + batchTitle
+      res.write('data: ' + JSON.stringify({ choices: [{ delta: { content } }] }) + '\n\n')
+      if (!hold) res.end('data: [DONE]\n\n')
+      return
+    }
     res.writeHead(200, { 'Content-Type': 'text/event-stream' })
     const instruction = input.messages[0].content
     let output = '候选正文'
@@ -451,13 +465,84 @@ test('novel workflow through HTTP across devices, generation, export and restart
     const restoreDir = join(directory, 'recovered')
     const restoredDb = join(restoreDir, 'novels.sqlite')
     assert.equal((await restoreDatabase(createReadStream(snapshot), restoredDb)).projects, 3)
-    assert.equal(verifyDatabase(restoredDb).schema, 7)
+    assert.equal(verifyDatabase(restoredDb).schema, 8)
     await assert.rejects(restoreDatabase(createReadStream(snapshot), restoredDb), /目标已有数据库/)
     await stop(server)
     server = await launch(restoreDir, upstream.address().port)
     await request('/api/projects', { status: 401 })
     a = await login()
+    b = await login()
     assert.equal((await request(doc)).result.body, save.body)
+
+    const queue = '/api/projects/' + second.id + '/batches'
+    const batchDocs = '/api/projects/' + second.id + '/documents'
+    const batchChapters = []
+    for (const [index, title] of ['排队首章', '暂停演练', '被别处编辑', '失败演练', '最后一章', '取消演练'].entries()) {
+      const { result: chapter } = await request(batchDocs, { method: 'POST', status: 201,
+        value: { kind: 'chapter', title, number: index + 3, body: index === 4 ? ' \r\n\t' : '' } })
+      batchChapters.push({ id: chapter.id, baseRev: chapter.rev })
+    }
+    assert.deepEqual((await request(queue + '/eligible')).result.map(row => row.number), [3, 4, 5, 6, 7, 8])
+    const queueValue = { chapters: batchChapters.slice(0, 5).reverse(), guidance: '每章保持人物一致', mutationId: randomUUID() }
+    const { result: createdBatch } = await request(queue, { method: 'POST', status: 202, value: queueValue })
+    const batchPath = queue + '/' + createdBatch.id
+    const batchRuns = '/api/projects/' + second.id + '/runs/'
+    async function awaitBatch(path, accept) {
+      for (let tries = 0; tries < 90; tries++) {
+        const { result } = await request(path)
+        if (accept(result)) return result
+        await delay(40)
+      }
+      assert.fail('batch did not reach expected state')
+    }
+    const duplicateBatch = await request(queue, { method: 'POST', status: 202, value: { ...queueValue, chapters: [...queueValue.chapters].reverse() } })
+    assert.equal(duplicateBatch.result.id, createdBatch.id)
+    await request(queue, { method: 'POST', status: 409, value: { ...queueValue, guidance: '不同的请求' } })
+    await request(base + '/batches/' + createdBatch.id, { status: 404 })
+    const firstPhase = await awaitBatch(batchPath, row => row.items[1].status === 'running' && batchPrompts.length >= 2)
+    const pausedRun = firstPhase.items[1].run_id
+    await awaitRun(batchRuns + pausedRun, row => !!row.output)
+    assert.deepEqual(firstPhase.items.map(item => item.number), [3, 4, 5, 6, 7])
+    assert.match(batchPrompts[1].text, /尚未定稿[\s\S]*完整候选 · 排队首章/)
+    assert.match(batchPrompts[1].text, /每章保持人物一致/)
+    await request(batchDocs + '/' + batchChapters[4].id + '/runs', { method: 'POST', status: 409,
+      value: { kind: 'draft', baseRev: 1, mutationId: randomUUID() } })
+    await request(batchPath + '/pause', { method: 'POST' })
+    await awaitBatch(batchPath, row => row.status === 'paused' && row.items[1].status === 'interrupted')
+    assert.match((await request(batchRuns + pausedRun)).result.output, /部分候选/)
+    await request(batchDocs + '/' + batchChapters[2].id, { method: 'PUT', cookie: b,
+      value: { title: '被别处编辑', body: '作者自己的稿', baseRev: 1, mutationId: randomUUID() } })
+    await request(batchPath + '/resume', { method: 'POST' })
+    const failure = await awaitBatch(batchPath, row => row.status === 'paused' && row.items[3].status === 'failed')
+    assert.equal(failure.items[0].run_id, firstPhase.items[0].run_id)
+    assert.notEqual(failure.items[1].run_id, pausedRun)
+    assert.equal(failure.items[2].status, 'skipped')
+    await request(batchPath + '/resume', { method: 'POST' })
+    const beforeRestart = await awaitBatch(batchPath, row => row.items[3].status === 'running')
+    await awaitRun(batchRuns + beforeRestart.items[3].run_id, row => !!row.output)
+    const requestsBeforeRestart = batchPrompts.length
+    await stop(server)
+    server = await launch(restoreDir, upstream.address().port)
+    const restarted = await awaitBatch(batchPath, row => row.status === 'paused' && row.items[3].status === 'interrupted')
+    assert.equal(restarted.items[4].status, 'queued')
+    assert.equal(batchPrompts.length, requestsBeforeRestart)
+    await request(batchPath + '/resume', { method: 'POST' })
+    const completed = await awaitBatch(batchPath, row => row.status === 'done')
+    assert.deepEqual(completed.items.map(item => item.status), ['done', 'done', 'skipped', 'done', 'done'])
+    assert.deepEqual(batchPrompts.map(row => row.title), ['排队首章', '暂停演练', '暂停演练', '失败演练', '失败演练', '失败演练', '最后一章'])
+    assert.equal((await request(batchDocs + '/' + batchChapters[0].id)).result.body, '')
+    assert.equal((await request(batchDocs + '/' + batchChapters[2].id)).result.body, '作者自己的稿')
+    await request(batchDocs + '/' + batchChapters[0].id, { method: 'PUT',
+      value: { title: '排队首章', body: '前文已改变', baseRev: 1, mutationId: randomUUID() } })
+    await request(batchRuns + completed.items[1].run_id + '/apply', { method: 'POST', status: 409 })
+    await request(batchRuns + completed.items[3].run_id + '/apply', { method: 'POST' })
+    await request(batchRuns + completed.items[4].run_id + '/apply', { method: 'POST' })
+    const cancelling = (await request(queue, { method: 'POST', status: 202,
+      value: { chapters: [batchChapters[5]], mutationId: randomUUID() } })).result
+    const cancellingPath = queue + '/' + cancelling.id
+    await awaitBatch(cancellingPath, row => row.items[0].status === 'running')
+    await request(cancellingPath + '/cancel', { method: 'POST' })
+    await awaitBatch(cancellingPath, row => row.status === 'cancelled' && row.items[0].status === 'cancelled')
   } finally {
     await stop(server)
     upstream.closeAllConnections()
@@ -474,6 +559,7 @@ test('opening an existing Web database migrates v1 and keeps chapter data', asyn
     const p = store.createProject('旧版本作品')
     const doc = store.addDocument(p.id, { kind: 'chapter', number: 1, title: '原章', body: '原文' })
     store.db.exec(`
+      DROP TABLE writing_batch_items; DROP TABLE writing_batches;
       DROP TRIGGER document_created_event; DROP TRIGGER document_updated_event; DROP TABLE project_events; DROP TABLE narrative_threads;
       DROP TABLE reference_vectors;
       DROP TABLE chapter_imports; DROP TABLE reference_material;
@@ -483,7 +569,7 @@ test('opening an existing Web database migrates v1 and keeps chapter data', asyn
     store = undefined
     store = openStore(directory)
     assert.equal(store.document(p.id, doc.id).body, '原文')
-    assert.equal(store.get('PRAGMA user_version').user_version, 7)
+    assert.equal(store.get('PRAGMA user_version').user_version, 8)
     assert.equal(store.addReference(p.id, { title: '资料', body: '参考文字' }).body, '参考文字')
   } finally { store?.db.close(); await rm(directory, { recursive: true, force: true }) }
 })
