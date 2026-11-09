@@ -47,6 +47,7 @@ const files = new Map([
   ['/', ['index.html', 'text/html']],
   ['/app.mjs', ['app.mjs', 'text/javascript']],
   ['/manuscript.mjs', ['manuscript.mjs', 'text/javascript']],
+  ['/screenplay-ui.mjs', ['screenplay-ui.mjs', 'text/javascript']],
   ['/style.css', ['style.css', 'text/css']],
 ].map(([path, [file, type]]) => [path, [readFileSync(new URL(`./public/${file}`, import.meta.url)), type]]))
 const editorBundle = new URL('./public/editor.bundle.mjs', import.meta.url)
@@ -382,6 +383,35 @@ async function route(req, res) {
   const [, api, projects, pid, resource, id, action, extra] = path.split('/')
   if (api !== 'api' || projects !== 'projects' || !pid || extra !== undefined) throw new ApiError(404, '接口不存在')
   storage.project(pid)
+  const screenplay = storage.screenplay
+  if (resource === 'adaptations') {
+    if (method === 'GET' && action === undefined) {
+      if (id === 'eligible') return json(res, screenplay.eligible(pid))
+      return json(res, id ? screenplay.details(pid, id) : screenplay.list(pid))
+    }
+    if (method === 'POST' && id === undefined) return json(res, screenplay.create(pid, await body(req, 4096)), 201)
+    if (method === 'POST' && id && action === 'episodes') return json(res, screenplay.createEpisode(pid, id, await body(req, 8192)), 201)
+  }
+  if (resource === 'episodes' && id) {
+    if (method === 'GET' && action === undefined) return json(res, screenplay.episode(pid, id))
+    if (method === 'PUT' && action === undefined) return json(res, screenplay.changeEpisode(pid, id, await body(req), 'save'))
+    if (method === 'GET' && action === 'source') return json(res, screenplay.episodeSource(pid, id, url.searchParams.get('chapter')))
+    if (method === 'GET' && action === 'history') {
+      const rev = url.searchParams.get('rev')
+      return json(res, rev === null ? screenplay.history(pid, id) : screenplay.version(pid, id, Number(rev)))
+    }
+    if (method === 'POST' && action === 'history') return json(res, screenplay.changeEpisode(pid, id, await body(req, 4096), 'restore'))
+    if (method === 'POST' && action === 'status') {
+      const value = await body(req, 4096)
+      if (!['confirm', 'reopen'].includes(value.action)) throw new ApiError(400, '剧本操作无效')
+      return json(res, screenplay.changeEpisode(pid, id, value, value.action))
+    }
+    if (method === 'GET' && action === 'export') {
+      const text = screenplay.exportEpisode(pid, id)
+      res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8', 'Content-Disposition': 'attachment; filename="screenplay.md"' })
+      return res.end(text)
+    }
+  }
   if (resource === 'writing-skills' && action === undefined) {
     if (method === 'GET') return json(res, id ? storage.writingSkill(pid, id) : storage.listSkills(pid))
     if (method === 'POST' && id === undefined) return json(res, storage.installSkill(pid, await body(req, 50_000)), 201)

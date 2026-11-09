@@ -7,37 +7,16 @@ import { schemaVersion } from './version.mjs'
 import { reviewReport } from './review-report.mjs'
 import { mergeRevision, revisionChanges } from './revision-merge.mjs'
 import { continuationPrefix } from './continuation.mjs'
+import { ApiError, object, string, revision } from './input.mjs'
+import { screenplayStore } from './screenplay-store.mjs'
 
-export class ApiError extends Error {
-  constructor(status, message, details) {
-    super(message)
-    this.status = status
-    this.details = details
-  }
-}
+export { ApiError, object, string } from './input.mjs'
 
 export const kinds = ['settings', 'character', 'blueprint', 'chapter']
 const runKinds = ['outline', 'draft', 'review', 'revise']
 export const outlineMaxChars = 2400
 export const hash = value => createHash('sha256').update(value).digest('hex')
 export const now = () => new Date().toISOString()
-
-export function object(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ApiError(400, '请求格式无效')
-  return value
-}
-
-export function string(value, limit, required = false) {
-  if (typeof value !== 'string' || value.length > limit || (required && !value.trim())) {
-    throw new ApiError(400, '文本为空或超过长度限制')
-  }
-  return value
-}
-
-function revision(value) {
-  if (!Number.isSafeInteger(value) || value < 1) throw new ApiError(400, '版本号无效')
-  return value
-}
 
 function input(value) {
   object(value)
@@ -215,6 +194,34 @@ export function openStore(directory) {
       COMMIT;
     `)
   }
+  if (version < 11) {
+    db.exec(`
+      BEGIN IMMEDIATE;
+      CREATE TABLE screenplay_adaptations (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), title TEXT NOT NULL,
+        format TEXT NOT NULL, aspect TEXT NOT NULL, seconds INTEGER NOT NULL, created TEXT NOT NULL
+      );
+      CREATE INDEX screenplay_adaptations_project ON screenplay_adaptations(project_id,created);
+      CREATE TABLE screenplay_episodes (
+        id TEXT PRIMARY KEY, adaptation_id TEXT NOT NULL REFERENCES screenplay_adaptations(id),
+        season INTEGER NOT NULL, number INTEGER NOT NULL, sources TEXT NOT NULL, create_hash TEXT NOT NULL,
+        title TEXT NOT NULL, scenes TEXT NOT NULL, rev INTEGER NOT NULL, status TEXT NOT NULL, updated TEXT NOT NULL,
+        UNIQUE(adaptation_id,season,number)
+      );
+      CREATE TABLE screenplay_history (
+        episode_id TEXT NOT NULL REFERENCES screenplay_episodes(id), rev INTEGER NOT NULL,
+        title TEXT NOT NULL, scenes TEXT NOT NULL, status TEXT NOT NULL, updated TEXT NOT NULL,
+        PRIMARY KEY(episode_id,rev)
+      );
+      CREATE TABLE screenplay_receipts (
+        episode_id TEXT NOT NULL REFERENCES screenplay_episodes(id), mutation TEXT NOT NULL,
+        fingerprint TEXT NOT NULL, rev INTEGER NOT NULL, PRIMARY KEY(episode_id,mutation),
+        FOREIGN KEY(episode_id,rev) REFERENCES screenplay_history(episode_id,rev)
+      );
+      PRAGMA user_version=11;
+      COMMIT;
+    `)
+  }
   db.prepare("UPDATE runs SET status='interrupted',error='服务重启，已保留收到的内容' WHERE status='running'").run()
   db.prepare("UPDATE writing_batches SET status='paused',error='服务重启，待手动继续' WHERE status='running'").run()
   const get = (sql, ...args) => db.prepare(sql).get(...args)
@@ -232,6 +239,8 @@ export function openStore(directory) {
       throw error
     }
   }
+
+  const screenplay = screenplayStore({ get, all, run, tx, hash, now })
 
   function project(id) {
     const row = get('SELECT * FROM projects WHERE id=?', id)
@@ -966,6 +975,7 @@ export function openStore(directory) {
       references: all('SELECT title,body FROM reference_material WHERE project_id=? ORDER BY created,id', pid),
       threads: threads(pid).map(({ title, body, kind, status, planted, due, resolved }) => ({ title, body, kind, status, planted, due, resolved })),
       writingSkills: { library: all('SELECT id,title,body FROM writing_skills WHERE project_id=? ORDER BY created,id', pid), bindings: skillProfile(pid).bindings },
+      adaptations: screenplay.backup(pid),
       runs: all('SELECT r.* FROM runs r JOIN documents d ON r.document_id=d.id WHERE d.project_id=?', pid)
         .map(({ request_data, ...job }) => job),
     }))
@@ -1060,11 +1070,12 @@ export function openStore(directory) {
           run('UPDATE runs SET continued_from=? WHERE id=?', predecessor.id, draft.id)
         }
       }
+      if (data.adaptations !== undefined) screenplay.importBackup(p.id, data.adaptations, mapping)
       return p
     })
   }
 
-  return { db, get, all, run, tx, project, document, createProject, renameProject, addDocument, importChapters, eventHead, projectEvents, pruneEvents,
+  return { db, get, all, run, tx, project, document, createProject, renameProject, addDocument, importChapters, eventHead, projectEvents, pruneEvents, screenplay,
     save, chapters, search, addReference, reference, threads, saveThread,
     transition, history, restore, getRun, runDetail, startRun, previewRun, continueRun, applyRun, previewRevision, applyRevision, backup, importBackup,
     listBatches, batchChapters, getBatch, createBatch, changeBatch, nextBatchRun, pauseBatch,

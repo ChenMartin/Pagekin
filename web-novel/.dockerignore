@@ -1,6 +1,8 @@
 *
 !server.mjs
 !store.mjs
+!input.mjs
+!screenplay-store.mjs
 !desktop-archive.mjs
 !desktop-copy.mjs
 !writing-context.mjs

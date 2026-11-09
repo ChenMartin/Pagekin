@@ -1,4 +1,5 @@
 import { manuscriptBytes, manuscriptRequestBytes, splitManuscript } from './manuscript.mjs'
+import { screenplayWorkspace } from './screenplay-ui.mjs'
 
 const $ = id => document.getElementById(id)
 const names = { settings: '设定与架构', character: '人物', blueprint: '蓝图', chapter: '正文', reference: '参考资料' }
@@ -1367,6 +1368,8 @@ $('login').addEventListener('submit', event => {
 click('logout', async () => { await leave(); await api('/session', 'DELETE'); location.reload() })
 click('batch-writing', () => listBatches(project))
 click('writing-skills', () => showWritingSkills(project))
+const screenplay = screenplayWorkspace({ api, dialog, field, actionButton, localTransaction, uuid, isCurrent: pid => project === pid })
+click('screenplay-workspace', () => screenplay.list(project))
 click('new-project', () => {
   const [label, title] = field('作品名称', { maxLength: 160 })
   dialog('新建作品', [label], async () => {
@@ -1695,7 +1698,7 @@ click('apply-run', async () => {
   dialog('比较并确认 AI 候选', [compare('当前正文', state.body, '候选正文', job.output)],
     () => applyCandidate(state, job, path + '/apply'), '应用为新版本')
 })
-click('close-dialog', () => $('dialog').close())
+click('close-dialog', async () => { if (await screenplay.canClose()) $('dialog').close() })
 click('open-find', () => findPanel($('find-panel').hidden))
 click('close-find', () => { findPanel(false); bodyControl().focus({ preventScroll: true }) })
 click('find-back', () => locate(-1))

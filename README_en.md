@@ -42,6 +42,8 @@ The service binds to the host loopback address on port 3100 by default. Configur
 
 The `v0.1.0-rc.2` offline image targets Linux amd64 on fnOS and uses Web SQLite schema 10. Back up the data volume before upgrading. [Release candidate](web-novel/RELEASE.md) · [Implementation progress](docs/research/nas-web/07-implementation-progress.md) · [Novel-to-film design](docs/research/nas-web/06-novel-to-film.md)
 
+The development branch adds screenplay adaptation. Create episodes from finalized chapters, edit scenes, confirm scripts and export Markdown. [Screenplay workflow](web-novel/README.md#剧本改编)
+
 ## Upstream desktop edition
 
 <p align="center">

@@ -280,7 +280,7 @@ test('novel workflow through HTTP across devices, generation, export and restart
     assert.equal(hit.id, chosen.id)
     assert.match(hit.excerpt, /灯塔建于/)
     const settings = await create({ kind: 'settings', title: '世界观', body: '港口常年起雾' })
-    await create({ kind: 'character', title: '小舟', body: '船长' })
+    const castMember = await create({ kind: 'character', title: '小舟', body: '船长' })
     await create({ kind: 'blueprint', number: 1, title: '寻找线索', body: '主角抵达码头' })
     const chapter = await create({ kind: 'chapter', number: 1, title: '抵达', body: '原稿' })
     const doc = docs + '/' + chapter.id
@@ -474,7 +474,7 @@ test('novel workflow through HTTP across devices, generation, export and restart
     const restoreDir = join(directory, 'recovered')
     const restoredDb = join(restoreDir, 'novels.sqlite')
     assert.equal((await restoreDatabase(createReadStream(snapshot), restoredDb)).projects, 3)
-    assert.equal(verifyDatabase(restoredDb).schema, 10)
+    assert.equal(verifyDatabase(restoredDb).schema, 11)
     await assert.rejects(restoreDatabase(createReadStream(snapshot), restoredDb), /目标已有数据库/)
     await stop(server)
     server = await launch(restoreDir, upstream.address().port)
@@ -628,6 +628,69 @@ test('novel workflow through HTTP across devices, generation, export and restart
     await request(skillPath + '/bindings', { method: 'PUT', value: { baseRev: 2, bindings: {} } })
     await request(partial + '/continue', { method: 'POST', value: { mutationId: randomUUID() }, status: 409 })
     await request(base + '/runs/' + finalPiece.id + '/apply', { method: 'POST', status: 409 })
+
+    const novel = await create({ kind: 'chapter', number: 14, title: '过渡码头', body: '小舟带着船票走到码头。' })
+    const novelPath = docs + '/' + novel.id
+    const finalNovel = (await request(novelPath + '/status', { method: 'POST', value: { action: 'finalize', baseRev: 1 } })).result
+    const production = base + '/adaptations'
+    const { result: available } = await request(production + '/eligible')
+    assert.deepEqual(available.find(row => row.id === novel.id), { id: novel.id, number: 14, title: novel.title, rev: 2 })
+    const createProduction = { method: 'POST', status: 201, value: { mutationId: randomUUID(), title: '夜航短剧', format: 'short', aspect: '9:16', seconds: 90 } }
+    const { result: adaptation } = await request(production, createProduction)
+    assert.equal((await request(production, createProduction)).result.id, adaptation.id)
+    await request('/api/projects/' + second.id + '/adaptations/' + adaptation.id, { status: 404 })
+    const episodeCollection = production + '/' + adaptation.id + '/episodes'
+    const createEpisode = { mutationId: randomUUID(), title: '船票', season: 1, number: 1, sources: [{ id: novel.id, rev: finalNovel.rev }] }
+    await request(episodeCollection, { method: 'POST', status: 400, value: { ...createEpisode, sources: [{ id: novel.id, rev: 1 }] } })
+    const { result: episode } = await request(episodeCollection, { method: 'POST', status: 201, value: createEpisode })
+    assert.equal((await request(episodeCollection, { method: 'POST', status: 201, value: createEpisode })).result.id, episode.id)
+    await request(episodeCollection, { method: 'POST', status: 409, value: { ...createEpisode, mutationId: randomUUID() } })
+    const ep = base + '/episodes/' + episode.id
+    await request('/api/projects/' + second.id + '/episodes/' + episode.id, { status: 404 })
+    const scene = { id: randomUUID(), title: '启航', interior: 'exterior', location: '码头', time: '夜', sourceIds: [novel.id], elements: [
+      { id: randomUUID(), type: 'action', text: '汽笛拉响。' },
+      { id: randomUUID(), type: 'dialogue', text: '准备开船。', characterId: castMember.id },
+    ] }
+    await request(ep + '/status', { method: 'POST', status: 422, value: { action: 'confirm', baseRev: 1, mutationId: randomUUID() } })
+    const episodeSave = { mutationId: randomUUID(), baseRev: 1, title: '船票 · 第一集', scenes: [scene] }
+    await request(ep, { method: 'PUT', status: 400, value: { ...episodeSave, scenes: [{ ...scene, sourceIds: [chapter.id] }] } })
+    const opts = { method: 'PUT', value: episodeSave }
+    const [firstSave, replaySave] = await Promise.all([request(ep, opts), request(ep, { ...opts, cookie: b })])
+    assert.deepEqual(firstSave.result, replaySave.result)
+    assert.equal(firstSave.result.rev, 2)
+    assert.equal(firstSave.result.scenes[0].elements[1].speaker, '小舟')
+    await request(ep, { method: 'PUT', status: 409, cookie: b, value: { ...episodeSave, title: '旧稿', mutationId: randomUUID() } })
+    const confirm = { action: 'confirm', baseRev: 2, mutationId: randomUUID() }
+    assert.equal((await request(ep + '/status', { method: 'POST', value: confirm })).result.status, 'confirmed')
+    assert.equal((await request(ep + '/status', { method: 'POST', value: confirm })).result.rev, 3)
+    await request(ep, { method: 'PUT', status: 409, value: { ...episodeSave, baseRev: 3, mutationId: randomUUID() } })
+    assert.match((await request(ep + '/export')).result, /外景 · 码头 · 夜[\s\S]*\*\*小舟\*\*[\s\S]*准备开船。/)
+    assert.equal((await request(ep + '/source?chapter=' + novel.id)).result.updated, false)
+    await request(novelPath + '/status', { method: 'POST', value: { action: 'reopen', baseRev: 2 } })
+    await request(novelPath, { method: 'PUT', value: { baseRev: 3, mutationId: randomUUID(), title: novel.title, body: '新稿从渡口开始。' } })
+    assert.equal((await request(ep)).result.sources[0].updated, true)
+    await request(novelPath + '/status', { method: 'POST', value: { action: 'finalize', baseRev: 4 } })
+    const pinned = (await request(ep + '/source?chapter=' + novel.id)).result
+    assert.equal(pinned.body, '小舟带着船票走到码头。')
+    assert.equal(pinned.latestRev, 5)
+    await request(ep + '/status', { method: 'POST', value: { action: 'reopen', baseRev: 3, mutationId: randomUUID() } })
+    await request(ep, { method: 'PUT', value: { ...episodeSave, baseRev: 4, scenes: [], mutationId: randomUUID() } })
+    const restored = (await request(ep + '/history', { method: 'POST', value: { rev: 3, baseRev: 5, mutationId: randomUUID() } })).result
+    assert.equal(restored.rev, 6)
+    assert.equal(restored.status, 'draft')
+    assert.equal(restored.scenes[0].id, scene.id)
+    assert.equal((await request(ep + '/history?rev=3')).result.scenes[0].elements[1].speaker, '小舟')
+    const adaptationBackup = (await request(base + '/backup')).result
+    const adaptationCopy = (await request('/api/import', { method: 'POST', status: 201, value: adaptationBackup })).result
+    const copyPath = '/api/projects/' + adaptationCopy.id
+    const [copiedAdaptation] = (await request(copyPath + '/adaptations')).result
+    const [copiedEpisode] = (await request(copyPath + '/adaptations/' + copiedAdaptation.id)).result.episodes
+    assert.notEqual(copiedEpisode.id, episode.id)
+    const copied = (await request(copyPath + '/episodes/' + copiedEpisode.id)).result
+    assert.notEqual(copied.sources[0].id, novel.id)
+    assert.equal(copied.scenes[0].sourceIds[0], copied.sources[0].id)
+    assert.notEqual(copied.scenes[0].elements[1].characterId, castMember.id)
+    assert.equal((await request(copyPath + '/episodes/' + copiedEpisode.id + '/history')).result.length, 6)
   } finally {
     await stop(server)
     upstream.closeAllConnections()
@@ -644,6 +707,7 @@ test('opening an existing Web database migrates v1 and keeps chapter data', asyn
     const p = store.createProject('旧版本作品')
     const doc = store.addDocument(p.id, { kind: 'chapter', number: 1, title: '原章', body: '原文' })
     store.db.exec(`
+      DROP TABLE screenplay_receipts; DROP TABLE screenplay_history; DROP TABLE screenplay_episodes; DROP TABLE screenplay_adaptations;
       DROP TABLE writing_skill_profiles; DROP TABLE writing_skills;
       DROP TABLE writing_batch_items; DROP TABLE writing_batches;
       DROP TRIGGER document_created_event; DROP TRIGGER document_updated_event; DROP TABLE project_events; DROP TABLE narrative_threads;
@@ -656,7 +720,7 @@ test('opening an existing Web database migrates v1 and keeps chapter data', asyn
     store = undefined
     store = openStore(directory)
     assert.equal(store.document(p.id, doc.id).body, '原文')
-    assert.equal(store.get('PRAGMA user_version').user_version, 10)
+    assert.equal(store.get('PRAGMA user_version').user_version, 11)
     assert.equal(store.addReference(p.id, { title: '资料', body: '参考文字' }).body, '参考文字')
   } finally { store?.db.close(); await rm(directory, { recursive: true, force: true }) }
 })
