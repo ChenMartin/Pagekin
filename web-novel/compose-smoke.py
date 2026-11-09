@@ -11,6 +11,7 @@ from tempfile import TemporaryDirectory
 import time
 import urllib.error
 import urllib.request
+from uuid import uuid4
 
 
 def smoke(directory: Path, compose: str, previous_image: str | None = None) -> None:
@@ -40,9 +41,9 @@ def smoke(directory: Path, compose: str, previous_image: str | None = None) -> N
             input=stdin, stdout=subprocess.PIPE, check=True, timeout=90,
         ).stdout
 
-    def request(path: str, payload=None):
+    def request(path: str, payload=None, method: str | None = None):
         data = None if payload is None else json.dumps(payload).encode()
-        req = urllib.request.Request(app_url + path, data, {"Content-Type": "application/json"})
+        req = urllib.request.Request(app_url + path, data, {"Content-Type": "application/json"}, method=method)
         with client.open(req, timeout=4) as response:
             return json.load(response)
 
@@ -82,6 +83,21 @@ def smoke(directory: Path, compose: str, previous_image: str | None = None) -> N
             assert request(path)["body"] == "容器持久化"
             assert request(path + "/history")[0]["body"] == "容器持久化"
             print(f"Compose upgrade v{old_version} -> v{version}, schema {old_schema} -> {upgraded_schema}: manuscript and history preserved")
+        episode_path = None
+        if schema() >= 11:
+            project_path = f"/api/projects/{project['id']}"
+            final = request(path + "/status", {"action": "finalize", "baseRev": chapter["rev"]})
+            adaptation = request(project_path + "/adaptations", {"mutationId": str(uuid4()), "title": "发布剧本",
+                "format": "short", "aspect": "9:16", "seconds": 90})
+            episode = request(project_path + f"/adaptations/{adaptation['id']}/episodes", {"mutationId": str(uuid4()),
+                "title": "试片", "season": 1, "number": 1, "sources": [{"id": chapter["id"], "rev": final["rev"]}]})
+            episode_path = project_path + f"/episodes/{episode['id']}"
+            scene = {"id": str(uuid4()), "title": "启航", "interior": "exterior", "location": "码头", "time": "夜",
+                "sourceIds": [chapter["id"]], "elements": [{"id": str(uuid4()), "type": "action", "text": "渔船靠岸。"}]}
+            saved = request(episode_path, {"mutationId": str(uuid4()), "baseRev": episode["rev"], "title": episode["title"],
+                "scenes": [scene]}, "PUT")
+            confirmed = request(episode_path + "/status", {"mutationId": str(uuid4()), "action": "confirm", "baseRev": saved["rev"]})
+            assert confirmed["status"] == "confirmed"
         backup_path = "/data/backups/compose-test.sqlite"
         backup = stack("", "exec", "-T", "pagekin", "node", "maintenance.mjs", "backup", backup_path)
         assert json.loads(backup)["projects"] == 1
@@ -89,6 +105,8 @@ def smoke(directory: Path, compose: str, previous_image: str | None = None) -> N
         stack("", "restart", "pagekin")
         assert ready() == version
         assert request(path)["body"] == "容器持久化"
+        if episode_path:
+            assert request(episode_path)["status"] == "confirmed"
         stack("", "stop", "pagekin")
         result = stack("-restored", "run", "--rm", "--no-deps", "-T", "pagekin",
                        "node", "maintenance.mjs", "restore", stdin=snapshot)
@@ -103,6 +121,13 @@ def smoke(directory: Path, compose: str, previous_image: str | None = None) -> N
             raise AssertionError("Old session survived database restore")
         request("/api/session", {"password": password})
         assert request(path)["body"] == "容器持久化"
+        if episode_path:
+            restored = request(episode_path)
+            assert restored["status"] == "confirmed"
+            assert restored["scenes"] == [scene]
+            assert request(episode_path + f"/source?chapter={chapter['id']}")["body"] == "容器持久化"
+            assert request(episode_path + f"/history?rev={saved['rev']}")["scenes"] == [scene]
+            print("Confirmed screenplay, pinned source and episode history survived backup and restore")
         print(f"Compose v{version}: offline startup, restart, online backup and separate volume restore passed")
     finally:
         for suffix in ("-restored", ""):

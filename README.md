@@ -42,9 +42,7 @@ docker compose up -d --build
 
 默认端口为 3100，默认绑定 NAS 宿主机的回环地址。配置 HTTPS 或局域网联调参数后再从其他设备访问。手写可直接使用，AI 和语义检索分别配置自己的模型服务。 [部署、使用与升级](web-novel/README.md)
 
-`v0.1.0-rc.2` 提供 fnOS 用的 Linux amd64 离线镜像，使用 Web SQLite schema 10。升级前先备份数据卷。 [候选版验收](web-novel/RELEASE.md) · [当前实施进度](docs/research/nas-web/07-implementation-progress.md) · [小说到成片设计](docs/research/nas-web/06-novel-to-film.md)
-
-开发分支已接入剧本改编，可从小说定稿创建短剧或漫剧分集，编辑场次、确认剧本并导出 Markdown。 [剧本改编用法](web-novel/README.md#剧本改编)
+`v0.2.0-rc.1` 提供 fnOS 用的 Linux amd64 离线镜像，使用 Web SQLite schema 11。可从小说定稿创建短剧或漫剧分集，编辑场次、确认剧本并导出 Markdown。升级前先备份数据卷。 [发布与升级](web-novel/RELEASE.md) · [剧本改编用法](web-novel/README.md#剧本改编) · [当前实施进度](docs/research/nas-web/07-implementation-progress.md) · [小说到成片设计](docs/research/nas-web/06-novel-to-film.md)
 
 ## 上游桌面版
 
