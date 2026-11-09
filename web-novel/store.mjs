@@ -189,6 +189,22 @@ export function openStore(directory) {
       COMMIT;
     `)
   }
+  if (version < 9) {
+    db.exec(`
+      BEGIN IMMEDIATE;
+      CREATE TABLE writing_skills (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
+        title TEXT NOT NULL, body TEXT NOT NULL, created TEXT NOT NULL
+      );
+      CREATE INDEX writing_skills_project ON writing_skills(project_id,created);
+      CREATE TABLE writing_skill_profiles (
+        project_id TEXT PRIMARY KEY REFERENCES projects(id), bindings TEXT NOT NULL, rev INTEGER NOT NULL
+      );
+      ALTER TABLE writing_batches ADD COLUMN draft_skill TEXT;
+      PRAGMA user_version=9;
+      COMMIT;
+    `)
+  }
   db.prepare("UPDATE runs SET status='interrupted',error='服务重启，已保留收到的内容' WHERE status='running'").run()
   db.prepare("UPDATE writing_batches SET status='paused',error='服务重启，待手动继续' WHERE status='running'").run()
   const get = (sql, ...args) => db.prepare(sql).get(...args)
@@ -433,15 +449,96 @@ export function openStore(directory) {
     return row
   }
 
+  function skillProfile(pid) {
+    const row = get('SELECT bindings,rev FROM writing_skill_profiles WHERE project_id=?', pid)
+    return row ? { bindings: JSON.parse(row.bindings), rev: row.rev }
+      : { bindings: Object.fromEntries(runKinds.map(kind => [kind, null])), rev: 0 }
+  }
+
+  function writingSkill(pid, id) {
+    const row = get('SELECT id,title,body FROM writing_skills WHERE project_id=? AND id=?', pid, id)
+    if (!row) throw new ApiError(404, '写作 Skill 不存在')
+    return row
+  }
+
+  function stageSkill(pid, kind) {
+    const id = skillProfile(pid).bindings[kind]
+    return id ? writingSkill(pid, id) : null
+  }
+
+  function skillSource(sourceHash, skill) {
+    return skill ? 'skill:' + hash(JSON.stringify([sourceHash, skill.id, hash(skill.body)])) : sourceHash
+  }
+
+  function listSkills(pid) {
+    return { ...skillProfile(pid), skills: all('SELECT id,title FROM writing_skills WHERE project_id=? ORDER BY created,id', pid) }
+  }
+
+  function skillInput(value) {
+    object(value)
+    return { title: string(value.title, 120, true).trim(), body: string(value.body, 8000, true) }
+  }
+
+  function installSkill(pid, value) {
+    const { title, body } = skillInput(value)
+    const id = string(value.mutationId, 80, true)
+    if (!/^[a-f0-9-]{36}$/i.test(id)) throw new ApiError(400, 'Skill 编号无效')
+    return tx(() => {
+      const existing = get('SELECT project_id,title,body FROM writing_skills WHERE id=?', id)
+      if (existing) {
+        if (existing.project_id !== pid || existing.title !== title || existing.body !== body) throw new ApiError(409, 'Skill 编号已被使用')
+      } else {
+        if (get('SELECT count(*) n FROM writing_skills WHERE project_id=?', pid).n >= 40) throw new ApiError(422, '每部作品最多安装 40 个 Skill')
+        run('INSERT INTO writing_skills VALUES (?,?,?,?,?)', id, pid, title, body, now())
+      }
+      return writingSkill(pid, id)
+    })
+  }
+
+  function parseSkillBindings(value) {
+    object(value)
+    if (Object.keys(value).some(key => !runKinds.includes(key))) throw new ApiError(400, 'Skill 阶段无效')
+    return Object.fromEntries(runKinds.map(kind => [kind, value[kind] == null ? null : string(value[kind], 80, true)]))
+  }
+
+  function bindSkills(pid, value) {
+    object(value)
+    const bindings = parseSkillBindings(value.bindings)
+    if (!Number.isSafeInteger(value.baseRev) || value.baseRev < 0) throw new ApiError(400, 'Skill 设置版本无效')
+    return tx(() => {
+      const current = skillProfile(pid)
+      const next = JSON.stringify(bindings)
+      if (next === JSON.stringify(current.bindings)) return current
+      if (value.baseRev !== current.rev) throw new ApiError(409, '另一设备已修改 Skill 绑定，请重新打开设置', current)
+      for (const id of new Set(Object.values(bindings).filter(Boolean))) writingSkill(pid, id)
+      run('INSERT INTO writing_skill_profiles VALUES (?,?,?) ON CONFLICT(project_id) DO UPDATE SET bindings=excluded.bindings,rev=excluded.rev',
+        pid, next, current.rev + 1)
+      return skillProfile(pid)
+    })
+  }
+
+  function deleteSkill(pid, id) {
+    return tx(() => {
+      if (Object.values(skillProfile(pid).bindings).includes(id) || get(`SELECT 1 FROM writing_batches
+          WHERE project_id=? AND draft_skill=? AND status IN ('running','paused')`, pid, id)) {
+        throw new ApiError(409, '请先解除该 Skill 的绑定并处理仍使用它的批次')
+      }
+      run('DELETE FROM writing_skills WHERE project_id=? AND id=?', pid, id)
+      return { ok: true }
+    })
+  }
+
   function runContext(doc, request) {
     match(doc, request.baseRev)
     if (doc.kind !== 'chapter' || doc.status !== 'draft') throw new ApiError(422, 'AI 操作需要未定稿章节')
     if (['review', 'revise'].includes(request.kind) && !doc.body.trim()) throw new ApiError(422, '请先填写正文')
-    const context = { doc, ...sources(doc, request.refs, request.spans), guidance: request.guidance, referenceQuery: request.referenceQuery }
+    const source = sources(doc, request.refs, request.spans)
+    const skill = stageSkill(doc.project_id, request.kind)
+    const context = { doc, ...source, skill, sourceHash: skillSource(source.sourceHash, skill), guidance: request.guidance, referenceQuery: request.referenceQuery }
     if (!request.outlineId) return context
     const outline = completedOutline(doc, request.outlineId)
     const expected = requestFingerprint(doc.id, { ...request, kind: 'outline', outlineId: null })
-    if (outline.source_hash !== context.sourceHash || outline.request_hash !== expected) {
+    if (outline.source_hash !== skillSource(source.sourceHash, stageSkill(doc.project_id, 'outline')) || outline.request_hash !== expected) {
       throw new ApiError(409, '细纲与当前资料或作者要求不一致，请重新生成或取消引用')
     }
     return { ...context, outline: outline.output, sourceHash: outlineBinding(context.sourceHash, outline) }
@@ -545,7 +642,8 @@ export function openStore(directory) {
         match(doc, baseRev)
         if (doc.kind !== 'chapter' || doc.status !== 'draft' || doc.body.trim()) throw new ApiError(422, '批量写作只接收空白且未定稿的章节')
       }
-      run("INSERT INTO writing_batches (id,project_id,status,guidance,fingerprint,created) VALUES (?,?,'running',?,?,?)", id, pid, guidance, fingerprint, now())
+      run("INSERT INTO writing_batches (id,project_id,status,guidance,fingerprint,created,draft_skill) VALUES (?,?,'running',?,?,?,?)",
+        id, pid, guidance, fingerprint, now(), stageSkill(pid, 'draft')?.id ?? null)
       for (const [docId, baseRev] of chapters) run('INSERT INTO writing_batch_items (batch_id,document_id,base_rev) VALUES (?,?,?)', id, docId, baseRev)
       return getBatch(pid, id)
     })
@@ -556,6 +654,8 @@ export function openStore(directory) {
       const batch = getBatch(pid, id)
       if (action === 'resume' && batch.status === 'paused') {
         writingAvailable()
+        const { draft_skill: skill } = get('SELECT draft_skill FROM writing_batches WHERE id=?', id)
+        if ((stageSkill(pid, 'draft')?.id ?? null) !== skill) throw new ApiError(409, '写稿 Skill 绑定已变化，请恢复原绑定或新建批次')
         run("UPDATE writing_batches SET status='running',error='' WHERE id=?", id)
       }
       if (action === 'pause' && batch.status === 'running') run("UPDATE writing_batches SET status='paused',error='' WHERE id=?", id)
@@ -570,6 +670,10 @@ export function openStore(directory) {
     return tx(() => {
       const batch = get("SELECT * FROM writing_batches WHERE id=? AND status='running'", id)
       if (!batch) return null
+      if ((stageSkill(batch.project_id, 'draft')?.id ?? null) !== batch.draft_skill) {
+        pauseBatch(id, '写稿 Skill 绑定已变化，请恢复原绑定或新建批次')
+        return null
+      }
       const items = all(`SELECT i.document_id,i.base_rev FROM writing_batch_items i
         JOIN documents d ON d.id=i.document_id LEFT JOIN runs r ON r.id=i.run_id
         WHERE i.batch_id=? AND i.skipped='' AND COALESCE(r.status,'')<>'done' ORDER BY d.number`, id)
@@ -719,15 +823,20 @@ export function openStore(directory) {
     match(doc, job.base_rev)
     if (doc.status === 'final') throw new ApiError(422, '请先重新打开定稿')
     const bindings = sources(doc, JSON.parse(job.reference_ids))
-    let valid = job.outline_id
-      ? outlineBinding(bindings.sourceHash, completedOutline(doc, job.outline_id)) === job.source_hash
-      : [bindings.sourceHash, bindings.previousHash, bindings.legacyHash].includes(job.source_hash)
+    const skill = stageSkill(doc.project_id, job.kind)
+    const sourceHash = skillSource(bindings.sourceHash, skill)
+    let valid = (skill ? [sourceHash] : [sourceHash, bindings.previousHash, bindings.legacyHash]).includes(job.source_hash)
+    if (job.outline_id) {
+      const outline = completedOutline(doc, job.outline_id)
+      valid = outline.source_hash === skillSource(bindings.sourceHash, stageSkill(doc.project_id, 'outline')) &&
+        outlineBinding(sourceHash, outline) === job.source_hash
+    }
     if (job.source_hash.startsWith('batch:')) {
       const item = get('SELECT batch_id FROM writing_batch_items WHERE run_id=?', job.id)
       const predecessor = item && batchPredecessor(item.batch_id, doc)
-      valid = predecessor && batchBinding(bindings.sourceHash, predecessor) === job.source_hash
+      valid = predecessor && batchBinding(sourceHash, predecessor) === job.source_hash
     }
-    if (!valid) throw new ApiError(409, '生成时的设定、蓝图或前文已变化，请核对候选并重新生成')
+    if (!valid) throw new ApiError(409, '生成时的资料或写作 Skill 已变化，请核对候选并重新生成')
   }
 
   function saveCandidate(doc, job, body) {
@@ -805,8 +914,30 @@ export function openStore(directory) {
         .map(doc => ({ ...doc, history: history(pid, doc.id) })),
       references: all('SELECT title,body FROM reference_material WHERE project_id=? ORDER BY created,id', pid),
       threads: threads(pid).map(({ title, body, kind, status, planted, due, resolved }) => ({ title, body, kind, status, planted, due, resolved })),
+      writingSkills: { library: all('SELECT id,title,body FROM writing_skills WHERE project_id=? ORDER BY created,id', pid), bindings: skillProfile(pid).bindings },
       runs: all('SELECT r.* FROM runs r JOIN documents d ON r.document_id=d.id WHERE d.project_id=?', pid),
     }))
+  }
+
+  function importSkills(pid, value) {
+    object(value)
+    if (!Array.isArray(value.library) || value.library.length > 40) throw new ApiError(400, '备份中的 Skill 库无效')
+    const ids = new Map()
+    for (const source of value.library) {
+      const { title, body } = skillInput(source)
+      const oldId = string(source.id, 80, true)
+      if (ids.has(oldId)) throw new ApiError(400, '备份包含重复 Skill')
+      const id = randomUUID()
+      ids.set(oldId, id)
+      run('INSERT INTO writing_skills VALUES (?,?,?,?,?)', id, pid, title, body, now())
+    }
+    const bindings = parseSkillBindings(value.bindings)
+    for (const [kind, id] of Object.entries(bindings)) {
+      if (!id) continue
+      if (!ids.has(id)) throw new ApiError(400, '备份中的 Skill 绑定无效')
+      bindings[kind] = ids.get(id)
+    }
+    if (Object.values(bindings).some(Boolean)) run('INSERT INTO writing_skill_profiles VALUES (?,?,1)', pid, JSON.stringify(bindings))
   }
 
   function importBackup(data) {
@@ -817,6 +948,7 @@ export function openStore(directory) {
         (data.runs !== undefined && !Array.isArray(data.runs))) throw new ApiError(400, '不支持此 Web 作品备份格式')
     return tx(() => {
       const p = createProject(data.title)
+      if (data.writingSkills !== undefined) importSkills(p.id, data.writingSkills)
       for (const source of data.references ?? []) addReference(p.id, source)
       for (const source of data.threads ?? []) saveThread(p.id, null, source)
       const mapping = new Map()
@@ -876,5 +1008,6 @@ export function openStore(directory) {
   return { db, get, all, run, tx, project, document, createProject, renameProject, addDocument, importChapters, eventHead, projectEvents, pruneEvents,
     save, chapters, search, addReference, reference, threads, saveThread,
     transition, history, restore, getRun, runDetail, startRun, previewRun, applyRun, previewRevision, applyRevision, backup, importBackup,
-    listBatches, batchChapters, getBatch, createBatch, changeBatch, nextBatchRun, pauseBatch }
+    listBatches, batchChapters, getBatch, createBatch, changeBatch, nextBatchRun, pauseBatch,
+    listSkills, writingSkill, installSkill, bindSkills, deleteSkill }
 }

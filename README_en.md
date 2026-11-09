@@ -26,7 +26,7 @@ The `codex/web-novel-fnos` branch of this fork adds a [self-hosted Web workspace
 | --- | --- |
 | Novel writing | Projects, story setup, characters, blueprints, chapters and story threads |
 | Editing and sync | CodeMirror, autosave, offline drafts, conflict comparison, final chapters and version history |
-| AI workflow | Short outlines, single-chapter and batch drafts, review and revision. Preview model inputs, locate quoted passages and choose which changes to apply |
+| AI workflow | Short outlines, single-chapter and batch drafts, review and revision. Bind writing skills by stage, preview model inputs and choose which changes to apply |
 | Reference and import | Keyword and optional semantic search, TXT/Markdown manuscripts and desktop `.ainovel` archives |
 | NAS operation | Docker Compose on `linux/amd64`, live database backups and restore to a separate volume |
 

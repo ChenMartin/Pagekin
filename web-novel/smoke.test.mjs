@@ -465,7 +465,7 @@ test('novel workflow through HTTP across devices, generation, export and restart
     const restoreDir = join(directory, 'recovered')
     const restoredDb = join(restoreDir, 'novels.sqlite')
     assert.equal((await restoreDatabase(createReadStream(snapshot), restoredDb)).projects, 3)
-    assert.equal(verifyDatabase(restoredDb).schema, 8)
+    assert.equal(verifyDatabase(restoredDb).schema, 9)
     await assert.rejects(restoreDatabase(createReadStream(snapshot), restoredDb), /目标已有数据库/)
     await stop(server)
     server = await launch(restoreDir, upstream.address().port)
@@ -510,6 +510,12 @@ test('novel workflow through HTTP across devices, generation, export and restart
     await request(batchPath + '/pause', { method: 'POST' })
     await awaitBatch(batchPath, row => row.status === 'paused' && row.items[1].status === 'interrupted')
     assert.match((await request(batchRuns + pausedRun)).result.output, /部分候选/)
+    const batchSkills = '/api/projects/' + second.id + '/writing-skills'
+    const { result: alteredStyle } = await request(batchSkills, { method: 'POST', status: 201,
+      value: { mutationId: randomUUID(), title: '新风格', body: '保持简洁' } })
+    await request(batchSkills + '/bindings', { method: 'PUT', value: { baseRev: 0, bindings: { draft: alteredStyle.id } } })
+    await request(batchPath + '/resume', { method: 'POST', status: 409 })
+    await request(batchSkills + '/bindings', { method: 'PUT', value: { baseRev: 1, bindings: {} } })
     await request(batchDocs + '/' + batchChapters[2].id, { method: 'PUT', cookie: b,
       value: { title: '被别处编辑', body: '作者自己的稿', baseRev: 1, mutationId: randomUUID() } })
     await request(batchPath + '/resume', { method: 'POST' })
@@ -543,6 +549,44 @@ test('novel workflow through HTTP across devices, generation, export and restart
     await awaitBatch(cancellingPath, row => row.items[0].status === 'running')
     await request(cancellingPath + '/cancel', { method: 'POST' })
     await awaitBatch(cancellingPath, row => row.status === 'cancelled' && row.items[0].status === 'cancelled')
+
+    const skillPath = base + '/writing-skills'
+    const styleRequest = { mutationId: randomUUID(), title: '码头风格', body: '短句与可见动作。' }
+    const { result: draftStyle } = await request(skillPath, { method: 'POST', value: styleRequest, status: 201 })
+    assert.deepEqual((await request(skillPath, { method: 'POST', value: styleRequest, status: 201 })).result, draftStyle)
+    await request(batchSkills + '/' + draftStyle.id, { status: 404 })
+    const { result: outlineStyle } = await request(skillPath, { method: 'POST', status: 201,
+      value: { mutationId: randomUUID(), title: '细纲风格', body: '先列本章阻力。' } })
+    const binding = { baseRev: 0, bindings: { outline: outlineStyle.id, draft: draftStyle.id } }
+    const { result: skillProfile } = await request(skillPath + '/bindings', { method: 'PUT', value: binding })
+    assert.equal(skillProfile.rev, 1)
+    assert.deepEqual((await request(skillPath + '/bindings', { method: 'PUT', value: binding })).result, skillProfile)
+    await request(skillPath + '/bindings', { method: 'PUT', cookie: b, status: 409, value: { baseRev: 0, bindings: {} } })
+    await request(skillPath + '/' + draftStyle.id, { method: 'DELETE', status: 409 })
+    const reviewPreview = (await request(doc + '/context', { method: 'POST', value: { kind: 'review', baseRev: 6 } })).result
+    assert.doesNotMatch(reviewPreview.messages.at(-1).content, /写作 Skill ·/)
+    const skillOutline = await run('outline', 6)
+    const { id: skillOutlineId } = await awaitRun(skillOutline, row => row.status === 'done')
+    assert.match(lastPrompt, /先列本章阻力/)
+    assert.doesNotMatch(lastPrompt, /短句与可见动作/)
+    const skillDraft = { kind: 'draft', baseRev: 6, outlineId: skillOutlineId }
+    const skillPreview = (await request(doc + '/context', { method: 'POST', value: skillDraft })).result
+    assert.match(skillPreview.messages.at(-1).content, /短句与可见动作/)
+    assert.doesNotMatch(skillPreview.messages.at(-1).content, /先列本章阻力/)
+    const { result: styleJob } = await request(doc + '/runs', { method: 'POST', status: 202,
+      value: { ...skillDraft, mutationId: randomUUID() } })
+    await awaitRun(base + '/runs/' + styleJob.id, row => row.status === 'done')
+    assert.equal(lastPrompt, skillPreview.messages.at(-1).content)
+    await request(skillPath + '/bindings', { method: 'PUT', value: { baseRev: 1, bindings: { draft: draftStyle.id } } })
+    await request(doc + '/context', { method: 'POST', value: skillDraft, status: 409 })
+    await request(base + '/runs/' + styleJob.id + '/apply', { method: 'POST', status: 409 })
+    const { result: skillBackup } = await request(base + '/backup')
+    const { result: skillCopy } = await request('/api/import', { method: 'POST', status: 201, value: skillBackup })
+    const newPath = '/api/projects/' + skillCopy.id + '/writing-skills'
+    const { result: restoredSkills } = await request(newPath)
+    assert.notEqual(restoredSkills.bindings.draft, draftStyle.id)
+    assert.equal((await request(newPath + '/' + restoredSkills.bindings.draft)).result.body, draftStyle.body)
+    await request(skillPath + '/' + outlineStyle.id, { method: 'DELETE' })
   } finally {
     await stop(server)
     upstream.closeAllConnections()
@@ -559,6 +603,7 @@ test('opening an existing Web database migrates v1 and keeps chapter data', asyn
     const p = store.createProject('旧版本作品')
     const doc = store.addDocument(p.id, { kind: 'chapter', number: 1, title: '原章', body: '原文' })
     store.db.exec(`
+      DROP TABLE writing_skill_profiles; DROP TABLE writing_skills;
       DROP TABLE writing_batch_items; DROP TABLE writing_batches;
       DROP TRIGGER document_created_event; DROP TRIGGER document_updated_event; DROP TABLE project_events; DROP TABLE narrative_threads;
       DROP TABLE reference_vectors;
@@ -569,7 +614,7 @@ test('opening an existing Web database migrates v1 and keeps chapter data', asyn
     store = undefined
     store = openStore(directory)
     assert.equal(store.document(p.id, doc.id).body, '原文')
-    assert.equal(store.get('PRAGMA user_version').user_version, 8)
+    assert.equal(store.get('PRAGMA user_version').user_version, 9)
     assert.equal(store.addReference(p.id, { title: '资料', body: '参考文字' }).body, '参考文字')
   } finally { store?.db.close(); await rm(directory, { recursive: true, force: true }) }
 })

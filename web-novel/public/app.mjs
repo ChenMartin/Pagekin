@@ -1265,6 +1265,89 @@ function showBatch(pid, first) {
   render(first)
 }
 
+async function showWritingSkills(pid) {
+  const path = `/projects/${pid}/writing-skills`
+  const { skills, bindings, rev } = await api(path)
+  if (pid !== project) return
+  const help = document.createElement('p')
+  help.textContent = '为细纲、写稿、审稿和修稿分别选择提示词。模型输入预览会显示实际使用的内容。'
+  const error = document.createElement('p')
+  error.setAttribute('role', 'alert')
+  const selections = new Map()
+  const labels = Object.entries(runNames).map(([kind, title]) => {
+    const label = document.createElement('label')
+    const select = document.createElement('select')
+    choices(select, skills.map(skill => [skill.id, skill.title]), '无 Skill', bindings[kind] ?? '')
+    select.dataset.skillStage = kind
+    selections.set(kind, select)
+    label.append(title, select)
+    return label
+  })
+  const library = document.createElement('div')
+  library.className = 'batch-list'
+  library.append(...skills.map(skill => actionButton('查看 · ' + skill.title, async () => {
+    const details = await api(path + '/' + skill.id)
+    if (pid !== project || !library.isConnected) return
+    const preview = document.createElement('pre')
+    preview.textContent = details.body
+    const controls = [actionButton('返回 Skill 设置', () => showWritingSkills(pid))]
+    if (!Object.values(bindings).includes(skill.id)) controls.push(actionButton('删除此 Skill', async () => {
+      await api(path + '/' + skill.id, 'DELETE')
+      await showWritingSkills(pid)
+    }))
+    dialog(details.title, [preview, ...controls])
+  })))
+  dialog('写作 Skill', [help, ...labels, actionButton('添加写作 Skill', () => newWritingSkill(pid)), library, error], async () => {
+    try {
+      await api(path + '/bindings', 'PUT', { baseRev: rev,
+        bindings: Object.fromEntries([...selections].map(([kind, select]) => [kind, select.value || null])) })
+      if (library.isConnected) $('dialog').close()
+    } catch (failure) { error.textContent = failure.message }
+  }, '保存阶段绑定')
+}
+
+function newWritingSkill(pid) {
+  const [titleLabel, title] = field('Skill 名称', { maxLength: 120 })
+  const [fileLabel, file] = field('从本机载入 UTF-8 文本（可选）', { type: 'file', accept: '.md,.markdown,.txt,text/plain,text/markdown', required: false })
+  const label = document.createElement('label')
+  const content = document.createElement('textarea')
+  content.required = true
+  content.maxLength = 8000
+  content.rows = 8
+  label.append('写作提示词内容 · 核对后安装', content)
+  const error = document.createElement('p')
+  error.setAttribute('role', 'alert')
+  file.addEventListener('change', async () => {
+    const source = file.files[0]
+    if (!source) return
+    try {
+      if (source.size > 32_000) throw new Error('Skill 文件过大')
+      const text = new TextDecoder('utf-8', { fatal: true }).decode(await source.arrayBuffer())
+      if (file.files[0] !== source || !file.isConnected) return
+      if (text.length > content.maxLength) throw new Error('Skill 最多 8000 字符')
+      title.value ||= source.name.replace(/\.[^.]+$/, '').slice(0, title.maxLength)
+      content.value = text
+      error.textContent = ''
+    } catch (failure) { error.textContent = failure.message }
+  })
+  let pending
+  dialog('添加写作 Skill', [titleLabel, fileLabel, label, error, actionButton('返回 Skill 设置', () => showWritingSkills(pid))], async () => {
+    const next = { title: title.value, body: content.value }
+    if (pending && (pending.title !== next.title || pending.body !== next.body)) {
+      error.textContent = '上次提交结果未知。请用原内容重试，或查看已安装列表。'
+      return
+    }
+    pending ??= { ...next, mutationId: uuid() }
+    try {
+      await api(`/projects/${pid}/writing-skills`, 'POST', pending)
+      if (content.isConnected && $('dialog').open) await showWritingSkills(pid)
+    } catch (failure) {
+      if (failure.status && failure.status < 500) pending = null
+      error.textContent = failure.message
+    }
+  }, '安装提示词')
+}
+
 function runAction(action) {
   Promise.resolve().then(action).catch(error => note(error.message))
 }
@@ -1282,6 +1365,7 @@ $('login').addEventListener('submit', event => {
 })
 click('logout', async () => { await leave(); await api('/session', 'DELETE'); location.reload() })
 click('batch-writing', () => listBatches(project))
+click('writing-skills', () => showWritingSkills(project))
 click('new-project', () => {
   const [label, title] = field('作品名称', { maxLength: 160 })
   dialog('新建作品', [label], async () => {

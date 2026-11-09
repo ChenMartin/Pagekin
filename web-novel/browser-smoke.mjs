@@ -353,7 +353,28 @@ try {
     const response = await fetch('/api/projects/' + project + '/documents/' + doc);
     return (await response.json()).body;
   })()`), '')
-  console.log('Browser workflow passed (' + (enhanced ? 'CodeMirror' : 'plain') + '): autosave, recovery, context, review, revision merge, batch writing, conflicts, editing and import')
+  await click('#writing-skills')
+  await visible('#dialog-body select[data-skill-stage=draft]')
+  await evaluate("Array.from(document.querySelectorAll('#dialog-body button')).find(button => button.textContent === '添加写作 Skill').click()")
+  await visible('#dialog-body input[type=file]')
+  await evaluate(`(() => {
+    const input = document.querySelector('#dialog-body input[type=file]');
+    const files = new DataTransfer();
+    files.items.add(new File(['叙事节奏采用短句。'], '短句.md', { type: 'text/plain' }));
+    input.files = files.files;
+    input.dispatchEvent(new Event('change'));
+  })()`)
+  await until(() => evaluate("document.querySelector('#dialog-body textarea').value === '叙事节奏采用短句。'"), 'Skill text did not load for inspection')
+  await click('#dialog-submit')
+  await until(() => evaluate("document.querySelector('#dialog-body select[data-skill-stage=draft]')?.options.length === 2"), 'Skill did not install')
+  await evaluate("document.querySelector('#dialog-body select[data-skill-stage=draft]').selectedIndex = 1")
+  await click('#dialog-submit')
+  await until(() => evaluate("!document.querySelector('#dialog').open"), 'Skill bindings did not save')
+  await click('#preview-context')
+  await click('#dialog-submit')
+  await until(() => evaluate("document.querySelector('#dialog-body').textContent.includes('叙事节奏采用短句。')"), 'Bound writing Skill did not enter the draft preview')
+  await click('#close-dialog')
+  console.log('Browser workflow passed (' + (enhanced ? 'CodeMirror' : 'plain') + '): autosave, recovery, context, review, revision merge, batch writing, writing skills, conflicts, editing and import')
 } finally {
   socket?.close()
   for (const child of [browser, app]) {

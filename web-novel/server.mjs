@@ -370,6 +370,12 @@ async function route(req, res) {
   const [, api, projects, pid, resource, id, action, extra] = path.split('/')
   if (api !== 'api' || projects !== 'projects' || !pid || extra !== undefined) throw new ApiError(404, '接口不存在')
   storage.project(pid)
+  if (resource === 'writing-skills' && action === undefined) {
+    if (method === 'GET') return json(res, id ? storage.writingSkill(pid, id) : storage.listSkills(pid))
+    if (method === 'POST' && id === undefined) return json(res, storage.installSkill(pid, await body(req, 50_000)), 201)
+    if (method === 'PUT' && id === 'bindings') return json(res, storage.bindSkills(pid, await body(req, 4096)))
+    if (method === 'DELETE' && id) return json(res, storage.deleteSkill(pid, id))
+  }
   if (resource === 'batches') {
     if (method === 'GET' && id === 'eligible' && action === undefined) return json(res, storage.batchChapters(pid))
     if (method === 'GET' && action === undefined) return json(res, id ? storage.getBatch(pid, id) : storage.listBatches(pid))
