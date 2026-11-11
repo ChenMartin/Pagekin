@@ -19,7 +19,7 @@ def package(output: Path) -> Path:
         "revision-merge.mjs", "continuation.mjs", "manuscript-export.mjs", "input.mjs", "screenplay-store.mjs", "public/screenplay-ui.mjs",
         "version.mjs", "maintenance.mjs", "semantic.mjs", "reference-novels.mjs", "public/index.html", "public/app.mjs",
         "public/manuscript.mjs", "public/novel-goals.mjs", "public/architecture.mjs", "public/reference-novel-ui.mjs", "public/style.css",
-        "character-continuity.mjs", "public/character-state.mjs", "public/character-continuity-ui.mjs",
+        "character-continuity.mjs", "continuity-report.mjs", "public/character-state.mjs", "public/character-continuity-ui.mjs",
         "package.json", "package-lock.json", "build-editor.mjs", "editor/codemirror.mjs",
     ]
     sources = [(name, root / name) for name in files] + [("LICENSE", root.parent / "LICENSE")]

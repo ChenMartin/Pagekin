@@ -1,5 +1,12 @@
 const limits = { title: 80, quote: 180, reason: 360, suggestion: 500 }
-const lineEndings = text => text.replace(/\r\n?/g, '\n')
+export const lineEndings = text => text.replace(/\r\n?/g, '\n')
+
+export function quoteEvidence(normalizedBody, quote) {
+  const start = normalizedBody?.indexOf(quote)
+  if (start === undefined) return 'unavailable'
+  if (start < 0) return 'missing'
+  return normalizedBody.indexOf(quote, start + 1) >= 0 ? 'ambiguous' : 'verified'
+}
 
 export function reviewReport(output, snapshot) {
   const text = output.trim()
@@ -17,13 +24,8 @@ export function reviewReport(output, snapshot) {
       if (typeof issue[key] !== 'string' || !issue[key].trim() || issue[key].length > max) return null
     }
     const quote = lineEndings(issue.quote)
-    const start = body?.indexOf(quote)
-    let evidence = 'unavailable'
-    if (start !== undefined) {
-      if (start < 0) evidence = 'missing'
-      else evidence = body.indexOf(quote, start + 1) >= 0 ? 'ambiguous' : 'verified'
-    }
-    issues.push({ title: issue.title, severity: issue.severity, quote, reason: issue.reason, suggestion: issue.suggestion, evidence })
+    issues.push({ title: issue.title, severity: issue.severity, quote, reason: issue.reason, suggestion: issue.suggestion,
+      evidence: quoteEvidence(body, quote) })
   }
   return { issues }
 }

@@ -184,6 +184,11 @@ test('novel workflow through HTTP across devices, generation, export and restart
     if (instruction.includes('生成当前章的章节蓝图')) output = '## 蓝图候选\n调查失踪的船票'
     if (instruction.includes('只返回替换片段')) output = '替换选中的文字。'
     if (instruction.includes('只返回插入的新文字')) output = '续写的文字。'
+    if (instruction.includes('你是小说连载助手')) output = JSON.stringify({ changes: [
+      { field: 'location', value: '船上', quote: '调查者登船。\n潮声阵阵。' },
+      { field: 'physicalState', value: '保持站立', quote: '潮声阵阵。' },
+      { field: 'keyItems', value: '旧地图', quote: '他拿起旧地图。' },
+    ] })
     if (instruction.includes('生成写前细纲')) output = '1. 抵达灯塔并核对钥匙。'
     if (instruction.includes('返回修订后的完整正文') && lastPrompt.includes('逐段合并')) output = revisedProse
     if (instruction.includes('审查当前正文')) {
@@ -937,6 +942,60 @@ test('novel workflow through HTTP across devices, generation, export and restart
     const copiedState = (await request(copiedPath + '/continuity/' + copiedPerson.id + '?chapter=7')).result
     assert.deepEqual(copiedState.current.relationships, [{ targetId: copiedPartner.id, relation: '同行者' }])
     assert.equal(copiedState.history.filter(row => !row.active).length, 1)
+
+    const evidenceDoc = await createPlanDoc({ kind: 'chapter', number: 9, title: '出海', body: '调查者登船。\r\n潮声阵阵。\r\n潮声阵阵。' })
+    const evidenceDocPath = projectPath + '/documents/' + evidenceDoc.id
+    const extractRequest = { kind: 'continuity', baseRev: 2, continuityCharacterId: person.id, mutationId: randomUUID() }
+    await request(evidenceDocPath + '/context', { method: 'POST', status: 422, value: extractRequest })
+    await request(evidenceDocPath + '/status', { method: 'POST', value: { action: 'finalize', baseRev: 1 } })
+    await request(evidenceDocPath + '/status', { method: 'POST', value: { action: 'reopen', baseRev: 2 } })
+    await request(evidenceDocPath, { method: 'PUT', value: {
+      title: '出海', body: '重开草稿里的新情节。', baseRev: 3, mutationId: randomUUID(),
+    } })
+    const extractPreview = (await request(evidenceDocPath + '/context', { method: 'POST', value: extractRequest })).result
+    assert.match(extractPreview.messages[1].content, /目标人物：调查者[\s\S]*新定稿确认已在南岸[\s\S]*调查者登船。/)
+    assert.doesNotMatch(extractPreview.messages[1].content, /重开草稿里的新情节/)
+    const extractJob = (await request(evidenceDocPath + '/runs', { method: 'POST', status: 202, value: extractRequest })).result
+    const extractPath = projectPath + '/runs/' + extractJob.id
+    const extracted = await awaitRun(extractPath, row => row.status === 'done')
+    assert.equal(lastPrompt, extractPreview.messages[1].content)
+    assert.equal(extracted.base_rev, 2)
+    assert.equal(extracted.continuityCharacterId, person.id)
+    assert.deepEqual(extracted.continuityReport.changes.map(change => change.evidence), ['verified', 'ambiguous', 'missing'])
+    assert.equal((await request(evidenceDocPath + '/runs', { method: 'POST', status: 202, value: extractRequest })).result.id, extractJob.id)
+    await request(extractPath + '/apply', { method: 'POST', status: 422 })
+    const suggestions = (await request(continuityPath + '/suggestions?chapter=9&finalRev=2')).result
+    assert.deepEqual(suggestions.map(row => row.id), [extractJob.id])
+    assert.equal((await request(continuityPath + '?chapter=9')).result.current, null)
+    const candidate = { chapter: 9, finalRev: 2, baseRev: 0, state: { location: '船上' }, relationships: [],
+      picks: [{ field: 'location', runId: extractJob.id }] }
+    await request(projectPath + '/continuity/' + partner.id, { method: 'PUT', value: candidate, status: 409 })
+    await request(continuityPath, { method: 'PUT', status: 422, value: { ...candidate, state: { location: '其他地点' } } })
+    await request(continuityPath, { method: 'PUT', status: 422, value: {
+      ...candidate, state: { physicalState: '保持站立' }, picks: [{ field: 'physicalState', runId: extractJob.id }],
+    } })
+    const approved = (await request(continuityPath, { method: 'PUT', value: candidate })).result
+    assert.deepEqual(approved.evidence, { location: '调查者登船。\n潮声阵阵。' })
+    assert.deepEqual((await request(continuityPath, { method: 'PUT', value: candidate })).result, approved)
+    const evidenceBackup = (await request(projectPath + '/backup')).result
+    const restoredEvidence = (await request('/api/import', { method: 'POST', status: 201, value: evidenceBackup })).result
+    const restoredEvidencePath = '/api/projects/' + restoredEvidence.id
+    const restoredPeople = (await request(restoredEvidencePath + '/continuity')).result.characters
+    const restoredId = restoredPeople.find(row => row.title === '调查者').id
+    const restoredContinuityPath = restoredEvidencePath + '/continuity/' + restoredId
+    assert.deepEqual((await request(restoredContinuityPath + '?chapter=9')).result.current.evidence, approved.evidence)
+    const [restoredCandidate] = (await request(restoredContinuityPath + '/suggestions?chapter=9&finalRev=2')).result
+    const restoredCandidateDetail = (await request(restoredEvidencePath + '/runs/' + restoredCandidate.id)).result
+    assert.equal(restoredCandidateDetail.continuityCharacterId, restoredId)
+    assert.deepEqual(restoredCandidateDetail.continuityReport, extracted.continuityReport)
+    const manual = (await request(continuityPath, { method: 'PUT', value: {
+      ...candidate, baseRev: approved.rev, state: { location: '作者另记在甲板' }, picks: [],
+    } })).result
+    assert.deepEqual(manual.evidence, {})
+    await request(evidenceDocPath + '/status', { method: 'POST', value: { action: 'finalize', baseRev: 4 } })
+    await request(continuityPath + '/suggestions?chapter=9&finalRev=2', { status: 409 })
+    await request(continuityPath, { method: 'PUT', value: { ...candidate, finalRev: 5 }, status: 409 })
+    assert.deepEqual((await request(continuityPath + '/suggestions?chapter=9&finalRev=5')).result, [])
   } finally {
     await stop(server)
     upstream.closeAllConnections()

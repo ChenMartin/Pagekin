@@ -9,7 +9,7 @@ const $ = id => document.getElementById(id)
 const names = { settings: '设定与架构', character: '人物', blueprint: '章节蓝图', chapter: '正文', reference: '参考资料' }
 const stages = ['settings', 'character', 'blueprint', 'chapter']
 const chapterRuns = { draft: '写稿', outline: '写前细纲', review: '审稿', revise: '修稿' }
-const runNames = { ...chapterRuns, plan: 'AI 规划', passage: '选段 AI' }
+const runNames = { ...chapterRuns, plan: 'AI 规划', passage: '选段 AI', continuity: '人物变化提取' }
 const runStates = { running: '生成中', done: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断' }
 const batchStates = { running: '进行中', paused: '已暂停', done: '已结束', cancelled: '已取消' }
 const threadKinds = { plot: '剧情线索', foreshadow: '伏笔' }
@@ -1379,6 +1379,11 @@ function showProjectRuns() {
         const summary = document.createElement('p')
         summary.textContent = [new Date(row.created).toLocaleString(), row.applied_rev !== null && '已应用', row.error].filter(Boolean).join(' · ')
         item.append(actionButton(`${numberedTitle(row)} · ${runNames[row.kind]} · ${runStates[row.status]}`, async () => {
+          if (row.kind === 'continuity') {
+            const job = await api(`/projects/${pid}/runs/${row.id}`)
+            if (visible()) await continuity.openJob(pid, row.number, job, visible)
+            return
+          }
           if (editor?.doc.id !== row.document_id) await openDocument(row.document_id)
           if (!visible() || editor?.doc.id !== row.document_id) return
           await viewRun(editor, row.id)
@@ -1759,7 +1764,7 @@ click('reference-library', referenceLibrary)
 const referenceNovels = referenceNovelWorkspace({ api, dialog, field, actionButton, uuid,
   isCurrent: pid => pid === project, modelEnabled: () => model, installSkill: newWritingSkill })
 click('reference-novel-library', () => referenceNovels.list(project))
-const continuity = continuityWorkspace({ api, dialog, actionButton, isCurrent: pid => pid === project })
+const continuity = continuityWorkspace({ api, dialog, actionButton, uuid, isCurrent: pid => pid === project, modelEnabled: () => model })
 click('character-continuity', () => continuity.list(project))
 click('continuity-document', () => {
   const doc = editor.doc

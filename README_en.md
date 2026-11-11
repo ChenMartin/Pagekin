@@ -26,7 +26,7 @@ The `codex/web-novel-fnos` branch of this fork adds a [self-hosted Web workspace
 | --- | --- |
 | Novel writing | Project goals, story architecture templates, character cards, chapter-linked character states and relationships, blueprints, chapters and story threads |
 | Editing and sync | CodeMirror, autosave, offline drafts, conflict comparison, final chapters and version history |
-| AI workflow | AI story and character planning, chapter-range blueprint batches, short outlines, drafting, selected-passage editing, review and revision. Preview model inputs and approve candidates |
+| AI workflow | Story and character planning, blueprint batches, short outlines, drafting, selected-passage editing, review, revision and evidence-backed character state suggestions |
 | References and files | Reference-novel analysis and reusable style Skills, keyword and semantic search, TXT/Markdown and desktop `.ainovel` imports, manuscript exports |
 | NAS operation | Docker Compose on `linux/amd64`, live database backups and restore to a separate volume |
 
@@ -40,7 +40,7 @@ docker compose up -d --build
 
 The service binds to the host loopback address on port 3100 by default. Configure HTTPS or a trusted LAN address for other devices. Writing works without a model. AI drafting and semantic search each use their own model configuration. [Setup and upgrades](web-novel/README.md)
 
-The published `v0.2.0-rc.1` offline image for Linux amd64 on fnOS uses Web SQLite schema 11 and includes the novel and manual screenplay workspaces. Builds from this branch report `0.2.0-dev.4` and migrate the database to schema 14 on startup. Back up the data volume before upgrading. [Release and upgrade](web-novel/RELEASE.md) · [Implementation progress](docs/research/nas-web/07-implementation-progress.md) · [Novel-to-film design](docs/research/nas-web/06-novel-to-film.md)
+The published `v0.2.0-rc.1` offline image for Linux amd64 on fnOS uses Web SQLite schema 11 and includes the novel and manual screenplay workspaces. Builds from this branch report `0.2.0-dev.5` and migrate the database to schema 15 on startup. Back up the data volume before upgrading. [Release and upgrade](web-novel/RELEASE.md) · [Implementation progress](docs/research/nas-web/07-implementation-progress.md) · [Novel-to-film design](docs/research/nas-web/06-novel-to-film.md)
 
 ## Upstream desktop edition
 

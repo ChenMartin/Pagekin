@@ -10,6 +10,7 @@ import { ApiError, hash, object, openStore, outlineMaxChars } from './store.mjs'
 import { archiveLimit } from './desktop-archive.mjs'
 import { manuscriptRequestBytes } from './public/manuscript.mjs'
 import { writingMessages } from './writing-context.mjs'
+import { continuityMessages } from './continuity-report.mjs'
 import { releaseVersion } from './version.mjs'
 import { openSemantic } from './semantic.mjs'
 import { continuationAddition } from './continuation.mjs'
@@ -36,7 +37,8 @@ const contextLimit = Number(process.env.LLM_CONTEXT_CHARS || '64000')
 if (!Number.isInteger(contextLimit) || contextLimit < 4000 || contextLimit > 250000) {
   throw new Error('LLM_CONTEXT_CHARS 应为 4000–250000 的整数')
 }
-const prepareMessages = (kind, context) => writingMessages(kind, context, contextLimit)
+const prepareMessages = (kind, context) => kind === 'continuity'
+  ? continuityMessages(context, contextLimit) : writingMessages(kind, context, contextLimit)
 const key = process.env.LLM_API_KEY || ''
 const endpoint = model ? new URL((process.env.LLM_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, '') + '/chat/completions') : null
 if (endpoint && (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password ||
@@ -470,6 +472,9 @@ async function route(req, res) {
     if (id && action === undefined && method === 'GET') return json(res, storage.continuity.detail(pid, id, chapter))
     if (id && action === 'history' && method === 'GET') {
       return json(res, storage.continuity.archived(pid, id, chapter, Number(url.searchParams.get('finalRev'))))
+    }
+    if (id && action === 'suggestions' && method === 'GET') {
+      return json(res, storage.continuityRuns(pid, id, chapter, Number(url.searchParams.get('finalRev'))))
     }
     if (id && action === undefined && method === 'PUT') return json(res, storage.continuity.save(pid, id, await body(req, 64_000)))
   }

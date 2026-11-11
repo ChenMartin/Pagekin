@@ -41,6 +41,10 @@ const modelMock = createServer(async (req, res) => {
       structure: '首尾呼应', style: '用动作表现人物', constraints: '用场景后果推动下一场冲突。',
     })
     if (instruction.includes('只返回替换片段')) content = '新的选段。'
+    if (instruction.includes('你是小说连载助手')) content = JSON.stringify({ changes: [
+      { field: 'location', value: '到了码头出口', quote: '章节末尾' },
+      { field: 'keyItems', value: '旧船票', quote: '没有这句原文' },
+    ] })
     if (instruction.includes('审查当前正文')) content = JSON.stringify({ issues: [
       { title: '补写动作', severity: 'major', quote: '断网的本机', reason: '缺少动作', suggestion: '加入登船动作' },
       { title: '模型误引', severity: 'minor', quote: '原文没有这句话', reason: '引文待核对', suggestion: '调整灯塔描写' },
@@ -440,6 +444,29 @@ try {
   await visible('#dialog-body select')
   await evaluate("Array.from(document.querySelectorAll('#dialog-body button')).find(button => button.textContent === '查看该位置的人物关系').click()")
   await until(() => evaluate("document.querySelector('#dialog-body').textContent.includes('→ 领航员 · 同行者')"), 'Directed relationship was not displayed')
+  await click('#close-dialog')
+  await click('#continuity-document')
+  await visible('#dialog-body select')
+  await evaluate("document.querySelectorAll('#dialog-body select')[1].value = '2'")
+  await click('#dialog-submit')
+  await visible('#dialog-body details summary')
+  await click('#dialog-body details summary')
+  await evaluate("Array.from(document.querySelectorAll('#dialog-body button')).find(button => button.textContent === '从定稿提取人物变化').click()")
+  await until(() => evaluate("document.querySelector('#dialog-body details').textContent.includes('定稿中未找到')"), 'Continuity evidence validation did not render')
+  assert.equal(await evaluate("document.querySelector('#dialog-body textarea[name=location]').value"), '开篇值夜在码头')
+  await evaluate("Array.from(document.querySelectorAll('#dialog-body button')).find(button => button.textContent === '填入位置／阵营').click()")
+  assert.equal(await evaluate("document.querySelector('#dialog-body textarea[name=location]').value"), '到了码头出口')
+  assert.equal(await evaluate("document.querySelector('#dialog-body textarea[name=keyItems]').value"), '')
+  await click('#dialog-submit')
+  await until(() => evaluate("document.querySelector('#dialog-body').textContent.includes('已保存引文 · 章节末尾')"), 'Continuity evidence was not saved')
+  await click('#close-dialog')
+  await click('#project-runs')
+  await visible('#dialog-body .tools button:nth-child(2)')
+  await click('#dialog-body .tools button:nth-child(2)')
+  const continuityButton = "Array.from(document.querySelectorAll('#dialog-body section button')).find(button => button.textContent.includes('人物变化提取'))"
+  await until(() => evaluate(`Boolean(${continuityButton})`), 'Run history did not include the continuity extraction')
+  await evaluate(`(${continuityButton}).click()`)
+  await until(() => evaluate("document.querySelector('#dialog-body details')?.open && document.querySelector('#dialog-body').textContent.includes('原文唯一匹配')"), 'Run history did not reopen the structured continuity candidate')
   await click('#close-dialog')
   await click('[data-stage=chapter]')
   await until(() => evaluate("document.querySelector('#title').value === '测试章节'"), 'Chapter stage did not reopen its last document')

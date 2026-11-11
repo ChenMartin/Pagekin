@@ -12,8 +12,10 @@ const label = (title, control) => {
 }
 const chapterLabel = chapter => chapter ? '第 ' + chapter + ' 章后' : '开篇'
 const recordLabel = ({ chapter, finalRev }) => chapterLabel(chapter) + (chapter ? ' · 定稿 v' + finalRev : '')
+const runStatus = { running: '提取中', done: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断' }
+const evidenceStatus = { verified: '原文唯一匹配', ambiguous: '引文重复', missing: '定稿中未找到', unavailable: '缺少原文' }
 
-export function continuityWorkspace({ api, dialog, actionButton, isCurrent }) {
+export function continuityWorkspace({ api, dialog, actionButton, uuid, isCurrent, modelEnabled }) {
   const root = pid => '/projects/' + pid + '/continuity'
   const open = element => element.isConnected && element.closest('dialog')?.open
 
@@ -67,20 +69,31 @@ export function continuityWorkspace({ api, dialog, actionButton, isCurrent }) {
     ])
   }
 
-  async function edit(pid, roster, id, chapter) {
+  async function edit(pid, roster, id, chapter, initialJob, stillOpen = () => true) {
     const path = root(pid) + '/' + id
     const data = await api(path + '?chapter=' + chapter)
-    if (!isCurrent(pid)) return
+    if (!isCurrent(pid) || !stillOpen()) return
     const { current, previous, source, history } = data
     const starting = current ?? previous
     const names = new Map(roster.characters.map(row => [row.id, row.title]))
+    const picks = new Map()
     const fields = Object.entries(characterStateFields).map(([key, title]) => {
       const input = node('textarea')
       input.rows = 2
       input.maxLength = characterStateLimit
       input.name = key
       input.value = starting?.state[key] ?? ''
-      return { input, label: label(title, input) }
+      const evidence = node('span')
+      const update = () => {
+        const quote = current?.state[key] === input.value.trim() ? current.evidence[key] : ''
+        evidence.hidden = !quote
+        evidence.textContent = quote ? '已保存引文 · ' + quote : ''
+      }
+      input.addEventListener('input', () => { picks.delete(key); update() })
+      update()
+      const wrapper = label(title, input)
+      wrapper.append(evidence)
+      return { input, label: wrapper, update }
     })
     const relationList = node('div')
     relationList.className = 'batch-list'
@@ -124,7 +137,8 @@ export function continuityWorkspace({ api, dialog, actionButton, isCurrent }) {
       : previous ? '表单已带入' + recordLabel(previous) + '的状态。保存前请核对所有字段和关系。'
         : '填写此位置的人物状态和关系。留空字段表示此位置没有记录。'
     dialog(names.get(id) + ' · ' + recordLabel({ chapter, finalRev: source.rev }), [
-      back, historyButton, node('p', status), ...fields.map(row => row.label),
+      back, historyButton, node('p', status), ...(chapter ? [suggestions(pid, id, source, fields, picks, initialJob)] : []),
+      ...fields.map(row => row.label),
       node('h3', '人物关系'), add, relationList, feedback,
     ], async () => {
       const links = [...relationships.values()].map(({ target, text }) => ({ targetId: target.value, relation: text.value }))
@@ -134,7 +148,8 @@ export function continuityWorkspace({ api, dialog, actionButton, isCurrent }) {
       }
       try {
         const saved = await api(path, 'PUT', { chapter, finalRev: source.rev, baseRev: current?.rev ?? 0,
-          state: Object.fromEntries(fields.map(({ input }) => [input.name, input.value])), relationships: links })
+          state: Object.fromEntries(fields.map(({ input }) => [input.name, input.value])), relationships: links,
+          picks: [...picks].map(([field, runId]) => ({ field, runId })) })
         if (open(feedback)) await edit(pid, roster, id, saved.chapter)
       } catch (error) {
         feedback.textContent = error.message
@@ -148,9 +163,133 @@ export function continuityWorkspace({ api, dialog, actionButton, isCurrent }) {
     }, '保存人物状态')
   }
 
+  function changeRows(report, pick) {
+    return report.changes.map(change => {
+      const row = node('section')
+      const title = characterStateFields[change.field]
+      row.append(node('h4', title), node('p', change.value), node('pre', change.quote), node('p', evidenceStatus[change.evidence]))
+      if (pick && change.evidence === 'verified') row.append(actionButton('填入' + title, () => pick(change, title)))
+      return row
+    })
+  }
+
+  async function openJob(pid, chapter, job, stillOpen) {
+    const roster = await api(root(pid))
+    if (!isCurrent(pid) || !stillOpen()) return
+    const person = roster.characters.find(row => row.id === job.continuityCharacterId)
+    if (person && roster.finals.some(row => row.number === chapter && row.rev === job.base_rev)) {
+      await edit(pid, roster, person.id, chapter, job, stillOpen)
+      return
+    }
+    const result = job.continuityReport ? changeRows(job.continuityReport) : [node('pre', job.output)]
+    dialog('历史人物变化 · 第 ' + chapter + ' 章 · 定稿 v' + job.base_rev, [
+      node('p', '对应定稿版本已变更。' + (person ? ' 人物 · ' + person.title : '')), ...result,
+    ])
+  }
+
+  function suggestions(pid, id, source, fields, picks, initialJob) {
+    const panel = node('details')
+    const feedback = node('p')
+    feedback.setAttribute('role', 'status')
+    const controls = node('div')
+    controls.className = 'tools'
+    const results = node('div')
+    results.className = 'batch-list'
+    const docPath = '/projects/' + pid + '/documents/' + source.id
+    const jobPath = '/projects/' + pid + '/runs/'
+    const request = { kind: 'continuity', baseRev: source.rev, continuityCharacterId: id }
+    let version = 0
+    let mutationId
+    let submitting = false
+    const active = seq => version === seq && open(panel) && isCurrent(pid)
+    const startView = () => {
+      feedback.textContent = ''
+      results.replaceChildren()
+      return ++version
+    }
+    controls.append(actionButton('查看本版提取记录', async () => {
+      const seq = startView()
+      try {
+        const jobs = await api(root(pid) + '/' + id + '/suggestions?chapter=' + source.number + '&finalRev=' + source.rev)
+        if (!active(seq)) return
+        for (const job of jobs) results.append(actionButton(runStatus[job.status] + ' · ' + new Date(job.created).toLocaleString(),
+          () => viewRun(job.id, startView())))
+        if (!jobs.length) feedback.textContent = '此人物在本定稿版本上还没有提取记录。'
+      } catch (error) { if (active(seq)) feedback.textContent = error.message }
+    }))
+    if (modelEnabled()) {
+      controls.append(actionButton('预览发送内容', async () => {
+        const seq = startView()
+        try {
+          const preview = await api(docPath + '/context', 'POST', request)
+          if (active(seq)) results.replaceChildren(...preview.messages.map(message => node('pre', message.content)))
+        } catch (error) { if (active(seq)) feedback.textContent = error.message }
+      }))
+      const extract = actionButton('从定稿提取人物变化', async () => {
+        if (submitting) return
+        submitting = extract.disabled = true
+        const seq = startView()
+        feedback.textContent = '正在提交提取任务…'
+        mutationId ??= uuid()
+        try {
+          const job = await api(docPath + '/runs', 'POST', { ...request, mutationId })
+          mutationId = undefined
+          if (active(seq)) renderRun(job, seq)
+        } catch (error) {
+          if (error.status && error.status < 500) mutationId = undefined
+          if (active(seq)) feedback.textContent = error.message
+        } finally { submitting = extract.disabled = false }
+      })
+      controls.append(extract)
+    }
+    panel.append(node('summary', 'AI 人物变化候选'), controls,
+      node('p', '提取会向模型发送所选定稿。填入字段后仍需核对并保存人物状态。'), feedback, results)
+    if (initialJob) {
+      panel.open = true
+      renderRun(initialJob, startView())
+    }
+
+    async function viewRun(id, seq) {
+      if (!active(seq)) return
+      try {
+        const job = await api(jobPath + id)
+        if (active(seq)) renderRun(job, seq)
+      } catch (error) { if (active(seq)) feedback.textContent = error.message }
+    }
+
+    function renderRun(job, seq) {
+      if (job.base_rev !== source.rev || job.continuityCharacterId !== id) {
+        feedback.textContent = '记录属于另一份定稿或人物。请重新打开当前状态表单。'
+        return
+      }
+      feedback.textContent = runStatus[job.status] + (job.error ? ' · ' + job.error : '')
+      results.replaceChildren()
+      if (job.status === 'running') {
+        results.append(actionButton('取消提取', () => api(jobPath + job.id + '/cancel', 'POST')))
+        setTimeout(() => viewRun(job.id, seq), 1000)
+        return
+      }
+      if (!job.continuityReport) {
+        if (job.output) results.append(node('pre', job.output))
+        if (job.status === 'done') feedback.textContent = '输出格式无法核对，请查看原输出或重新提取。'
+        return
+      }
+      if (!job.continuityReport.changes.length) feedback.textContent = '模型未提取到可列出的人物变化。'
+      results.append(...changeRows(job.continuityReport, (change, title) => {
+        const { input, update } = fields.find(field => field.input.name === change.field)
+        input.value = change.value
+        picks.set(change.field, job.id)
+        update()
+        feedback.textContent = '已填入' + title + '，请核对后保存。'
+      }))
+    }
+
+    return panel
+  }
+
   function describe(record, names) {
     const fields = Object.entries(characterStateFields).filter(([key]) => record.state[key])
-      .map(([key, title]) => title + ' · ' + record.state[key])
+      .map(([key, title]) => title + ' · ' + record.state[key] + (record.evidence[key] ? '\n原文 · ' + record.evidence[key] : ''))
     const links = record.relationships.map(entry => '对「' + (names.get(entry.targetId) ?? '人物') + '」的关系 · ' + entry.relation)
     return [node('pre', [...fields, ...links].join('\n') || '该记录的状态和关系均为空。')]
   }
@@ -169,5 +308,5 @@ export function continuityWorkspace({ api, dialog, actionButton, isCurrent }) {
     dialog('人物连载记录', [actionButton('返回人物状态', () => edit(pid, roster, id, chapter)), list])
   }
 
-  return { list }
+  return { list, openJob }
 }

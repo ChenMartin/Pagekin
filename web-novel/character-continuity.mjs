@@ -1,5 +1,7 @@
 import { ApiError, object, revision, string } from './input.mjs'
 import { characterStateFields, characterStateLimit, relationshipLimit, relationshipTextLimit } from './public/character-state.mjs'
+import { continuityQuoteLimit } from './continuity-report.mjs'
+import { lineEndings, quoteEvidence } from './review-report.mjs'
 
 export const continuitySchema = `
   CREATE TABLE character_continuity (
@@ -24,10 +26,10 @@ function chapterNumber(value) {
 
 const decode = row => row ? {
   chapter: row.chapter_number, finalRev: row.final_rev, rev: row.rev, updated: row.updated,
-  state: JSON.parse(row.state), relationships: JSON.parse(row.relationships),
+  state: JSON.parse(row.state), relationships: JSON.parse(row.relationships), evidence: JSON.parse(row.evidence),
 } : null
 
-export function characterContinuity({ get, all, run, tx, now, document }) {
+export function characterContinuity({ get, all, run, tx, now, document, candidateEvidence }) {
   function character(pid, id) {
     const row = document(pid, id)
     if (row.kind !== 'character') throw new ApiError(404, '人物卡不存在')
@@ -103,12 +105,20 @@ export function characterContinuity({ get, all, run, tx, now, document }) {
       if (source.rev !== value.finalRev) throw new ApiError(409, '该章已有新的定稿，请重新核对后记录人物状态', { finalRev: source.rev })
       const [state, relationships] = normalize(pid, id, value)
       const current = snapshot(id, chapter, source.rev)
-      if (current?.state === state && current.relationships === relationships) return decode(current)
+      const nextState = JSON.parse(state)
+      const chosen = candidateEvidence(pid, id, source, nextState, value.picks ?? [])
+      const previous = decode(current)
+      const evidence = JSON.stringify(Object.fromEntries(Object.keys(characterStateFields).flatMap(field => {
+        const quote = chosen[field] ?? (previous?.state[field] === nextState[field] ? previous?.evidence[field] : undefined)
+        return quote ? [[field, quote]] : []
+      })))
+      if (current?.state === state && current.relationships === relationships && current.evidence === evidence) return previous
       if ((current?.rev ?? 0) !== value.baseRev) throw new ApiError(409, '另一设备已修改这份人物状态', { current: decode(current) })
-      run(`INSERT INTO character_continuity VALUES (?,?,?,?,?,?,?,?)
+      run(`INSERT INTO character_continuity (character_id,chapter_number,source_id,final_rev,state,relationships,rev,updated,evidence)
+        VALUES (?,?,?,?,?,?,?,?,?)
         ON CONFLICT(character_id,chapter_number,final_rev) DO UPDATE
-        SET state=excluded.state,relationships=excluded.relationships,rev=excluded.rev,updated=excluded.updated`,
-      id, chapter, source.id, source.rev, state, relationships, value.baseRev + 1, now())
+        SET state=excluded.state,relationships=excluded.relationships,rev=excluded.rev,updated=excluded.updated,evidence=excluded.evidence`,
+      id, chapter, source.id, source.rev, state, relationships, value.baseRev + 1, now(), evidence)
       return decode(snapshot(id, chapter, source.rev))
     })
   }
@@ -159,10 +169,19 @@ export function characterContinuity({ get, all, run, tx, now, document }) {
       const [state, links] = normalize(pid, id, {
         state: entry.state, relationships: entry.relationships.map(link => ({ targetId: mapping.get(object(link).targetId), relation: link.relation })),
       })
-      run('INSERT INTO character_continuity VALUES (?,?,?,?,?,?,?,?)', id, chapter, source, entry.finalRev,
-        state, links, revision(entry.rev), string(entry.updated, 50, true))
+      const evidence = object(entry.evidence ?? {})
+      const keys = Object.keys(evidence)
+      const saved = JSON.parse(state)
+      const body = keys.length && source ? lineEndings(get('SELECT body FROM history WHERE document_id=? AND rev=?', source, entry.finalRev).body) : undefined
+      if (keys.some(field => !Object.hasOwn(characterStateFields, field) || !saved[field] ||
+          typeof evidence[field] !== 'string' || !evidence[field].trim() || evidence[field].length > continuityQuoteLimit ||
+          quoteEvidence(body, evidence[field]) !== 'verified')) throw new ApiError(400, '备份中的人物状态引文无效')
+      const orderedEvidence = Object.fromEntries(Object.keys(characterStateFields).filter(field => evidence[field]).map(field => [field, evidence[field]]))
+      run(`INSERT INTO character_continuity (character_id,chapter_number,source_id,final_rev,state,relationships,rev,updated,evidence)
+        VALUES (?,?,?,?,?,?,?,?,?)`, id, chapter, source, entry.finalRev,
+      state, links, revision(entry.rev), string(entry.updated, 50, true), JSON.stringify(orderedEvidence))
     }
   }
 
-  return { roster, detail, archived, save, context, relationshipsAt, backup, importBackup }
+  return { character, head, roster, detail, archived, save, context, relationshipsAt, backup, importBackup }
 }

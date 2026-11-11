@@ -8,6 +8,8 @@ import { novelGoals } from './public/novel-goals.mjs'
 import { architectureSections } from './public/architecture.mjs'
 import { openReferenceNovels, referenceNovelSchema } from './reference-novels.mjs'
 import { characterContinuity, continuitySchema } from './character-continuity.mjs'
+import { continuityReport } from './continuity-report.mjs'
+import { characterStateFields } from './public/character-state.mjs'
 import { reviewReport } from './review-report.mjs'
 import { mergeRevision, revisionChanges } from './revision-merge.mjs'
 import { continuationPrefix } from './continuation.mjs'
@@ -18,7 +20,7 @@ export { ApiError, object, string } from './input.mjs'
 
 export const kinds = ['settings', 'character', 'blueprint', 'chapter']
 const skillKinds = ['outline', 'draft', 'review', 'revise']
-const runKinds = [...skillKinds, 'plan', 'passage']
+const runKinds = [...skillKinds, 'plan', 'passage', 'continuity']
 const passageModes = ['continue', 'polish', 'expand', 'dialogue']
 export const outlineMaxChars = 2400
 export const hash = value => createHash('sha256').update(value).digest('hex')
@@ -255,6 +257,14 @@ export function openStore(directory) {
       COMMIT;
     `)
   }
+  if (version < 15) {
+    db.exec(`
+      BEGIN IMMEDIATE;
+      ALTER TABLE character_continuity ADD COLUMN evidence TEXT NOT NULL DEFAULT '{}';
+      PRAGMA user_version=15;
+      COMMIT;
+    `)
+  }
   db.prepare("UPDATE runs SET status='interrupted',error='服务重启，已保留收到的内容' WHERE status='running'").run()
   db.prepare("UPDATE writing_batches SET status='paused',error='服务重启，待手动继续' WHERE status='running'").run()
   db.prepare("UPDATE reference_analyses SET status='interrupted',error='服务重启，已保留收到的内容' WHERE status='running'").run()
@@ -276,7 +286,7 @@ export function openStore(directory) {
 
   const screenplay = screenplayStore({ get, all, run, tx, hash, now })
   const referenceNovels = openReferenceNovels({ get, all, run, tx, hash, now, writingAvailable })
-  const continuity = characterContinuity({ get, all, run, tx, now, document })
+  const continuity = characterContinuity({ get, all, run, tx, now, document, candidateEvidence })
 
   function project(id) {
     const row = get('SELECT * FROM projects WHERE id=?', id)
@@ -486,10 +496,46 @@ export function openStore(directory) {
 
   function runDetail(pid, id) {
     const { request_data, ...job } = getRun(pid, id)
+    if (job.kind === 'continuity') {
+      const characterId = request_data ? JSON.parse(request_data).request.continuityCharacterId : null
+      const snapshot = get("SELECT body FROM history WHERE document_id=? AND rev=? AND status='final'", job.document_id, job.base_rev)
+      const report = job.status === 'done' && snapshot ? continuityReport(job.output, snapshot.body) : null
+      return { ...job, continuityCharacterId: characterId, ...(report ? { continuityReport: report } : {}) }
+    }
     if (job.kind !== 'review' || job.status !== 'done') return { ...job, canContinue: Boolean(resumable({ ...job, request_data })) }
     const snapshot = get('SELECT body FROM history WHERE document_id=? AND rev=?', job.document_id, job.base_rev)
     const report = reviewReport(job.output, snapshot?.body)
     return report ? { ...job, reviewReport: report } : job
+  }
+
+  function continuityRuns(pid, id, chapter, finalRev) {
+    continuity.character(pid, id)
+    if (!Number.isInteger(chapter) || chapter < 1 || chapter > 99999) throw new ApiError(400, '请选择已定稿章节')
+    const source = continuity.head(pid, chapter)
+    if (source.rev !== revision(finalRev)) throw new ApiError(409, '该章已有新的定稿，请重新选择')
+    return all(`SELECT id,status,created FROM runs WHERE kind='continuity' AND document_id=? AND base_rev=?
+      AND json_extract(request_data,'$.request.continuityCharacterId')=? ORDER BY created DESC,id DESC LIMIT 10`, source.id, source.rev, id)
+  }
+
+  function candidateEvidence(pid, id, source, state, picks) {
+    if (!Array.isArray(picks) || picks.length > Object.keys(characterStateFields).length) throw new ApiError(400, '人物状态候选选择无效')
+    const evidence = {}
+    for (const entry of picks) {
+      const { field, runId } = object(entry)
+      if (typeof field !== 'string' || !Object.hasOwn(characterStateFields, field) || evidence[field]) {
+        throw new ApiError(400, '请为每个人物状态字段选择一条候选')
+      }
+      const job = runDetail(pid, string(runId, 80, true))
+      if (job.kind !== 'continuity' || job.continuityCharacterId !== id || job.document_id !== source.id || job.base_rev !== source.rev) {
+        throw new ApiError(409, '人物变化候选与当前人物或定稿版本不一致')
+      }
+      const change = job.continuityReport?.changes.find(row => row.field === field)
+      if (change?.evidence !== 'verified' || change.value !== state[field]) {
+        throw new ApiError(422, '所选状态与已核对原文的候选不一致')
+      }
+      evidence[field] = change.quote
+    }
+    return evidence
   }
 
   function resumable(job, batchId = null) {
@@ -535,11 +581,18 @@ export function openStore(directory) {
     if (planSection !== undefined && (kind !== 'plan' || typeof planSection !== 'string' || !Object.hasOwn(architectureSections, planSection))) {
       throw new ApiError(400, '架构模块无效')
     }
+    const continuityCharacterId = value.continuityCharacterId
+    if (kind === 'continuity' || continuityCharacterId !== undefined) {
+      if (kind !== 'continuity' || typeof continuityCharacterId !== 'string' ||
+          !/^[a-f0-9-]{36}$/i.test(continuityCharacterId) || refs.length || referenceQuery || guidance) {
+        throw new ApiError(400, '人物变化提取只接受定稿和目标人物')
+      }
+    }
     return { kind, guidance, baseRev, refs, referenceQuery, outlineId, spans: spans.map(({ id, start, end }) => ({ id, start, end })),
-      passage, planSection }
+      passage, planSection, continuityCharacterId }
   }
 
-  function requestFingerprint(id, { kind, baseRev, guidance, refs, referenceQuery, spans, outlineId, passage, planSection }) {
+  function requestFingerprint(id, { kind, baseRev, guidance, refs, referenceQuery, spans, outlineId, passage, planSection, continuityCharacterId }) {
     const fingerprint = [id, baseRev, kind, guidance]
     if (refs.length || referenceQuery) fingerprint.push(refs)
     if (referenceQuery) fingerprint.push(referenceQuery)
@@ -547,6 +600,7 @@ export function openStore(directory) {
     if (outlineId) fingerprint.push({ outlineId })
     if (passage) fingerprint.push({ passage })
     if (planSection) fingerprint.push({ planSection })
+    if (continuityCharacterId) fingerprint.push({ continuityCharacterId })
     return hash(JSON.stringify(fingerprint))
   }
 
@@ -664,6 +718,16 @@ export function openStore(directory) {
   }
 
   function runContext(doc, request, batch) {
+    if (request.kind === 'continuity') {
+      if (doc.kind !== 'chapter') throw new ApiError(422, '请选择已定稿正文提取人物变化')
+      const pid = doc.project_id
+      const source = continuity.head(pid, doc.number)
+      if (source.rev !== request.baseRev) throw new ApiError(409, '该章已有新的定稿，请重新选择')
+      const snapshot = get("SELECT title,body,rev,status FROM history WHERE document_id=? AND rev=? AND status='final'", doc.id, source.rev)
+      const person = continuity.character(pid, request.continuityCharacterId)
+      const [prior] = continuity.context(pid, [person.id], doc.number)
+      return { doc: { ...doc, ...snapshot }, person, prior, sourceHash: hash(JSON.stringify([source.rev, person.id, person.rev, prior])) }
+    }
     match(doc, request.baseRev)
     const planning = request.kind === 'plan'
     if (doc.status !== 'draft' || (planning ? doc.kind === 'chapter' : doc.kind !== 'chapter')) {
@@ -706,7 +770,7 @@ export function openStore(directory) {
     if (kind === 'review') checkpoint(doc, 'before-review')
     const requestHash = from ? 'continue:' + hash(from.id) : requestFingerprint(doc.id, request)
     run(`INSERT INTO runs (id,document_id,base_rev,kind,status,output,created,request_hash,source_hash,reference_ids,outline_id,request_data,continued_from)
-      VALUES (?,?,?,?,'running',?,?,?,?,?,?,?,?)`, jobId, doc.id, doc.rev, kind, prefix, now(), requestHash, sourceHash,
+      VALUES (?,?,?,?,'running',?,?,?,?,?,?,?,?)`, jobId, doc.id, context.doc.rev, kind, prefix, now(), requestHash, sourceHash,
     JSON.stringify(refs), outlineId, JSON.stringify({ request, batch }), from?.id ?? null)
     return { job: getRun(doc.project_id, jobId), messages, prefix }
   }
@@ -1155,7 +1219,8 @@ export function openStore(directory) {
       writingSkills: { library: all('SELECT id,title,body FROM writing_skills WHERE project_id=? ORDER BY created,id', pid), bindings: skillProfile(pid).bindings },
       adaptations: screenplay.backup(pid),
       runs: all('SELECT r.* FROM runs r JOIN documents d ON r.document_id=d.id WHERE d.project_id=?', pid)
-        .map(({ request_data, ...job }) => job),
+        .map(({ request_data, ...job }) => job.kind === 'continuity' && request_data
+          ? { ...job, continuityCharacterId: JSON.parse(request_data).request.continuityCharacterId } : job),
     }))
   }
 
@@ -1230,10 +1295,20 @@ export function openStore(directory) {
             !['done','cancelled','failed','interrupted'].includes(status)) throw new ApiError(400, '备份中的任务无效')
         const runId = randomUUID()
         importedRuns.set(source.id, { id: runId, document: id, kind: source.kind })
-        run(`INSERT INTO runs (id,document_id,base_rev,kind,status,output,error,created,applied_rev,request_hash,source_hash)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?)`, runId, id, revision(source.base_rev),
+        let requestData = null
+        if (source.kind === 'continuity') {
+          const characterId = mapping.get(source.continuityCharacterId)
+          if (!characterId || document(p.id, id).kind !== 'chapter' ||
+              !get("SELECT 1 FROM history WHERE document_id=? AND rev=? AND status='final'", id, source.base_rev)) {
+            throw new ApiError(400, '备份中的人物变化候选缺少定稿或人物来源')
+          }
+          continuity.character(p.id, characterId)
+          requestData = JSON.stringify({ request: { continuityCharacterId: characterId } })
+        }
+        run(`INSERT INTO runs (id,document_id,base_rev,kind,status,output,error,created,applied_rev,request_hash,source_hash,request_data)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, runId, id, revision(source.base_rev),
           source.kind, status, string(source.output, 180_000), string(source.error, 500),
-          string(source.created, 50), source.applied_rev === null ? null : revision(source.applied_rev), '', '')
+          string(source.created, 50), source.applied_rev === null ? null : revision(source.applied_rev), '', '', requestData)
       }
       for (const source of data.runs ?? []) {
         const draft = importedRuns.get(source.id)
@@ -1257,7 +1332,7 @@ export function openStore(directory) {
   }
 
   return { db, get, all, run, tx, project, document, createProject, renameProject, addDocument, importChapters, eventHead, projectEvents, pruneEvents, screenplay,
-    projectGoals, saveProjectGoals, referenceNovels, continuity,
+    projectGoals, saveProjectGoals, referenceNovels, continuity, continuityRuns,
     save, chapters, search, addReference, reference, threads, saveThread,
     transition, history, restore, getRun, runDetail, startRun, previewRun, continueRun, applyRun, previewPassage, previewRevision, applyRevision, backup, importBackup,
     listBatches, batchChapters, getBatch, createBatch, changeBatch, nextBatchRun, pauseBatch,
