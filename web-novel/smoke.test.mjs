@@ -881,6 +881,62 @@ test('novel workflow through HTTP across devices, generation, export and restart
     const restoredSynthesisJob = (await request(restoredPath + '/reference-analysis/' + restoredSynthesis.id)).result
     assert.deepEqual(restoredSynthesisJob.report, synthesisReport)
     assert.deepEqual(restoredSynthesisJob.sources, [restoredJob.id])
+
+    const continuityPath = projectPath + '/continuity/' + person.id
+    const partner = await createPlanDoc({ kind: 'character', title: '领航员', body: '人物关系测试对象' })
+    const firstState = { chapter: 0, finalRev: 0, baseRev: 0, state: { location: '开篇在北岸' },
+      relationships: [{ targetId: partner.id, relation: '同行者' }] }
+    const baseline = (await request(continuityPath, { method: 'PUT', value: firstState })).result
+    assert.equal(baseline.rev, 1)
+    assert.deepEqual((await request(continuityPath, { method: 'PUT', value: firstState })).result, baseline)
+    await request(continuityPath, { method: 'PUT', status: 409, cookie: b, value: { ...firstState, state: { location: '另一设备' } } })
+    await request(continuityPath, { method: 'PUT', status: 400, value: { ...firstState, baseRev: 1,
+      relationships: [{ targetId: person.id, relation: '自身' }] } })
+    await request('/api/projects/' + second.id + '/continuity/' + person.id, { status: 404 })
+    const anchor = await createPlanDoc({ kind: 'chapter', number: 7, title: '离开北岸', body: '调查者上船。' })
+    const later = await createPlanDoc({ kind: 'chapter', number: 8, title: '抵达灯塔', body: '' })
+    const anchorPath = projectPath + '/documents/' + anchor.id
+    const laterPath = projectPath + '/documents/' + later.id
+    const anchorState = { ...firstState, chapter: 7, finalRev: 2, state: { location: '定稿后在灯塔船上' } }
+    await request(continuityPath, { method: 'PUT', status: 422, value: anchorState })
+    await request(anchorPath + '/status', { method: 'POST', value: { action: 'finalize', baseRev: 1 } })
+    const picker = (await request(projectPath + '/continuity')).result
+    assert.equal(picker.finals.find(row => row.number === 7).rev, 2)
+    assert.equal((await request(continuityPath + '?chapter=7')).result.previous.state.location, '开篇在北岸')
+    await request(continuityPath, { method: 'PUT', value: anchorState })
+    const relationshipsAtAnchor = (await request(projectPath + '/continuity/relationships?chapter=7')).result
+    assert.deepEqual(relationshipsAtAnchor.records[0].relationships, [{ targetId: partner.id, name: partner.title, relation: '同行者' }])
+    assert.equal(relationshipsAtAnchor.records[0].chapter, 7)
+    const laterRun = await startFor(later, { kind: 'draft' })
+    assert.match(laterRun.prompt, /定稿后在灯塔船上[\s\S]*领航员[\s\S]*同行者/)
+    await request(anchorPath + '/status', { method: 'POST', value: { action: 'reopen', baseRev: 2 } })
+    const anchorPreview = (await request(anchorPath + '/context', { method: 'POST', value: { kind: 'draft', baseRev: 3 } })).result
+    assert.match(anchorPreview.messages[1].content, /开篇在北岸/)
+    assert.doesNotMatch(anchorPreview.messages[1].content, /定稿后在灯塔船上/)
+    const previewLater = async () => (await request(laterPath + '/context', { method: 'POST', value: { kind: 'draft', baseRev: 1 } })).result.messages[1].content
+    assert.match(await previewLater(), /定稿后在灯塔船上/)
+    await request(anchorPath + '/status', { method: 'POST', value: { action: 'finalize', baseRev: 3 } })
+    await request(laterRun.jobPath + '/apply', { method: 'POST', status: 409 })
+    await request(continuityPath, { method: 'PUT', status: 409, value: anchorState })
+    assert.doesNotMatch(await previewLater(), /定稿后在灯塔船上/)
+    const afterRefinal = (await request(continuityPath + '?chapter=7')).result
+    assert.equal(afterRefinal.current, null)
+    assert.equal(afterRefinal.history.find(row => row.finalRev === 2).active, 0)
+    const archivedState = (await request(continuityPath + '/history?chapter=7&finalRev=2')).result
+    assert.equal(archivedState.state.location, '定稿后在灯塔船上')
+    const freshState = { ...anchorState, finalRev: 4, state: { location: '新定稿确认已在南岸' } }
+    await request(continuityPath, { method: 'PUT', value: freshState })
+    assert.match(await previewLater(), /新定稿确认已在南岸/)
+    const latestBackup = (await request(projectPath + '/backup')).result
+    const copiedContinuity = (await request('/api/import', { method: 'POST', status: 201, value: latestBackup })).result
+    const copiedPath = '/api/projects/' + copiedContinuity.id
+    const copiedRoster = (await request(copiedPath + '/continuity')).result
+    const copiedPerson = copiedRoster.characters.find(row => row.title === person.title)
+    const copiedPartner = copiedRoster.characters.find(row => row.title === partner.title)
+    assert.notEqual(copiedPerson.id, person.id)
+    const copiedState = (await request(copiedPath + '/continuity/' + copiedPerson.id + '?chapter=7')).result
+    assert.deepEqual(copiedState.current.relationships, [{ targetId: copiedPartner.id, relation: '同行者' }])
+    assert.equal(copiedState.history.filter(row => !row.active).length, 1)
   } finally {
     await stop(server)
     upstream.closeAllConnections()
@@ -897,6 +953,7 @@ test('opening an existing Web database migrates v1 and keeps chapter data', asyn
     const p = store.createProject('旧版本作品')
     const doc = store.addDocument(p.id, { kind: 'chapter', number: 1, title: '原章', body: '原文' })
     store.db.exec(`
+      DROP TABLE character_continuity;
       DROP TABLE reference_analyses; DROP TABLE reference_novel_chapters; DROP TABLE reference_novels;
       DROP TABLE project_goals;
       DROP TABLE screenplay_receipts; DROP TABLE screenplay_history; DROP TABLE screenplay_episodes; DROP TABLE screenplay_adaptations;

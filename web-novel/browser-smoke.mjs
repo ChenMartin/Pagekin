@@ -416,6 +416,31 @@ try {
   await until(() => evaluate("!document.querySelector('#dialog').open && document.querySelector('#title').value === '测试章节' && !document.querySelector('#review-report').hidden"), 'Project run did not reopen the chapter and report')
   await click('[data-stage=character]')
   await until(() => evaluate(bodyText + " === '值夜时守在旧码头。'"), 'Stage did not reopen its last document with saved edits')
+  const otherCharacter = await evaluate(`(async () => {
+    const [pid] = JSON.parse(sessionStorage.getItem('pagekin-location'));
+    const response = await fetch('/api/projects/' + pid + '/documents', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'character', title: '领航员', body: '' }) });
+    if (!response.ok) throw new Error(await response.text());
+    return (await response.json()).id;
+  })()`)
+  await click('#continuity-document')
+  await visible('#dialog-body select')
+  await click('#dialog-submit')
+  await visible('#dialog-body textarea[name=location]')
+  await fill('#dialog-body textarea[name=location]', '开篇值夜在码头')
+  await evaluate("Array.from(document.querySelectorAll('#dialog-body button')).find(button => button.textContent === '添加关系').click()")
+  await visible('#dialog-body .batch-list select')
+  await fill('#dialog-body .batch-list select', otherCharacter)
+  await fill('#dialog-body .batch-list input', '同行者')
+  await click('#dialog-submit')
+  await until(() => evaluate("document.querySelector('#dialog-body').textContent.includes('当前记录 v1')"), 'Character continuity did not persist')
+  assert.equal(await evaluate("document.querySelector('#dialog-body textarea[name=location]').value"), '开篇值夜在码头')
+  await click('#close-dialog')
+  await click('#continuity-document')
+  await visible('#dialog-body select')
+  await evaluate("Array.from(document.querySelectorAll('#dialog-body button')).find(button => button.textContent === '查看该位置的人物关系').click()")
+  await until(() => evaluate("document.querySelector('#dialog-body').textContent.includes('→ 领航员 · 同行者')"), 'Directed relationship was not displayed')
+  await click('#close-dialog')
   await click('[data-stage=chapter]')
   await until(() => evaluate("document.querySelector('#title').value === '测试章节'"), 'Chapter stage did not reopen its last document')
   await evaluate("const filter = document.querySelector('#chapter-filter'); filter.value = 'final'; filter.dispatchEvent(new Event('change'))")

@@ -1,6 +1,7 @@
 import { ApiError } from './store.mjs'
 import { novelGoals } from './public/novel-goals.mjs'
 import { architectureSections } from './public/architecture.mjs'
+import { characterStateFields } from './public/character-state.mjs'
 
 const actions = {
   outline: '生成写前细纲，只列最多六条简短要点，约 500 字，不写正文。区分本章目标、前文已经发生的事、本章拟写行动与结果、约束和结尾状态。作者只要求维持状态时不要强造事件，不添加作者事实，不把计划当成已经发生的事。',
@@ -39,7 +40,7 @@ function referenceExcerpt(body, query, limit) {
   return '…' + shorten(body.slice(start), limit - 1)
 }
 
-export function writingMessages(kind, { doc, materials, previous, earlier, threads, goals, guidance, referenceQuery, outline,
+export function writingMessages(kind, { doc, materials, previous, earlier, threads, goals, characterStates = [], guidance, referenceQuery, outline,
   previousCandidate, skill, continuation, passage, planSection }, limit) {
   const planning = kind === 'plan'
   const instruction = planning ? plans[doc.kind] : passage ? passageActions[passage.mode] : actions[kind]
@@ -86,6 +87,13 @@ export function writingMessages(kind, { doc, materials, previous, earlier, threa
   if (previous) add('上一已定稿章节末尾：' + previous.title, previous.body, 4500, true)
   if (previousCandidate) add((planning ? '上一章待核对的蓝图候选' : '上一章待核对的候选末尾') + ' · 第 ' + previousCandidate.number + ' 章 · ' + previousCandidate.title
     + '（仅供衔接参考，尚未定稿，作者设定和已定稿内容优先）', previousCandidate.body, 3500, true)
+  const stateLines = characterStates.flatMap(({ name, chapter, state, relationships }) => {
+    const fields = Object.entries(characterStateFields).filter(([key]) => state[key])
+      .map(([key, label]) => label + '：' + state[key])
+    const links = relationships.map(link => '对「' + link.name + '」的关系：' + link.relation)
+    return fields.length || links.length ? [name + '（' + (chapter ? '第 ' + chapter + ' 章后' : '开篇') + '）\n' + [...fields, ...links].join('\n')] : []
+  })
+  add('作者确认的人物状态与有向关系', stateLines.join('\n\n'), 5200)
   for (const entry of materials.filter(entry => entry.kind === 'reference')) {
     add(labels.reference + ' · ' + entry.title, entry.body, 1500, false, entry.exactExcerpt ? '' : referenceQuery)
   }

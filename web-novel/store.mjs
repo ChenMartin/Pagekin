@@ -7,6 +7,7 @@ import { schemaVersion } from './version.mjs'
 import { novelGoals } from './public/novel-goals.mjs'
 import { architectureSections } from './public/architecture.mjs'
 import { openReferenceNovels, referenceNovelSchema } from './reference-novels.mjs'
+import { characterContinuity, continuitySchema } from './character-continuity.mjs'
 import { reviewReport } from './review-report.mjs'
 import { mergeRevision, revisionChanges } from './revision-merge.mjs'
 import { continuationPrefix } from './continuation.mjs'
@@ -246,6 +247,14 @@ export function openStore(directory) {
       COMMIT;
     `)
   }
+  if (version < 14) {
+    db.exec(`
+      BEGIN IMMEDIATE;
+      ${continuitySchema}
+      PRAGMA user_version=14;
+      COMMIT;
+    `)
+  }
   db.prepare("UPDATE runs SET status='interrupted',error='服务重启，已保留收到的内容' WHERE status='running'").run()
   db.prepare("UPDATE writing_batches SET status='paused',error='服务重启，待手动继续' WHERE status='running'").run()
   db.prepare("UPDATE reference_analyses SET status='interrupted',error='服务重启，已保留收到的内容' WHERE status='running'").run()
@@ -267,6 +276,7 @@ export function openStore(directory) {
 
   const screenplay = screenplayStore({ get, all, run, tx, hash, now })
   const referenceNovels = openReferenceNovels({ get, all, run, tx, hash, now, writingAvailable })
+  const continuity = characterContinuity({ get, all, run, tx, now, document })
 
   function project(id) {
     const row = get('SELECT * FROM projects WHERE id=?', id)
@@ -923,11 +933,15 @@ export function openStore(directory) {
     const dependencies = [...materials, ...selected, ...(previous ? [previous] : [])].map(({ id, rev }) => [id, rev])
     const { goals, rev } = projectGoals(doc.project_id)
     if (rev) dependencies.push(['project-goals', rev])
+    const characters = materials.filter(row => row.kind === 'character').map(row => row.id)
+    if (doc.kind === 'character' && !characters.includes(doc.id)) characters.push(doc.id)
+    const characterStates = continuity.context(doc.project_id, characters, doc.number ?? 1)
+    if (characterStates.length) dependencies.push(['character-continuity', hash(JSON.stringify(characterStates))])
     const legacyHash = hash(JSON.stringify(dependencies))
     const extended = [...dependencies, ...earlier.map(({ id, rev }) => [id, rev])]
     const previousHash = 'v2:' + hash(JSON.stringify(extended))
     const sourceHash = 'v3:' + hash(JSON.stringify([...extended, ...threads.map(({ id, rev }) => [id, rev])]))
-    return { materials: [...selected, ...materials], previous, earlier, threads, goals, sourceHash, previousHash, legacyHash }
+    return { materials: [...selected, ...materials], previous, earlier, threads, goals, characterStates, sourceHash, previousHash, legacyHash }
   }
 
   // A reopened draft has a mutable head while the latest final remains in history.
@@ -1136,6 +1150,7 @@ export function openStore(directory) {
         .map(doc => ({ ...doc, history: history(pid, doc.id) })),
       references: all('SELECT title,body FROM reference_material WHERE project_id=? ORDER BY created,id', pid),
       referenceNovels: referenceNovels.backup(pid),
+      characterContinuity: continuity.backup(pid),
       threads: threads(pid).map(({ title, body, kind, status, planted, due, resolved }) => ({ title, body, kind, status, planted, due, resolved })),
       writingSkills: { library: all('SELECT id,title,body FROM writing_skills WHERE project_id=? ORDER BY created,id', pid), bindings: skillProfile(pid).bindings },
       adaptations: screenplay.backup(pid),
@@ -1204,6 +1219,7 @@ export function openStore(directory) {
         }
         checkpoint(document(p.id, doc.id), 'import')
       }
+      if (data.characterContinuity !== undefined) continuity.importBackup(p.id, data.characterContinuity, mapping)
       const importedRuns = new Map()
       for (const source of data.runs ?? []) {
         object(source)
@@ -1241,7 +1257,7 @@ export function openStore(directory) {
   }
 
   return { db, get, all, run, tx, project, document, createProject, renameProject, addDocument, importChapters, eventHead, projectEvents, pruneEvents, screenplay,
-    projectGoals, saveProjectGoals, referenceNovels,
+    projectGoals, saveProjectGoals, referenceNovels, continuity,
     save, chapters, search, addReference, reference, threads, saveThread,
     transition, history, restore, getRun, runDetail, startRun, previewRun, continueRun, applyRun, previewPassage, previewRevision, applyRevision, backup, importBackup,
     listBatches, batchChapters, getBatch, createBatch, changeBatch, nextBatchRun, pauseBatch,

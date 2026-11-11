@@ -52,6 +52,8 @@ const files = new Map([
   ['/architecture.mjs', ['architecture.mjs', 'text/javascript']],
   ['/screenplay-ui.mjs', ['screenplay-ui.mjs', 'text/javascript']],
   ['/reference-novel-ui.mjs', ['reference-novel-ui.mjs', 'text/javascript']],
+  ['/character-state.mjs', ['character-state.mjs', 'text/javascript']],
+  ['/character-continuity-ui.mjs', ['character-continuity-ui.mjs', 'text/javascript']],
   ['/style.css', ['style.css', 'text/css']],
 ].map(([path, [file, type]]) => [path, [readFileSync(new URL(`./public/${file}`, import.meta.url)), type]]))
 const editorBundle = new URL('./public/editor.bundle.mjs', import.meta.url)
@@ -458,6 +460,18 @@ async function route(req, res) {
     if (method === 'GET' && id === undefined) return json(res, storage.threads(pid))
     if (method === 'POST' && id === undefined) return json(res, storage.saveThread(pid, null, await body(req)), 201)
     if (method === 'PUT' && id) return json(res, storage.saveThread(pid, id, await body(req)))
+  }
+  if (resource === 'continuity') {
+    const chapter = Number(url.searchParams.get('chapter') ?? '0')
+    if (method === 'GET' && id === undefined) return json(res, storage.continuity.roster(pid))
+    if (id === 'relationships' && action === undefined && method === 'GET') {
+      return json(res, storage.continuity.relationshipsAt(pid, chapter))
+    }
+    if (id && action === undefined && method === 'GET') return json(res, storage.continuity.detail(pid, id, chapter))
+    if (id && action === 'history' && method === 'GET') {
+      return json(res, storage.continuity.archived(pid, id, chapter, Number(url.searchParams.get('finalRev'))))
+    }
+    if (id && action === undefined && method === 'PUT') return json(res, storage.continuity.save(pid, id, await body(req, 64_000)))
   }
   if (method === 'POST' && id === undefined && resource === 'chapter-imports') {
     return json(res, storage.importChapters(pid, await body(req, manuscriptRequestBytes)), 201)

@@ -3,6 +3,7 @@ import { screenplayWorkspace } from './screenplay-ui.mjs'
 import { novelGoals } from './novel-goals.mjs'
 import { architectureSections } from './architecture.mjs'
 import { referenceNovelWorkspace } from './reference-novel-ui.mjs'
+import { continuityWorkspace } from './character-continuity-ui.mjs'
 
 const $ = id => document.getElementById(id)
 const names = { settings: '设定与架构', character: '人物', blueprint: '章节蓝图', chapter: '正文', reference: '参考资料' }
@@ -149,6 +150,7 @@ function paint(state = editor) {
   $('reload-remote').hidden = state.remoteRev <= state.doc.rev || Boolean(state.conflict)
   $('reload-remote').disabled = Boolean(state.saving || state.mutating || composing)
   $('status').hidden = state.doc.kind !== 'chapter'
+  $('continuity-document').hidden = state.doc.kind !== 'character' && !(state.doc.kind === 'chapter' && locked)
   $('status').textContent = locked ? '重新打开定稿' : '定稿'
   const planning = state.doc.kind !== 'chapter'
   $('ai-passage').hidden = planning || !model || locked
@@ -1757,6 +1759,12 @@ click('reference-library', referenceLibrary)
 const referenceNovels = referenceNovelWorkspace({ api, dialog, field, actionButton, uuid,
   isCurrent: pid => pid === project, modelEnabled: () => model, installSkill: newWritingSkill })
 click('reference-novel-library', () => referenceNovels.list(project))
+const continuity = continuityWorkspace({ api, dialog, actionButton, isCurrent: pid => pid === project })
+click('character-continuity', () => continuity.list(project))
+click('continuity-document', () => {
+  const doc = editor.doc
+  return continuity.list(project, doc.kind === 'character' ? { characterId: doc.id } : { chapter: doc.number })
+})
 click('semantic-search', semanticSearch)
 click('clear-references', () => {
   editor.references.clear()
