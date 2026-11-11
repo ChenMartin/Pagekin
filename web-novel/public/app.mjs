@@ -2,6 +2,7 @@ import { manuscriptBytes, manuscriptRequestBytes, splitManuscript } from './manu
 import { screenplayWorkspace } from './screenplay-ui.mjs'
 import { novelGoals } from './novel-goals.mjs'
 import { architectureSections } from './architecture.mjs'
+import { referenceNovelWorkspace } from './reference-novel-ui.mjs'
 
 const $ = id => document.getElementById(id)
 const names = { settings: '设定与架构', character: '人物', blueprint: '章节蓝图', chapter: '正文', reference: '参考资料' }
@@ -1635,14 +1636,15 @@ async function showWritingSkills(pid) {
   }, '保存阶段绑定')
 }
 
-function newWritingSkill(pid) {
-  const [titleLabel, title] = field('Skill 名称', { maxLength: 120 })
+function newWritingSkill(pid, preset) {
+  const [titleLabel, title] = field('Skill 名称', { maxLength: 120, value: preset?.title.slice(0, 120).toWellFormed() ?? '' })
   const [fileLabel, file] = field('从本机载入 UTF-8 文本（可选）', { type: 'file', accept: '.md,.markdown,.txt,text/plain,text/markdown', required: false })
   const label = document.createElement('label')
   const content = document.createElement('textarea')
   content.required = true
   content.maxLength = 8000
   content.rows = 8
+  content.value = preset?.body ?? ''
   label.append('写作提示词内容 · 核对后安装', content)
   const error = document.createElement('p')
   error.setAttribute('role', 'alert')
@@ -1752,6 +1754,9 @@ click('architecture-templates', architectureTemplates)
 click('search-project', searchProject)
 click('narrative-threads', threadList)
 click('reference-library', referenceLibrary)
+const referenceNovels = referenceNovelWorkspace({ api, dialog, field, actionButton, uuid,
+  isCurrent: pid => pid === project, modelEnabled: () => model, installSkill: newWritingSkill })
+click('reference-novel-library', () => referenceNovels.list(project))
 click('semantic-search', semanticSearch)
 click('clear-references', () => {
   editor.references.clear()

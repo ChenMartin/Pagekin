@@ -16,7 +16,7 @@ import { desktopCopy } from './desktop-copy.mjs'
 import { hash, openStore } from './store.mjs'
 import { splitManuscript } from './public/manuscript.mjs'
 import { backupDatabase, restoreDatabase, verifyDatabase } from './maintenance.mjs'
-import { releaseVersion } from './version.mjs'
+import { releaseVersion, schemaVersion } from './version.mjs'
 
 const password = 'test-password-local-only'
 
@@ -171,6 +171,14 @@ test('novel workflow through HTTP across devices, generation, export and restart
       return
     }
     let output = '候选正文'
+    if (instruction.includes('你是小说研究助手')) {
+      const chapters = [...lastPrompt.matchAll(/【位置 (\d+) · /g)].map(([, position]) => ({
+        position: Number(position), summary: '人物遇到选择', blueprint: '用后果推动转折',
+      }))
+      output = JSON.stringify({ structure: '因果推进', style: '短句交替', constraints: '用具体动作表现犹豫。', chapters })
+      if (lastPrompt.includes('缺章演练')) output = JSON.stringify({ structure: '缺章', style: '短句', constraints: '使用动作', chapters: [] })
+      if (lastPrompt.includes('【整书归纳】')) output = JSON.stringify({ structure: '首尾呼应', style: '短句交替', constraints: '用场景后果驱动结构。' })
+    }
     if (instruction.includes('生成小说设定与架构')) output = '## 架构候选\n海港与失踪水手'
     if (instruction.includes('生成当前人物卡')) output = '## 人物候选\n希望找到水手'
     if (instruction.includes('生成当前章的章节蓝图')) output = '## 蓝图候选\n调查失踪的船票'
@@ -508,7 +516,7 @@ test('novel workflow through HTTP across devices, generation, export and restart
     const restoreDir = join(directory, 'recovered')
     const restoredDb = join(restoreDir, 'novels.sqlite')
     assert.equal((await restoreDatabase(createReadStream(snapshot), restoredDb)).projects, 3)
-    assert.equal(verifyDatabase(restoredDb).schema, 12)
+    assert.equal(verifyDatabase(restoredDb).schema, schemaVersion)
     await assert.rejects(restoreDatabase(createReadStream(snapshot), restoredDb), /目标已有数据库/)
     await stop(server)
     server = await launch(restoreDir, upstream.address().port)
@@ -811,6 +819,68 @@ test('novel workflow through HTTP across devices, generation, export and restart
       assert.equal((await request(projectPath + '/documents/' + item.id)).result.body, '')
       assert.match((await request(projectPath + '/runs/' + item.run_id + '/apply', { method: 'POST' })).result.body, /蓝图候选/)
     }
+    const referencePath = projectPath + '/reference-novels'
+    const originalDocs = (await request(projectPath + '/documents')).result
+    const importedReference = { mutationId: randomUUID(), title: '对照作品', text: '# 第四章 参考起点\n\n参考角色雾海客。\n\n第八章 转折\n\n秘密岛屿。' }
+    const book = (await request(referencePath, { method: 'POST', status: 201, value: importedReference })).result
+    assert.deepEqual(book.chapters.map(row => [row.position, row.number, row.title]), [[1, 4, '参考起点'], [2, 8, '转折']])
+    assert.equal((await request(referencePath, { method: 'POST', status: 201, value: importedReference })).result.id, book.id)
+    await request(referencePath, { method: 'POST', status: 409, value: { ...importedReference, title: '不同书名' } })
+    const bookPath = referencePath + '/' + book.id
+    await request('/api/projects/' + second.id + '/reference-novels/' + book.id, { status: 404 })
+    assert.match((await request(bookPath + '/chapter?position=2')).result.body, /秘密岛屿/)
+    const refInput = { first: 1, last: 2, guidance: '参考文本研究', mutationId: randomUUID() }
+    const refPreview = (await request(bookPath + '/context', { method: 'POST', value: refInput })).result
+    assert.match(refPreview.messages[1].content, /参考角色雾海客/)
+    const firstOnly = (await request(bookPath + '/context', { method: 'POST', value: { ...refInput, last: 1 } })).result
+    assert.doesNotMatch(firstOnly.messages[1].content, /秘密岛屿/)
+    await request(bookPath + '/context', { method: 'POST', status: 400, value: { ...refInput, last: 3 } })
+    await request(bookPath + '/context', { method: 'POST', status: 422, value: { mode: 'synthesis' } })
+    const hold = (await request(bookPath + '/analyze', { method: 'POST', status: 202,
+      value: { ...refInput, guidance: 'hold', mutationId: randomUUID() } })).result
+    const analysisPath = projectPath + '/reference-analysis/'
+    await request(projectPath + '/documents/' + setting.id + '/runs', { method: 'POST', status: 409,
+      value: { kind: 'plan', baseRev: 3, mutationId: randomUUID() } })
+    await request('/api/projects/' + second.id + '/reference-analysis/' + hold.id + '/cancel', { method: 'POST', status: 404 })
+    await request(analysisPath + hold.id + '/cancel', { method: 'POST' })
+    await awaitRun(analysisPath + hold.id, row => row.status === 'cancelled')
+    const invalid = (await request(bookPath + '/analyze', { method: 'POST', status: 202,
+      value: { ...refInput, guidance: '缺章演练', mutationId: randomUUID() } })).result
+    const failed = await awaitRun(analysisPath + invalid.id, row => row.status === 'failed')
+    assert.match(failed.output, /缺章/)
+    assert.equal(failed.report, undefined)
+    const refJob = (await request(bookPath + '/analyze', { method: 'POST', status: 202, value: refInput })).result
+    const report = (await awaitRun(analysisPath + refJob.id, row => row.status === 'done')).report
+    assert.equal(lastPrompt, refPreview.messages[1].content)
+    assert.deepEqual(report.chapters.map(row => row.position), [1, 2])
+    assert.equal((await request(bookPath + '/analyze', { method: 'POST', status: 202, value: refInput })).result.id, refJob.id)
+    assert.equal(report.constraints, '用具体动作表现犹豫。')
+    const bookAfterAnalysis = (await request(bookPath)).result
+    assert.deepEqual(bookAfterAnalysis.coverage, { completed: 2, next: null })
+    const synthesisRequest = { mode: 'synthesis', mutationId: randomUUID() }
+    const synthesisPreview = (await request(bookPath + '/context', { method: 'POST', value: synthesisRequest })).result
+    assert.match(synthesisPreview.messages[1].content, /位置 1[\s\S]*位置 2/)
+    assert.doesNotMatch(synthesisPreview.messages[1].content, /雾海客|秘密岛屿/)
+    const synthesis = (await request(bookPath + '/analyze', { method: 'POST', status: 202, value: synthesisRequest })).result
+    assert.deepEqual(synthesis.sources, [refJob.id])
+    const synthesisReport = (await awaitRun(analysisPath + synthesis.id, row => row.status === 'done')).report
+    assert.equal(synthesisReport.structure, '首尾呼应')
+    assert.deepEqual((await request(projectPath + '/documents')).result, originalDocs)
+    const novelContext = (await request(projectPath + '/documents/' + setting.id + '/context', { method: 'POST',
+      value: { kind: 'plan', baseRev: 3 } })).result.messages.at(-1).content
+    assert.doesNotMatch(novelContext, /雾海客|秘密岛屿|用具体动作表现犹豫/)
+    const refBackup = (await request(projectPath + '/backup')).result
+    const restoredReference = (await request('/api/import', { method: 'POST', status: 201, value: refBackup })).result
+    const restoredPath = '/api/projects/' + restoredReference.id
+    const [restoredBook] = (await request(restoredPath + '/reference-novels')).result
+    assert.notEqual(restoredBook.id, book.id)
+    const restoredJobs = (await request(restoredPath + '/reference-novels/' + restoredBook.id)).result.jobs
+    const restoredJob = restoredJobs.find(row => row.status === 'done' && row.mode === 'range')
+    assert.deepEqual((await request(restoredPath + '/reference-analysis/' + restoredJob.id)).result.report, report)
+    const restoredSynthesis = restoredJobs.find(row => row.mode === 'synthesis')
+    const restoredSynthesisJob = (await request(restoredPath + '/reference-analysis/' + restoredSynthesis.id)).result
+    assert.deepEqual(restoredSynthesisJob.report, synthesisReport)
+    assert.deepEqual(restoredSynthesisJob.sources, [restoredJob.id])
   } finally {
     await stop(server)
     upstream.closeAllConnections()
@@ -827,6 +897,7 @@ test('opening an existing Web database migrates v1 and keeps chapter data', asyn
     const p = store.createProject('旧版本作品')
     const doc = store.addDocument(p.id, { kind: 'chapter', number: 1, title: '原章', body: '原文' })
     store.db.exec(`
+      DROP TABLE reference_analyses; DROP TABLE reference_novel_chapters; DROP TABLE reference_novels;
       DROP TABLE project_goals;
       DROP TABLE screenplay_receipts; DROP TABLE screenplay_history; DROP TABLE screenplay_episodes; DROP TABLE screenplay_adaptations;
       DROP TABLE writing_skill_profiles; DROP TABLE writing_skills;
@@ -841,7 +912,7 @@ test('opening an existing Web database migrates v1 and keeps chapter data', asyn
     store = undefined
     store = openStore(directory)
     assert.equal(store.document(p.id, doc.id).body, '原文')
-    assert.equal(store.get('PRAGMA user_version').user_version, 12)
+    assert.equal(store.get('PRAGMA user_version').user_version, schemaVersion)
     assert.equal(store.addReference(p.id, { title: '资料', body: '参考文字' }).body, '参考文字')
   } finally { store?.db.close(); await rm(directory, { recursive: true, force: true }) }
 })

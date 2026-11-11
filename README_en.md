@@ -27,7 +27,7 @@ The `codex/web-novel-fnos` branch of this fork adds a [self-hosted Web workspace
 | Novel writing | Project goals, premise, ensemble, worldbuilding and plot templates, character cards, blueprints, chapters and story threads |
 | Editing and sync | CodeMirror, autosave, offline drafts, conflict comparison, final chapters and version history |
 | AI workflow | AI story and character planning, chapter-range blueprint batches, short outlines, drafting, selected-passage editing, review and revision. Preview model inputs and approve candidates |
-| References and files | Keyword and optional semantic search, TXT/Markdown manuscripts and desktop `.ainovel` imports, TXT/Markdown/ZIP exports |
+| References and files | Reference-novel analysis and reusable style Skills, keyword and semantic search, TXT/Markdown and desktop `.ainovel` imports, manuscript exports |
 | NAS operation | Docker Compose on `linux/amd64`, live database backups and restore to a separate volume |
 
 ```sh
@@ -40,7 +40,7 @@ docker compose up -d --build
 
 The service binds to the host loopback address on port 3100 by default. Configure HTTPS or a trusted LAN address for other devices. Writing works without a model. AI drafting and semantic search each use their own model configuration. [Setup and upgrades](web-novel/README.md)
 
-The published `v0.2.0-rc.1` offline image for Linux amd64 on fnOS uses Web SQLite schema 11 and includes the novel and manual screenplay workspaces. Builds from this branch report `0.2.0-dev.2` and migrate the database to schema 12 on startup. Back up the data volume before upgrading. [Release and upgrade](web-novel/RELEASE.md) · [Implementation progress](docs/research/nas-web/07-implementation-progress.md) · [Novel-to-film design](docs/research/nas-web/06-novel-to-film.md)
+The published `v0.2.0-rc.1` offline image for Linux amd64 on fnOS uses Web SQLite schema 11 and includes the novel and manual screenplay workspaces. Builds from this branch report `0.2.0-dev.3` and migrate the database to schema 13 on startup. Back up the data volume before upgrading. [Release and upgrade](web-novel/RELEASE.md) · [Implementation progress](docs/research/nas-web/07-implementation-progress.md) · [Novel-to-film design](docs/research/nas-web/06-novel-to-film.md)
 
 ## Upstream desktop edition
 

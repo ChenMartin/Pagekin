@@ -6,6 +6,7 @@ import { manuscriptChapterLimit } from './public/manuscript.mjs'
 import { schemaVersion } from './version.mjs'
 import { novelGoals } from './public/novel-goals.mjs'
 import { architectureSections } from './public/architecture.mjs'
+import { openReferenceNovels, referenceNovelSchema } from './reference-novels.mjs'
 import { reviewReport } from './review-report.mjs'
 import { mergeRevision, revisionChanges } from './revision-merge.mjs'
 import { continuationPrefix } from './continuation.mjs'
@@ -237,8 +238,17 @@ export function openStore(directory) {
       COMMIT;
     `)
   }
+  if (version < 13) {
+    db.exec(`
+      BEGIN IMMEDIATE;
+      ${referenceNovelSchema}
+      PRAGMA user_version=13;
+      COMMIT;
+    `)
+  }
   db.prepare("UPDATE runs SET status='interrupted',error='服务重启，已保留收到的内容' WHERE status='running'").run()
   db.prepare("UPDATE writing_batches SET status='paused',error='服务重启，待手动继续' WHERE status='running'").run()
+  db.prepare("UPDATE reference_analyses SET status='interrupted',error='服务重启，已保留收到的内容' WHERE status='running'").run()
   const get = (sql, ...args) => db.prepare(sql).get(...args)
   const all = (sql, ...args) => db.prepare(sql).all(...args)
   const run = (sql, ...args) => db.prepare(sql).run(...args)
@@ -256,6 +266,7 @@ export function openStore(directory) {
   }
 
   const screenplay = screenplayStore({ get, all, run, tx, hash, now })
+  const referenceNovels = openReferenceNovels({ get, all, run, tx, hash, now, writingAvailable })
 
   function project(id) {
     const row = get('SELECT * FROM projects WHERE id=?', id)
@@ -670,7 +681,8 @@ export function openStore(directory) {
   }
 
   function writingAvailable() {
-    if (get("SELECT id FROM runs WHERE status='running'") || get("SELECT id FROM writing_batches WHERE status='running'")) {
+    if (get("SELECT id FROM runs WHERE status='running'") || get("SELECT id FROM writing_batches WHERE status='running'") ||
+        get("SELECT id FROM reference_analyses WHERE status='running'")) {
       throw new ApiError(409, '已有生成任务正在运行')
     }
   }
@@ -1123,6 +1135,7 @@ export function openStore(directory) {
       documents: all('SELECT * FROM documents WHERE project_id=? ORDER BY created', pid)
         .map(doc => ({ ...doc, history: history(pid, doc.id) })),
       references: all('SELECT title,body FROM reference_material WHERE project_id=? ORDER BY created,id', pid),
+      referenceNovels: referenceNovels.backup(pid),
       threads: threads(pid).map(({ title, body, kind, status, planted, due, resolved }) => ({ title, body, kind, status, planted, due, resolved })),
       writingSkills: { library: all('SELECT id,title,body FROM writing_skills WHERE project_id=? ORDER BY created,id', pid), bindings: skillProfile(pid).bindings },
       adaptations: screenplay.backup(pid),
@@ -1163,6 +1176,7 @@ export function openStore(directory) {
       if (data.goals !== undefined) saveProjectGoals(p.id, { goals: data.goals, baseRev: 0 })
       if (data.writingSkills !== undefined) importSkills(p.id, data.writingSkills)
       for (const source of data.references ?? []) addReference(p.id, source)
+      if (data.referenceNovels !== undefined) referenceNovels.importBackup(p.id, data.referenceNovels)
       for (const source of data.threads ?? []) saveThread(p.id, null, source)
       const mapping = new Map()
       for (const source of data.documents) {
@@ -1227,7 +1241,7 @@ export function openStore(directory) {
   }
 
   return { db, get, all, run, tx, project, document, createProject, renameProject, addDocument, importChapters, eventHead, projectEvents, pruneEvents, screenplay,
-    projectGoals, saveProjectGoals,
+    projectGoals, saveProjectGoals, referenceNovels,
     save, chapters, search, addReference, reference, threads, saveThread,
     transition, history, restore, getRun, runDetail, startRun, previewRun, continueRun, applyRun, previewPassage, previewRevision, applyRevision, backup, importBackup,
     listBatches, batchChapters, getBatch, createBatch, changeBatch, nextBatchRun, pauseBatch,

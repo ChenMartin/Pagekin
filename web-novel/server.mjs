@@ -51,6 +51,7 @@ const files = new Map([
   ['/novel-goals.mjs', ['novel-goals.mjs', 'text/javascript']],
   ['/architecture.mjs', ['architecture.mjs', 'text/javascript']],
   ['/screenplay-ui.mjs', ['screenplay-ui.mjs', 'text/javascript']],
+  ['/reference-novel-ui.mjs', ['reference-novel-ui.mjs', 'text/javascript']],
   ['/style.css', ['style.css', 'text/css']],
 ].map(([path, [file, type]]) => [path, [readFileSync(new URL(`./public/${file}`, import.meta.url)), type]]))
 const editorBundle = new URL('./public/editor.bundle.mjs', import.meta.url)
@@ -230,9 +231,10 @@ function providerError(status) {
   return `模型服务返回 HTTP ${status}，请检查模型配置、额度与上下文长度`
 }
 
-async function generate(job, messages, prefix = '') {
+async function generate(job, messages, prefix = '', reference = false) {
   const controller = new AbortController()
-  active.set(job.id, controller)
+  const activeKey = reference ? 'reference:' + job.id : job.id
+  active.set(activeKey, controller)
   let raw = ''
   let lastWrite = 0
   let status = 'failed'
@@ -284,7 +286,9 @@ async function generate(job, messages, prefix = '') {
           throw new Error(error)
         }
         if (Date.now() - lastWrite >= 650) {
-          storage.run("UPDATE runs SET output=? WHERE id=? AND status='running'", visible().slice(0, 180_000), job.id)
+          const output = visible().slice(0, 180_000)
+          if (reference) storage.referenceNovels.update(job.id, { output })
+          else storage.run("UPDATE runs SET output=? WHERE id=? AND status='running'", output, job.id)
           lastWrite = Date.now()
         }
       }
@@ -305,8 +309,10 @@ async function generate(job, messages, prefix = '') {
     }
   } finally {
     clearTimeout(timeout)
-    active.delete(job.id)
-    storage.run('UPDATE runs SET status=?,error=?,output=? WHERE id=?', status, error, visible().slice(0, 180_000), job.id)
+    active.delete(activeKey)
+    const output = visible().slice(0, 180_000)
+    if (reference) storage.referenceNovels.update(job.id, { status, error, output })
+    else storage.run('UPDATE runs SET status=?,error=?,output=? WHERE id=?', status, error, output, job.id)
   }
   return status
 }
@@ -465,6 +471,32 @@ async function route(req, res) {
     }
     if (method === 'GET' && id && action === undefined) return json(res, storage.reference(pid, id))
     if (method === 'POST' && id === undefined) return json(res, storage.addReference(pid, await body(req)), 201)
+  }
+  const references = storage.referenceNovels
+  if (resource === 'reference-novels') {
+    if (method === 'GET' && action === undefined) return json(res, id ? references.detail(pid, id) : references.list(pid))
+    if (method === 'POST' && id === undefined) return json(res, references.importText(pid, await body(req, manuscriptRequestBytes)), 201)
+    if (id && method === 'GET' && action === 'chapter') {
+      return json(res, references.readChapter(pid, id, Number(url.searchParams.get('position'))))
+    }
+    if (id && method === 'POST' && action === 'context') {
+      const { messages } = references.prepare(pid, id, await body(req, 16_384), contextLimit)
+      return json(res, { messages, limit: contextLimit })
+    }
+    if (id && method === 'POST' && action === 'analyze') {
+      if (!endpoint) throw new ApiError(422, '管理员尚未配置模型')
+      const { job, messages } = references.start(pid, id, await body(req, 16_384), contextLimit)
+      if (messages) void generate(job, messages, '', true).catch(() => console.error('无法记录参考小说拆解结果'))
+      return json(res, job, 202)
+    }
+  }
+  if (resource === 'reference-analysis' && id) {
+    if (method === 'GET' && action === undefined) return json(res, references.analysis(pid, id))
+    if (method === 'POST' && action === 'cancel') {
+      references.analysis(pid, id)
+      active.get('reference:' + id)?.abort('cancelled')
+      return json(res, { ok: true })
+    }
   }
   if (resource === 'documents') {
     if (method === 'GET' && id === undefined) return json(res, storage.all(`

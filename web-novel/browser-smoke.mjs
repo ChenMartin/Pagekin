@@ -33,6 +33,13 @@ const modelMock = createServer(async (req, res) => {
     if (instruction.includes('返回修订后的完整正文')) content = revisionCandidate
     if (instruction.includes('生成当前章的章节蓝图')) content = '## 章目标\n找出失踪船票。'
     if (instruction.includes('本次只生成「世界观」模块')) content = '## 世界规则\n灯塔每月熄灭一天。'
+    if (instruction.includes('你是小说研究助手')) content = JSON.stringify({
+      structure: '开篇先交代行动目标', style: '用动作表现人物', constraints: '用场景后果推动下一场冲突。',
+      chapters: [{ position: 1, summary: '主角看见轮渡', blueprint: '登船后呈现阻力' }],
+    })
+    if (payload.messages.at(-1).content.includes('【整书归纳】')) content = JSON.stringify({
+      structure: '首尾呼应', style: '用动作表现人物', constraints: '用场景后果推动下一场冲突。',
+    })
     if (instruction.includes('只返回替换片段')) content = '新的选段。'
     if (instruction.includes('审查当前正文')) content = JSON.stringify({ issues: [
       { title: '补写动作', severity: 'major', quote: '断网的本机', reason: '缺少动作', suggestion: '加入登船动作' },
@@ -490,16 +497,43 @@ try {
   await evaluate("document.querySelectorAll('#dialog-body select')[0].value = 'dark'; document.querySelectorAll('#dialog-body select')[1].value = 'large'")
   await click('#dialog-submit')
   await until(() => evaluate("document.documentElement.dataset.theme === 'dark' && document.documentElement.dataset.textSize === 'large'"), 'Appearance preferences did not apply')
-  async function screenplayButton(prefix) {
+  async function dialogButton(prefix) {
     const expression = `Array.from(document.querySelectorAll('#dialog-body button')).find(button => button.textContent.startsWith(${JSON.stringify(prefix)}))`
     await until(() => evaluate(`Boolean(${expression})`), `Missing ${prefix}`)
     await evaluate(`(${expression}).click()`)
   }
+  await click('#reference-novel-library')
+  await dialogButton('导入参考小说')
+  await visible('#dialog-body input[type=file]')
+  await evaluate(String.raw`const file = document.querySelector('#dialog-body input[type=file]');
+    const list = new DataTransfer();
+    list.items.add(new File(['第一章 轮渡\n\n他登上了轮渡。'], '参考试读.txt', { type: 'text/plain' }));
+    file.files = list.files; file.dispatchEvent(new Event('change'))`)
+  await until(() => evaluate("document.querySelector('#dialog-body').textContent.includes('预览 1 节')"), 'Reference import preview did not appear')
+  await click('#dialog-submit')
+  await dialogButton('选择范围拆解')
+  await dialogButton('预览发送内容')
+  await until(() => evaluate("document.querySelector('#dialog-body pre')?.textContent.includes('参考书节选')"), 'Reference context preview did not appear')
+  await click('#dialog-submit')
+  await dialogButton('核对写法并保存为 Skill')
+  assert.equal(await evaluate("document.querySelector('#dialog-body textarea').value"), '用场景后果推动下一场冲突。')
+  await click('#close-dialog')
+  await click('#reference-novel-library')
+  await dialogButton('参考试读 ·')
+  await dialogButton('整书归纳')
+  await visible('#dialog-body textarea')
+  await click('#dialog-submit')
+  await dialogButton('核对写法并保存为 Skill')
+  await click('#dialog-submit')
+  await dialogButton('查看 · 仿写约束 · 参考试读')
+  await visible('#dialog-body pre')
+  assert.equal(await evaluate("document.querySelector('#dialog-body pre').textContent"), '用场景后果推动下一场冲突。')
+  await click('#close-dialog')
   await click('#screenplay-workspace')
-  await screenplayButton('新建改编项目')
+  await dialogButton('新建改编项目')
   await fill('#dialog-body input', '夜航短剧')
   await click('#dialog-submit')
-  await screenplayButton('新建剧本集')
+  await dialogButton('新建剧本集')
   await visible('#dialog-body .batch-list input')
   await fill('#dialog-body input', '第一集：线索')
   await click('#dialog-body .batch-list input')
@@ -517,23 +551,23 @@ try {
   await visible('#screenplay-workspace')
   assert.equal(await evaluate("document.documentElement.dataset.theme"), 'dark')
   await click('#screenplay-workspace')
-  await screenplayButton('夜航短剧')
-  await screenplayButton('第 1 季 · 第 1 集')
-  await screenplayButton('比较本机草稿')
+  await dialogButton('夜航短剧')
+  await dialogButton('第 1 季 · 第 1 集')
+  await dialogButton('比较本机草稿')
   await until(() => evaluate("document.querySelector('#dialog-title').textContent === '对照本机稿与 NAS 剧本'"), 'Screenplay recovery did not open')
   await click('#dialog-submit')
   await visible('#script-scene-title')
   assert.equal(await evaluate("document.querySelector('.script-line textarea').value"), '渔船靠岸。')
   await click('#dialog-submit')
   await until(() => evaluate("document.querySelector('#script-save-status').textContent === '已存 NAS · v2'"), 'Screenplay was not saved to NAS')
-  await screenplayButton('确认剧本')
+  await dialogButton('确认剧本')
   await until(() => evaluate("document.querySelector('#script-save-status').textContent === '已确认 · v3'"), 'Screenplay was not confirmed')
   assert.equal(await evaluate("document.querySelector('.script-fields').disabled"), true)
-  await screenplayButton('剧本历史')
-  await screenplayButton('v2 ·')
+  await dialogButton('剧本历史')
+  await dialogButton('v2 ·')
   await until(() => evaluate("document.querySelector('#dialog-body pre')?.textContent.includes('渔船靠岸。')"), 'Saved screenplay version did not open')
-  await screenplayButton('返回剧本集')
-  await screenplayButton('读原文')
+  await dialogButton('返回剧本集')
+  await dialogButton('读原文')
   await until(() => evaluate("document.querySelector('#dialog-body pre')?.textContent.includes('章节末尾')"), 'Pinned source was not displayed')
   console.log('Browser workflow passed (' + (enhanced ? 'CodeMirror' : 'plain') + '): novel writing, recovery, AI workflows and screenplay adaptation')
 } finally {
