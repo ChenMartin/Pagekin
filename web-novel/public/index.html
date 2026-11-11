@@ -36,6 +36,7 @@
         <div id="project-tools" hidden>
           <nav aria-label="作品入口" class="tools">
             <button id="workbench-overview">作品概览</button>
+            <button id="project-goals">写作目标</button>
             <button id="project-runs">运行中心</button>
             <button id="search-project">搜索作品</button>
           </nav>
@@ -47,6 +48,7 @@
           </nav>
           <div class="tools catalog-controls">
             <button id="new-document">新建正文</button>
+            <button id="batch-blueprints" hidden>批量生成蓝图</button>
             <label id="chapter-filter-label">章节状态
               <select id="chapter-filter">
                 <option value="">全部</option>
@@ -74,8 +76,7 @@
               <button id="rename-project">修改书名</button>
               <button id="import-text">导入单章</button>
               <button id="import-manuscript">导入整稿</button>
-              <a id="export">导出定稿</a>
-              <a id="export-all">导出全部正文</a>
+              <button id="export">导出正文</button>
               <a id="backup">备份作品</a>
             </div>
           </details>
@@ -100,6 +101,7 @@
           <button id="previous-chapter" type="button" hidden>上一章</button>
           <button id="next-chapter" type="button" hidden>下一章</button>
           <button id="paired-document" type="button" hidden></button>
+          <button id="ai-passage" type="button" hidden>选段 AI</button>
           <button id="focus-writing" type="button" aria-pressed="false">专注写作</button>
         </div>
         <section id="find-panel" class="find-panel" aria-label="文档内查找与替换" hidden>
@@ -135,10 +137,12 @@
           <a id="editor-notices" href="/editor.notices.txt" target="_blank" rel="noopener" hidden>编辑器许可证</a>
         </div>
         <details id="ai" hidden>
-          <summary>AI 细纲、写稿、审稿与修稿</summary>
+          <summary id="ai-heading">AI 细纲、写稿、审稿与修稿</summary>
           <p id="model-status" hidden>写作模型待配置。可查看既有任务、候选和模型输入预览。</p>
-          <p id="selected-outline">可先生成写前细纲，确认后用于写稿。</p>
-          <button id="clear-outline" hidden>取消引用细纲</button>
+          <div id="outline-controls">
+            <p id="selected-outline">可先生成写前细纲，确认后用于写稿。</p>
+            <button id="clear-outline" hidden>取消引用细纲</button>
+          </div>
           <p id="selected-references"></p>
           <button id="clear-references" hidden>清除已选资料</button>
           <label id="reference-query-label" hidden>资料定位词（可选）
@@ -148,6 +152,7 @@
             <textarea id="guidance" rows="3" maxlength="6000"></textarea>
           </label>
           <div class="tools">
+            <button data-run="plan" hidden>生成规划候选</button>
             <button data-run="outline">生成写前细纲</button>
             <button data-run="draft">写稿</button>
             <button data-run="review">审稿</button>

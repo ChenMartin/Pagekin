@@ -4,6 +4,7 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { manuscriptChapterLimit } from './public/manuscript.mjs'
 import { schemaVersion } from './version.mjs'
+import { novelGoals } from './public/novel-goals.mjs'
 import { reviewReport } from './review-report.mjs'
 import { mergeRevision, revisionChanges } from './revision-merge.mjs'
 import { continuationPrefix } from './continuation.mjs'
@@ -13,7 +14,9 @@ import { screenplayStore } from './screenplay-store.mjs'
 export { ApiError, object, string } from './input.mjs'
 
 export const kinds = ['settings', 'character', 'blueprint', 'chapter']
-const runKinds = ['outline', 'draft', 'review', 'revise']
+const skillKinds = ['outline', 'draft', 'review', 'revise']
+const runKinds = [...skillKinds, 'plan', 'passage']
+const passageModes = ['continue', 'polish', 'expand', 'dialogue']
 export const outlineMaxChars = 2400
 export const hash = value => createHash('sha256').update(value).digest('hex')
 export const now = () => new Date().toISOString()
@@ -222,6 +225,17 @@ export function openStore(directory) {
       COMMIT;
     `)
   }
+  if (version < 12) {
+    db.exec(`
+      BEGIN IMMEDIATE;
+      ALTER TABLE writing_batches ADD COLUMN operation TEXT NOT NULL DEFAULT 'draft' CHECK(operation IN ('draft','plan'));
+      CREATE TABLE project_goals (
+        project_id TEXT PRIMARY KEY REFERENCES projects(id), goals TEXT NOT NULL, rev INTEGER NOT NULL
+      );
+      PRAGMA user_version=12;
+      COMMIT;
+    `)
+  }
   db.prepare("UPDATE runs SET status='interrupted',error='服务重启，已保留收到的内容' WHERE status='running'").run()
   db.prepare("UPDATE writing_batches SET status='paused',error='服务重启，待手动继续' WHERE status='running'").run()
   const get = (sql, ...args) => db.prepare(sql).get(...args)
@@ -273,6 +287,42 @@ export function openStore(directory) {
     const current = project(pid)
     if (!changed.changes && current.title !== title) throw new ApiError(409, '另一设备已更改书名，请核对最新书名', current)
     return current
+  }
+
+  function projectGoals(pid) {
+    const row = get('SELECT goals,rev FROM project_goals WHERE project_id=?', pid)
+    return row ? { goals: JSON.parse(row.goals), rev: row.rev } : { goals: {}, rev: 0 }
+  }
+
+  function saveProjectGoals(pid, value) {
+    object(value)
+    object(value.goals)
+    if (!Number.isSafeInteger(value.baseRev) || value.baseRev < 0 ||
+        Object.keys(value.goals).some(key => !novelGoals.some(field => field.key === key))) {
+      throw new ApiError(400, '写作目标格式或版本无效')
+    }
+    const goals = {}
+    for (const field of novelGoals) {
+      const input = value.goals[field.key]
+      if (input == null || input === '') continue
+      if (field.max) {
+        if (!Number.isInteger(input) || input < 1 || input > field.max) {
+          throw new ApiError(400, field.label + '需填写 1 至 ' + field.max + ' 的整数')
+        }
+        goals[field.key] = input
+      } else {
+        const text = string(input, field.maxLength).trim()
+        if (text) goals[field.key] = text
+      }
+    }
+    const current = projectGoals(pid)
+    const encoded = JSON.stringify(goals)
+    if (encoded === JSON.stringify(current.goals)) return current
+    if (value.baseRev !== current.rev) throw new ApiError(409, '另一设备已保存写作目标，请核对最新内容', current)
+    const rev = current.rev + 1
+    run('INSERT INTO project_goals VALUES (?,?,?) ON CONFLICT(project_id) DO UPDATE SET goals=excluded.goals,rev=excluded.rev',
+      pid, encoded, rev)
+    return { goals, rev }
   }
 
   function addDocument(pid, value) {
@@ -452,15 +502,23 @@ export function openStore(directory) {
     if (outlineId !== null && (kind !== 'draft' || typeof outlineId !== 'string' || !/^[a-f0-9-]{36}$/i.test(outlineId))) {
       throw new ApiError(400, '只有写稿可以引用已完成的细纲')
     }
-    return { kind, guidance, baseRev, refs, referenceQuery, outlineId, spans: spans.map(({ id, start, end }) => ({ id, start, end })) }
+    let passage
+    if (kind === 'passage') {
+      const { mode, start, end, quote } = object(value.passage)
+      if (!passageModes.includes(mode) || !Number.isSafeInteger(start) || !Number.isSafeInteger(end) ||
+          start < 0 || end <= start || end - start > 6000) throw new ApiError(400, '请选择有效的正文片段和操作')
+      passage = { mode, start, end, quote: string(quote, 6000, true) }
+    }
+    return { kind, guidance, baseRev, refs, referenceQuery, outlineId, spans: spans.map(({ id, start, end }) => ({ id, start, end })), passage }
   }
 
-  function requestFingerprint(id, { kind, baseRev, guidance, refs, referenceQuery, spans, outlineId }) {
+  function requestFingerprint(id, { kind, baseRev, guidance, refs, referenceQuery, spans, outlineId, passage }) {
     const fingerprint = [id, baseRev, kind, guidance]
     if (refs.length || referenceQuery) fingerprint.push(refs)
     if (referenceQuery) fingerprint.push(referenceQuery)
     if (spans.length) fingerprint.push(spans)
     if (outlineId) fingerprint.push({ outlineId })
+    if (passage) fingerprint.push({ passage })
     return hash(JSON.stringify(fingerprint))
   }
 
@@ -480,7 +538,7 @@ export function openStore(directory) {
   function skillProfile(pid) {
     const row = get('SELECT bindings,rev FROM writing_skill_profiles WHERE project_id=?', pid)
     return row ? { bindings: JSON.parse(row.bindings), rev: row.rev }
-      : { bindings: Object.fromEntries(runKinds.map(kind => [kind, null])), rev: 0 }
+      : { bindings: Object.fromEntries(skillKinds.map(kind => [kind, null])), rev: 0 }
   }
 
   function writingSkill(pid, id) {
@@ -525,8 +583,8 @@ export function openStore(directory) {
 
   function parseSkillBindings(value) {
     object(value)
-    if (Object.keys(value).some(key => !runKinds.includes(key))) throw new ApiError(400, 'Skill 阶段无效')
-    return Object.fromEntries(runKinds.map(kind => [kind, value[kind] == null ? null : string(value[kind], 80, true)]))
+    if (Object.keys(value).some(key => !skillKinds.includes(key))) throw new ApiError(400, 'Skill 阶段无效')
+    return Object.fromEntries(skillKinds.map(kind => [kind, value[kind] == null ? null : string(value[kind], 80, true)]))
   }
 
   function bindSkills(pid, value) {
@@ -556,13 +614,39 @@ export function openStore(directory) {
     })
   }
 
-  function runContext(doc, request) {
+  function requestSkill(pid, kind, passage) {
+    if (kind === 'plan') return stageSkill(pid, 'outline')
+    if (kind === 'passage') return stageSkill(pid, passage?.mode === 'continue' ? 'draft' : 'revise')
+    return stageSkill(pid, kind)
+  }
+
+  function passageRange(doc, passage) {
+    if (!passage) throw new ApiError(422, '此候选缺少可应用的原文位置')
+    const normalized = doc.body.replace(/\r\n?/g, '\n')
+    if (passage.end > normalized.length || normalized.slice(passage.start, passage.end) !== passage.quote || !passage.quote.isWellFormed()) {
+      throw new ApiError(409, '选中的原文已变化，请重新选择')
+    }
+    let { start, end } = passage
+    for (const match of doc.body.matchAll(/\r\n/g)) {
+      if (match.index >= end) break
+      if (match.index < start) start++
+      end++
+    }
+    return { start, end }
+  }
+
+  function runContext(doc, request, batch) {
     match(doc, request.baseRev)
-    if (doc.kind !== 'chapter' || doc.status !== 'draft') throw new ApiError(422, 'AI 操作需要未定稿章节')
+    const planning = request.kind === 'plan'
+    if (doc.status !== 'draft' || (planning ? doc.kind === 'chapter' : doc.kind !== 'chapter')) {
+      throw new ApiError(422, '请选择与当前文档匹配的 AI 操作')
+    }
     if (['review', 'revise'].includes(request.kind) && !doc.body.trim()) throw new ApiError(422, '请先填写正文')
-    const source = sources(doc, request.refs, request.spans)
-    const skill = stageSkill(doc.project_id, request.kind)
-    const context = { doc, ...source, skill, sourceHash: skillSource(source.sourceHash, skill), guidance: request.guidance, referenceQuery: request.referenceQuery }
+    if (request.passage) passageRange(doc, request.passage)
+    const source = sources(doc, request.refs, request.spans, planning, batch)
+    const skill = requestSkill(doc.project_id, request.kind, request.passage)
+    const context = { doc, ...source, skill, sourceHash: skillSource(source.sourceHash, skill), guidance: request.guidance,
+      referenceQuery: request.referenceQuery, passage: request.passage }
     if (!request.outlineId) return context
     const outline = completedOutline(doc, request.outlineId)
     const expected = requestFingerprint(doc.id, { ...request, kind: 'outline', outlineId: null })
@@ -585,7 +669,7 @@ export function openStore(directory) {
 
   function insertRun(doc, request, jobId, prepare, { previousCandidate, batch = null, from = null, prefix = '' } = {}) {
     const { kind, refs, outlineId } = request
-    const context = runContext(doc, request)
+    const context = runContext(doc, request, batch)
     const sourceHash = previousCandidate ? batchBinding(context.sourceHash, previousCandidate) : context.sourceHash
     if (from && sourceHash !== from.source_hash) throw new ApiError(409, '上次生成的资料或写作 Skill 已变化，请重新生成')
     const messages = prepare(kind, { ...context, previousCandidate, continuation: prefix })
@@ -647,7 +731,7 @@ export function openStore(directory) {
   }
 
   function getBatch(pid, id) {
-    const batch = get('SELECT id,status,created,error FROM writing_batches WHERE project_id=? AND id=?', pid, id)
+    const batch = get('SELECT id,status,created,error,operation FROM writing_batches WHERE project_id=? AND id=?', pid, id)
     if (!batch) throw new ApiError(404, '批量写作任务不存在')
     const items = all(`SELECT d.id,d.number,d.title,i.run_id,CASE WHEN i.skipped<>'' THEN 'skipped' ELSE COALESCE(r.status,'queued') END status,
         CASE WHEN i.skipped<>'' THEN i.skipped ELSE COALESCE(r.error,'') END error
@@ -657,7 +741,7 @@ export function openStore(directory) {
   }
 
   function listBatches(pid) {
-    return all(`SELECT b.id,b.status,b.created,COUNT(i.document_id) total,SUM(CASE WHEN r.status='done' THEN 1 ELSE 0 END) completed
+    return all(`SELECT b.id,b.status,b.created,b.operation,COUNT(i.document_id) total,SUM(CASE WHEN r.status='done' THEN 1 ELSE 0 END) completed
       FROM writing_batches b JOIN writing_batch_items i ON i.batch_id=b.id LEFT JOIN runs r ON r.id=i.run_id
       WHERE b.project_id=? GROUP BY b.id ORDER BY b.created DESC,b.id DESC LIMIT 30`, pid)
   }
@@ -672,13 +756,22 @@ export function openStore(directory) {
     object(value)
     const id = string(value.mutationId, 80, true)
     const guidance = string(value.guidance ?? '', 6000)
-    if (!/^[a-f0-9-]{36}$/i.test(id) || !Array.isArray(value.chapters) || !value.chapters.length || value.chapters.length > 20) {
-      throw new ApiError(400, '每批请选择 1–20 个章节')
+    if (!/^[a-f0-9-]{36}$/i.test(id)) throw new ApiError(400, '批次编号无效')
+    const planning = value.blueprintRange !== undefined
+    let chapters
+    let range
+    if (planning) {
+      const { start, end } = object(value.blueprintRange)
+      range = [numbered(start), numbered(end)]
+      if (value.chapters !== undefined || end < start || end - start >= 20) throw new ApiError(400, '蓝图批次须为连续的 1–20 章')
+    } else {
+      if (!Array.isArray(value.chapters) || !value.chapters.length || value.chapters.length > 20) throw new ApiError(400, '每批请选择 1–20 个章节')
+      chapters = value.chapters.map(item => [string(object(item).id, 80, true), revision(item.baseRev)])
+        .sort(([left], [right]) => left.localeCompare(right))
+      if (new Set(chapters.map(([doc]) => doc)).size !== chapters.length) throw new ApiError(400, '请选择不同的章节')
     }
-    const chapters = value.chapters.map(item => [string(object(item).id, 80, true), revision(item.baseRev)])
-      .sort(([left], [right]) => left.localeCompare(right))
-    if (new Set(chapters.map(([doc]) => doc)).size !== chapters.length) throw new ApiError(400, '请选择不同的章节')
-    const fingerprint = hash(JSON.stringify([pid, chapters, guidance]))
+    const operation = planning ? 'plan' : 'draft'
+    const fingerprint = hash(JSON.stringify(planning ? [pid, operation, range, guidance] : [pid, chapters, guidance]))
     return tx(() => {
       const existing = get('SELECT fingerprint FROM writing_batches WHERE id=?', id)
       if (existing) {
@@ -686,13 +779,23 @@ export function openStore(directory) {
         return getBatch(pid, id)
       }
       writingAvailable()
-      for (const [docId, baseRev] of chapters) {
-        const doc = document(pid, docId)
-        match(doc, baseRev)
-        if (doc.kind !== 'chapter' || doc.status !== 'draft' || doc.body.trim()) throw new ApiError(422, '批量写作只接收空白且未定稿的章节')
+      if (range) {
+        chapters = []
+        for (let number = range[0]; number <= range[1]; number++) {
+          const existing = get("SELECT id,rev FROM documents WHERE project_id=? AND kind='blueprint' AND number=?", pid, number)
+          const title = get("SELECT title FROM documents WHERE project_id=? AND kind='chapter' AND number=?", pid, number)?.title
+          const doc = existing ?? addDocument(pid, { kind: 'blueprint', number, title: title ?? `第 ${number} 章蓝图`, body: '' })
+          chapters.push([doc.id, doc.rev])
+        }
+      } else {
+        for (const [docId, baseRev] of chapters) {
+          const doc = document(pid, docId)
+          match(doc, baseRev)
+          if (doc.kind !== 'chapter' || doc.status !== 'draft' || doc.body.trim()) throw new ApiError(422, '批量写作只接收空白且未定稿的章节')
+        }
       }
-      run("INSERT INTO writing_batches (id,project_id,status,guidance,fingerprint,created,draft_skill) VALUES (?,?,'running',?,?,?,?)",
-        id, pid, guidance, fingerprint, now(), stageSkill(pid, 'draft')?.id ?? null)
+      run("INSERT INTO writing_batches (id,project_id,status,guidance,fingerprint,created,draft_skill,operation) VALUES (?,?,'running',?,?,?,?,?)",
+        id, pid, guidance, fingerprint, now(), requestSkill(pid, operation)?.id ?? null, operation)
       for (const [docId, baseRev] of chapters) run('INSERT INTO writing_batch_items (batch_id,document_id,base_rev) VALUES (?,?,?)', id, docId, baseRev)
       return getBatch(pid, id)
     })
@@ -704,7 +807,7 @@ export function openStore(directory) {
       if (action === 'resume' && batch.status === 'paused') {
         writingAvailable()
         const { draft_skill: skill } = get('SELECT draft_skill FROM writing_batches WHERE id=?', id)
-        if ((stageSkill(pid, 'draft')?.id ?? null) !== skill) throw new ApiError(409, '写稿 Skill 绑定已变化，请恢复原绑定或新建批次')
+        if ((requestSkill(pid, batch.operation)?.id ?? null) !== skill) throw new ApiError(409, '写作 Skill 绑定已变化，请恢复原绑定或新建批次')
         run("UPDATE writing_batches SET status='running',error='' WHERE id=?", id)
       }
       if (action === 'pause' && batch.status === 'running') run("UPDATE writing_batches SET status='paused',error='' WHERE id=?", id)
@@ -719,8 +822,8 @@ export function openStore(directory) {
     return tx(() => {
       const batch = get("SELECT * FROM writing_batches WHERE id=? AND status='running'", id)
       if (!batch) return null
-      if ((stageSkill(batch.project_id, 'draft')?.id ?? null) !== batch.draft_skill) {
-        pauseBatch(id, '写稿 Skill 绑定已变化，请恢复原绑定或新建批次')
+      if ((requestSkill(batch.project_id, batch.operation)?.id ?? null) !== batch.draft_skill) {
+        pauseBatch(id, '写作 Skill 绑定已变化，请恢复原绑定或新建批次')
         return null
       }
       const items = all(`SELECT i.document_id,i.base_rev,i.run_id FROM writing_batch_items i
@@ -730,10 +833,10 @@ export function openStore(directory) {
         const doc = document(batch.project_id, item.document_id)
         const skip = message => run('UPDATE writing_batch_items SET skipped=? WHERE batch_id=? AND document_id=?', message, id, doc.id)
         if (doc.rev !== item.base_rev || doc.status !== 'draft' || doc.body.trim()) {
-          skip('章节已被编辑或定稿，保留当前正文')
+          skip('文档已有内容或已变化，保留作者原稿')
           continue
         }
-        const request = parseRun({ kind: 'draft', baseRev: item.base_rev, guidance: batch.guidance })
+        const request = parseRun({ kind: batch.operation, baseRev: item.base_rev, guidance: batch.guidance })
         const jobId = randomUUID()
         const options = { batch: id, previousCandidate: batchPredecessor(id, doc) }
         const from = item.run_id ? getRun(batch.project_id, item.run_id) : null
@@ -765,12 +868,23 @@ export function openStore(directory) {
     run("UPDATE writing_batches SET status='paused',error=? WHERE id=? AND status='running'", error, id)
   }
 
-  function sources(doc, refs, spans = []) {
+  function sources(doc, refs, spans = [], planning = false, batch = null) {
     const materials = all(`
       SELECT id, rev, kind, title, body, number FROM documents WHERE project_id=? AND
         (kind IN ('settings','character') OR (kind='blueprint' AND number=?))
       ORDER BY CASE kind WHEN 'blueprint' THEN 0 WHEN 'settings' THEN 1 ELSE 2 END, created, id LIMIT 100`,
       doc.project_id, doc.number)
+    if (planning) {
+      const own = materials.findIndex(entry => entry.id === doc.id)
+      if (own >= 0) materials.splice(own, 1)
+      if (doc.kind === 'blueprint') {
+        // Completed members of the same batch are bound through their candidate, even after applying it.
+        materials.push(...all(`SELECT id,rev,kind,title,body,number FROM documents
+          WHERE project_id=? AND kind='blueprint' AND number<? AND body<>'' AND NOT EXISTS (
+            SELECT 1 FROM writing_batch_items i WHERE i.batch_id=? AND i.document_id=documents.id AND i.skipped='')
+          ORDER BY number DESC LIMIT 2`, doc.project_id, doc.number, batch))
+      }
+    }
     const [previous, ...earlier] = all(finalizedSelect + ' AND d.number<? ORDER BY d.number DESC LIMIT 3', doc.project_id, doc.number)
     const selected = refs.map(id => {
       const entry = { ...reference(doc.project_id, id), kind: 'reference', rev: 1 }
@@ -787,11 +901,13 @@ export function openStore(directory) {
       ORDER BY CASE WHEN due=? OR resolved=? THEN 0 WHEN status='open' THEN 1 ELSE 2 END, updated DESC,id
       LIMIT 12`, doc.project_id, doc.number, doc.number, Math.max(1, doc.number - 2), doc.number, doc.number, doc.number)
     const dependencies = [...materials, ...selected, ...(previous ? [previous] : [])].map(({ id, rev }) => [id, rev])
+    const { goals, rev } = projectGoals(doc.project_id)
+    if (rev) dependencies.push(['project-goals', rev])
     const legacyHash = hash(JSON.stringify(dependencies))
     const extended = [...dependencies, ...earlier.map(({ id, rev }) => [id, rev])]
     const previousHash = 'v2:' + hash(JSON.stringify(extended))
     const sourceHash = 'v3:' + hash(JSON.stringify([...extended, ...threads.map(({ id, rev }) => [id, rev])]))
-    return { materials: [...selected, ...materials], previous, earlier, threads, sourceHash, previousHash, legacyHash }
+    return { materials: [...selected, ...materials], previous, earlier, threads, goals, sourceHash, previousHash, legacyHash }
   }
 
   // A reopened draft has a mutable head while the latest final remains in history.
@@ -879,11 +995,15 @@ export function openStore(directory) {
       ORDER BY title_match=0,kind,number,title,id LIMIT 40`, pid, pid, query, query)
   }
 
-  function checkCandidate(doc, job) {
+  function checkCandidate(doc, job, passage) {
     match(doc, job.base_rev)
     if (doc.status === 'final') throw new ApiError(422, '请先重新打开定稿')
-    const bindings = sources(doc, JSON.parse(job.reference_ids))
-    const skill = stageSkill(doc.project_id, job.kind)
+    const planning = job.kind === 'plan'
+    const batchBound = job.source_hash.startsWith('batch:')
+    const item = (batchBound || planning) && get('SELECT batch_id FROM writing_batch_items WHERE run_id=?', job.id)
+    const predecessor = batchBound && item && batchPredecessor(item.batch_id, doc)
+    const bindings = sources(doc, JSON.parse(job.reference_ids), [], planning, item?.batch_id)
+    const skill = requestSkill(doc.project_id, job.kind, passage)
     const sourceHash = skillSource(bindings.sourceHash, skill)
     let valid = (skill ? [sourceHash] : [sourceHash, bindings.previousHash, bindings.legacyHash]).includes(job.source_hash)
     if (job.outline_id) {
@@ -891,9 +1011,7 @@ export function openStore(directory) {
       valid = outline.source_hash === skillSource(bindings.sourceHash, stageSkill(doc.project_id, 'outline')) &&
         outlineBinding(sourceHash, outline) === job.source_hash
     }
-    if (job.source_hash.startsWith('batch:')) {
-      const item = get('SELECT batch_id FROM writing_batch_items WHERE run_id=?', job.id)
-      const predecessor = item && batchPredecessor(item.batch_id, doc)
+    if (batchBound) {
       valid = predecessor && batchBinding(sourceHash, predecessor) === job.source_hash
     }
     if (!valid) throw new ApiError(409, '生成时的资料或写作 Skill 已变化，请核对候选并重新生成')
@@ -911,12 +1029,35 @@ export function openStore(directory) {
       const job = getRun(pid, id)
       const doc = document(pid, job.document_id)
       if (job.applied_rev !== null) return doc
-      if (!['draft', 'revise'].includes(job.kind) || !job.output.trim() || job.status === 'running') {
-        throw new ApiError(422, '此任务没有可应用的正文')
+      if (!['draft', 'revise', 'plan', 'passage'].includes(job.kind) || !job.output.trim() || job.status === 'running' ||
+          (['plan', 'passage'].includes(job.kind) && job.status !== 'done')) {
+        throw new ApiError(422, '此任务没有可应用的候选内容')
       }
+      if (job.kind === 'passage') return saveCandidate(doc, job, passageCandidate(doc, job))
       checkCandidate(doc, job)
       return saveCandidate(doc, job, job.output)
     })
+  }
+
+  function passageCandidate(doc, job) {
+    const passage = job.request_data ? JSON.parse(job.request_data).request.passage : null
+    const { start, end } = passageRange(doc, passage)
+    checkCandidate(doc, job, passage)
+    const tail = doc.body.slice(end)
+    const output = job.output.trim()
+    const next = passage.mode === 'continue'
+      ? doc.body.slice(0, end) + '\n\n' + output + (tail && !/^\s*\n/.test(tail) ? '\n\n' : '') + tail
+      : doc.body.slice(0, start) + output + tail
+    return string(next, 180_000, true)
+  }
+
+  function previewPassage(pid, id) {
+    const job = getRun(pid, id)
+    if (job.kind !== 'passage' || job.status !== 'done' || !job.output.trim() || job.applied_rev !== null) {
+      throw new ApiError(422, '此任务没有可预览的片段候选')
+    }
+    const doc = document(pid, job.document_id)
+    return { current: doc.body, candidate: passageCandidate(doc, job) }
   }
 
   function completedRevision(pid, id) {
@@ -970,6 +1111,7 @@ export function openStore(directory) {
     return tx(() => ({
       format: 'pagekin-web-novel-v1',
       title: project(pid).title,
+      goals: projectGoals(pid).goals,
       documents: all('SELECT * FROM documents WHERE project_id=? ORDER BY created', pid)
         .map(doc => ({ ...doc, history: history(pid, doc.id) })),
       references: all('SELECT title,body FROM reference_material WHERE project_id=? ORDER BY created,id', pid),
@@ -1010,6 +1152,7 @@ export function openStore(directory) {
         (data.runs !== undefined && !Array.isArray(data.runs))) throw new ApiError(400, '不支持此 Web 作品备份格式')
     return tx(() => {
       const p = createProject(data.title)
+      if (data.goals !== undefined) saveProjectGoals(p.id, { goals: data.goals, baseRev: 0 })
       if (data.writingSkills !== undefined) importSkills(p.id, data.writingSkills)
       for (const source of data.references ?? []) addReference(p.id, source)
       for (const source of data.threads ?? []) saveThread(p.id, null, source)
@@ -1076,8 +1219,9 @@ export function openStore(directory) {
   }
 
   return { db, get, all, run, tx, project, document, createProject, renameProject, addDocument, importChapters, eventHead, projectEvents, pruneEvents, screenplay,
+    projectGoals, saveProjectGoals,
     save, chapters, search, addReference, reference, threads, saveThread,
-    transition, history, restore, getRun, runDetail, startRun, previewRun, continueRun, applyRun, previewRevision, applyRevision, backup, importBackup,
+    transition, history, restore, getRun, runDetail, startRun, previewRun, continueRun, applyRun, previewPassage, previewRevision, applyRevision, backup, importBackup,
     listBatches, batchChapters, getBatch, createBatch, changeBatch, nextBatchRun, pauseBatch,
     listSkills, writingSkill, installSkill, bindSkills, deleteSkill }
 }

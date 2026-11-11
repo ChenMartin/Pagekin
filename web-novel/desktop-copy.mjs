@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 import { hash, now, string } from './store.mjs'
+import { novelGoals } from './public/novel-goals.mjs'
 
 const schemas = new Set([7, 8, 9])
 const working = new Set(['draft', 'reviewed', 'revised'])
@@ -119,7 +120,16 @@ export function desktopCopy(source, stagingRoot = tmpdir()) {
         head.status === 'finalized' ? 'final' : 'draft', rev, history)
     }
     if (documents.length > 3000) throw new Error('作品超过单次导入的文档数量上限')
-    return { format: 'pagekin-web-novel-v1', title: string(project.project_name, 160, true), documents, runs: [] }
+    const goals = {}
+    for (const field of novelGoals) {
+      const value = project[field.desktop]
+      if (field.max) {
+        if (Number.isInteger(value) && value > 0 && value <= field.max) goals[field.key] = value
+      } else if (typeof value === 'string' && value.trim()) {
+        goals[field.key] = value.trim().slice(0, field.maxLength)
+      }
+    }
+    return { format: 'pagekin-web-novel-v1', title: string(project.project_name, 160, true), goals, documents, runs: [] }
   }, stagingRoot)
 }
 

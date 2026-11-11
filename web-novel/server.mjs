@@ -13,6 +13,7 @@ import { writingMessages } from './writing-context.mjs'
 import { releaseVersion } from './version.mjs'
 import { openSemantic } from './semantic.mjs'
 import { continuationAddition } from './continuation.mjs'
+import { manuscriptExport } from './manuscript-export.mjs'
 
 const password = process.env.APP_PASSWORD_FILE
   ? readFileSync(process.env.APP_PASSWORD_FILE, 'utf8').replace(/\r?\n$/, '')
@@ -47,6 +48,7 @@ const files = new Map([
   ['/', ['index.html', 'text/html']],
   ['/app.mjs', ['app.mjs', 'text/javascript']],
   ['/manuscript.mjs', ['manuscript.mjs', 'text/javascript']],
+  ['/novel-goals.mjs', ['novel-goals.mjs', 'text/javascript']],
   ['/screenplay-ui.mjs', ['screenplay-ui.mjs', 'text/javascript']],
   ['/style.css', ['style.css', 'text/css']],
 ].map(([path, [file, type]]) => [path, [readFileSync(new URL(`./public/${file}`, import.meta.url)), type]]))
@@ -329,12 +331,6 @@ function runBatch(id) {
   }).finally(() => batchWorkers.delete(id))
 }
 
-function exportText(pid, allChapters) {
-  const project = storage.project(pid)
-  const chapters = storage.chapters(pid, allChapters)
-  return [`# ${project.title}`, ...chapters.map(row => `## 第 ${row.number} 章　${row.title}\n\n${row.body}`)].join('\n\n')
-}
-
 async function route(req, res) {
   headers(res)
   const url = new URL(req.url, 'http://localhost')
@@ -383,6 +379,10 @@ async function route(req, res) {
   const [, api, projects, pid, resource, id, action, extra] = path.split('/')
   if (api !== 'api' || projects !== 'projects' || !pid || extra !== undefined) throw new ApiError(404, '接口不存在')
   storage.project(pid)
+  if (resource === 'goals' && id === undefined) {
+    if (method === 'GET') return json(res, storage.projectGoals(pid))
+    if (method === 'PUT') return json(res, storage.saveProjectGoals(pid, await body(req, 8192)))
+  }
   const screenplay = storage.screenplay
   if (resource === 'adaptations') {
     if (method === 'GET' && action === undefined) {
@@ -505,6 +505,7 @@ async function route(req, res) {
   }
   if (resource === 'runs' && id) {
     if (method === 'GET' && action === undefined) return json(res, storage.runDetail(pid, id))
+    if (method === 'GET' && action === 'candidate') return json(res, storage.previewPassage(pid, id))
     if (method === 'POST' && action === 'continue') {
       if (!endpoint) throw new ApiError(422, '管理员尚未配置模型')
       const { job, messages, prefix } = storage.continueRun(pid, id, await body(req, 4096), prepareMessages)
@@ -525,8 +526,11 @@ async function route(req, res) {
     return json(res, storage.backup(pid))
   }
   if (method === 'GET' && id === undefined && resource === 'export') {
-    res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8', 'Content-Disposition': 'attachment; filename="novel.md"' })
-    return res.end(exportText(pid, url.searchParams.get('drafts') === '1'))
+    const { title } = storage.project(pid)
+    const chapters = storage.chapters(pid, url.searchParams.get('drafts') === '1')
+    const exported = manuscriptExport(title, chapters, url.searchParams.get('format') ?? 'md')
+    res.writeHead(200, { 'Content-Type': exported.type, 'Content-Disposition': exported.disposition })
+    return res.end(exported.data)
   }
   throw new ApiError(404, '接口不存在')
 }

@@ -171,6 +171,11 @@ test('novel workflow through HTTP across devices, generation, export and restart
       return
     }
     let output = '候选正文'
+    if (instruction.includes('生成小说设定与架构')) output = '## 架构候选\n海港与失踪水手'
+    if (instruction.includes('生成当前人物卡')) output = '## 人物候选\n希望找到水手'
+    if (instruction.includes('生成当前章的章节蓝图')) output = '## 蓝图候选\n调查失踪的船票'
+    if (instruction.includes('只返回替换片段')) output = '替换选中的文字。'
+    if (instruction.includes('只返回插入的新文字')) output = '续写的文字。'
     if (instruction.includes('生成写前细纲')) output = '1. 抵达灯塔并核对钥匙。'
     if (instruction.includes('返回修订后的完整正文') && lastPrompt.includes('逐段合并')) output = revisedProse
     if (instruction.includes('审查当前正文')) {
@@ -367,6 +372,28 @@ test('novel workflow through HTTP across devices, generation, export and restart
     assert.match((await request(base + '/export')).result, /候选正文/)
     assert.doesNotMatch((await request(base + '/export')).result, /电脑上的稿/)
     assert.match((await request(base + '/export?drafts=1')).result, /电脑上的稿/)
+    const txt = await request(base + '/export?format=txt&drafts=1')
+    assert.match(txt.result, /第 1 章[\s\S]*电脑上的稿/)
+    assert.doesNotMatch(txt.result, /^# /)
+    const zip = await fetch(server.base + base + '/export?format=zip', { headers: { Cookie: a } })
+    assert.equal(zip.status, 200)
+    assert.equal(zip.headers.get('content-type'), 'application/zip')
+    assert.match(zip.headers.get('content-disposition'), /filename="novel\.zip"; filename\*=UTF-8''/)
+    const bytes = Buffer.from(await zip.arrayBuffer())
+    const end = bytes.length - 22
+    assert.equal(bytes.readUInt32LE(end), 0x06054b50)
+    assert.equal(bytes.readUInt16LE(end + 10), 1)
+    const entry = bytes.readUInt32LE(end + 16)
+    assert.equal(bytes.readUInt32LE(entry), 0x02014b50)
+    assert.equal(bytes.readUInt16LE(entry + 8), 0x800)
+    assert.match(bytes.toString('utf8', entry + 46, end), /^00001-.*\.md$/)
+    const local = bytes.readUInt32LE(entry + 42)
+    assert.equal(bytes.readUInt32LE(local), 0x04034b50)
+    const chapterText = bytes.subarray(local + 30 + bytes.readUInt16LE(local + 26), entry)
+    assert.equal(crc32(chapterText), bytes.readUInt32LE(entry + 16))
+    assert.match(chapterText.toString(), /候选正文/)
+    assert.doesNotMatch(chapterText.toString(), /电脑上的稿/)
+    await request(base + '/export?format=html', { status: 400 })
     const next = await create({ kind: 'chapter', number: 2, title: '前往灯塔', body: '' })
     const nextDoc = docs + '/' + next.id
     const scope = { baseRev: 1, referenceIds: [chosen.id], referenceQuery: '灯塔建于' }
@@ -481,7 +508,7 @@ test('novel workflow through HTTP across devices, generation, export and restart
     const restoreDir = join(directory, 'recovered')
     const restoredDb = join(restoreDir, 'novels.sqlite')
     assert.equal((await restoreDatabase(createReadStream(snapshot), restoredDb)).projects, 3)
-    assert.equal(verifyDatabase(restoredDb).schema, 11)
+    assert.equal(verifyDatabase(restoredDb).schema, 12)
     await assert.rejects(restoreDatabase(createReadStream(snapshot), restoredDb), /目标已有数据库/)
     await stop(server)
     server = await launch(restoreDir, upstream.address().port)
@@ -698,6 +725,82 @@ test('novel workflow through HTTP across devices, generation, export and restart
     assert.equal(copied.scenes[0].sourceIds[0], copied.sources[0].id)
     assert.notEqual(copied.scenes[0].elements[1].characterId, castMember.id)
     assert.equal((await request(copyPath + '/episodes/' + copiedEpisode.id + '/history')).result.length, 6)
+
+    const planBase = (await request('/api/projects', { method: 'POST', status: 201, value: { title: '规划演练' } })).result
+    const projectPath = '/api/projects/' + planBase.id
+    const createPlanDoc = async value => (await request(projectPath + '/documents', { method: 'POST', status: 201, value })).result
+    const startFor = async (target, value) => {
+      const path = projectPath + '/documents/' + target.id
+      const input = { baseRev: target.rev, mutationId: randomUUID(), ...value }
+      const preview = (await request(path + '/context', { method: 'POST', value: input })).result
+      const job = (await request(path + '/runs', { method: 'POST', status: 202, value: input })).result
+      const jobPath = projectPath + '/runs/' + job.id
+      const done = await awaitRun(jobPath, row => row.status === 'done')
+      assert.equal(preview.messages.at(-1).content, lastPrompt)
+      assert.equal((await request(path)).result.body, target.body)
+      return { jobPath, done, prompt: lastPrompt }
+    }
+    const setting = await createPlanDoc({ kind: 'settings', title: '世界规则', body: '原有设定' })
+    const person = await createPlanDoc({ kind: 'character', title: '调查者', body: '原有人物卡' })
+    await createPlanDoc({ kind: 'blueprint', number: 1, title: '前章', body: '前章独有线索' })
+    const blueprint = await createPlanDoc({ kind: 'blueprint', number: 2, title: '第二章蓝图', body: '' })
+    for (const [target, text] of [[setting, '架构候选'], [person, '人物候选'], [blueprint, '蓝图候选']]) {
+      const result = await startFor(target, { kind: 'plan', guidance: '作者的规划要求' })
+      assert.match(result.done.output, new RegExp(text))
+      assert.match(result.prompt, /作者的规划要求/)
+      if (target === blueprint) assert.match(result.prompt, /前章独有线索/)
+      assert.equal((await request(result.jobPath + '/apply', { method: 'POST' })).result.body, result.done.output)
+    }
+    const latestBlueprint = (await request(projectPath + '/documents/' + blueprint.id)).result
+    const stalePlan = await startFor(latestBlueprint, { kind: 'plan' })
+    await request(projectPath + '/documents/' + setting.id, { method: 'PUT', cookie: b,
+      value: { title: setting.title, body: '改过世界规则', baseRev: 2, mutationId: randomUUID() } })
+    await request(stalePlan.jobPath + '/apply', { method: 'POST', status: 409 })
+    const goalsPath = projectPath + '/goals'
+    assert.deepEqual((await request(goalsPath)).result, { goals: {}, rev: 0 })
+    const goals = { genre: '历史悬疑', audience: '成年读者', language: '中文', chapters: 120, chapterWords: 2200 }
+    const firstGoals = { goals, baseRev: 0 }
+    await request(goalsPath, { method: 'PUT', status: 400, value: { ...firstGoals, goals: { chapters: 2.5 } } })
+    const savedGoals = (await request(goalsPath, { method: 'PUT', value: firstGoals })).result
+    assert.deepEqual(savedGoals, { goals, rev: 1 })
+    assert.deepEqual((await request(goalsPath, { method: 'PUT', value: firstGoals })).result, savedGoals)
+    await request(goalsPath, { method: 'PUT', cookie: b, status: 409, value: { ...firstGoals, goals: {} } })
+    const plannedWithGoals = await startFor(latestBlueprint, { kind: 'plan' })
+    assert.match(plannedWithGoals.prompt, /作品写作目标[\s\S]*目标总章数：120[\s\S]*目标单章字数：2200/)
+    await request(goalsPath, { method: 'PUT', cookie: b, value: { goals: { ...goals, chapters: 121 }, baseRev: 1 } })
+    await request(plannedWithGoals.jobPath + '/apply', { method: 'POST', status: 409 })
+    const goalBackup = (await request(projectPath + '/backup')).result
+    const copiedGoals = (await request('/api/import', { method: 'POST', value: goalBackup, status: 201 })).result
+    assert.deepEqual((await request('/api/projects/' + copiedGoals.id + '/goals')).result, { goals: { ...goals, chapters: 121 }, rev: 1 })
+    const prose = await createPlanDoc({ kind: 'chapter', number: 2, title: '正文选段', body: '同一句。\r\n同一句。\r\n结尾。' })
+    const prosePath = projectPath + '/documents/' + prose.id
+    await request(prosePath + '/context', { method: 'POST', status: 422, value: { kind: 'plan', baseRev: 1 } })
+    await request(prosePath + '/context', { method: 'POST', status: 409, value: { kind: 'passage', baseRev: 1,
+      passage: { mode: 'polish', start: 5, end: 9, quote: '错误的锚点' } } })
+    const passageSelection = { start: 5, end: 9, quote: '同一句。' }
+    const edited = await startFor(prose, { kind: 'passage', passage: { ...passageSelection, mode: 'polish' } })
+    const editedText = '同一句。\r\n替换选中的文字。\r\n结尾。'
+    assert.deepEqual((await request(edited.jobPath + '/candidate')).result, { current: prose.body, candidate: editedText })
+    const newProse = (await request(edited.jobPath + '/apply', { method: 'POST' })).result
+    assert.equal(newProse.body, editedText)
+    const insertion = await startFor(newProse, { kind: 'passage', passage: { mode: 'continue', start: 0, end: 4, quote: '同一句。' } })
+    assert.equal((await request(insertion.jobPath + '/candidate')).result.candidate, '同一句。\n\n续写的文字。\r\n替换选中的文字。\r\n结尾。')
+    await request(prosePath, { method: 'PUT', cookie: b, value: { title: prose.title, body: '同一句。\r\n别处的新稿', baseRev: newProse.rev, mutationId: randomUUID() } })
+    await request(insertion.jobPath + '/apply', { method: 'POST', status: 409 })
+    const batchPlanValue = { mutationId: randomUUID(), blueprintRange: { start: 2, end: 5 }, guidance: '保持情节连续' }
+    await request(projectPath + '/batches', { method: 'POST', status: 400,
+      value: { ...batchPlanValue, blueprintRange: { start: 2, end: 22 } } })
+    const planBatch = (await request(projectPath + '/batches', { method: 'POST', status: 202, value: batchPlanValue })).result
+    assert.equal((await request(projectPath + '/batches', { method: 'POST', status: 202, value: batchPlanValue })).result.id, planBatch.id)
+    const completedPlans = await awaitBatch(projectPath + '/batches/' + planBatch.id, row => row.status === 'done')
+    assert.equal(completedPlans.operation, 'plan')
+    assert.deepEqual(completedPlans.items.map(row => [row.number, row.status]), [[2, 'skipped'], [3, 'done'], [4, 'done'], [5, 'done']])
+    assert.match(lastPrompt, /上一章待核对的蓝图候选/)
+    assert.match(lastPrompt, /前章蓝图 · 第 2 章/)
+    for (const item of completedPlans.items.filter(item => item.run_id)) {
+      assert.equal((await request(projectPath + '/documents/' + item.id)).result.body, '')
+      assert.match((await request(projectPath + '/runs/' + item.run_id + '/apply', { method: 'POST' })).result.body, /蓝图候选/)
+    }
   } finally {
     await stop(server)
     upstream.closeAllConnections()
@@ -714,6 +817,7 @@ test('opening an existing Web database migrates v1 and keeps chapter data', asyn
     const p = store.createProject('旧版本作品')
     const doc = store.addDocument(p.id, { kind: 'chapter', number: 1, title: '原章', body: '原文' })
     store.db.exec(`
+      DROP TABLE project_goals;
       DROP TABLE screenplay_receipts; DROP TABLE screenplay_history; DROP TABLE screenplay_episodes; DROP TABLE screenplay_adaptations;
       DROP TABLE writing_skill_profiles; DROP TABLE writing_skills;
       DROP TABLE writing_batch_items; DROP TABLE writing_batches;
@@ -727,7 +831,7 @@ test('opening an existing Web database migrates v1 and keeps chapter data', asyn
     store = undefined
     store = openStore(directory)
     assert.equal(store.document(p.id, doc.id).body, '原文')
-    assert.equal(store.get('PRAGMA user_version').user_version, 11)
+    assert.equal(store.get('PRAGMA user_version').user_version, 12)
     assert.equal(store.addReference(p.id, { title: '资料', body: '参考文字' }).body, '参考文字')
   } finally { store?.db.close(); await rm(directory, { recursive: true, force: true }) }
 })
@@ -753,8 +857,8 @@ test('desktop database migration preserves reopened text and authoritative final
     const db = new DatabaseSync(source)
     db.exec(`
       PRAGMA user_version=9;
-      CREATE TABLE project_core (id TEXT,project_name TEXT, worldbuilding TEXT);
-      INSERT INTO project_core VALUES ('main','海边','风暴常见');
+      CREATE TABLE project_core (id TEXT,project_name TEXT,worldbuilding TEXT,genre TEXT,total_chapters INTEGER);
+      INSERT INTO project_core VALUES ('main','海边','风暴常见','冒险',32);
       CREATE TABLE characters(name TEXT, appearance TEXT);
       INSERT INTO characters VALUES ('阿雨','红伞');
       CREATE TABLE blueprints(chapter_number INTEGER, title TEXT, purpose TEXT);
@@ -781,6 +885,7 @@ test('desktop database migration preserves reopened text and authoritative final
     const payload = desktopCopy(source)
     assert.deepEqual(await readFile(source), before)
     assert.equal(payload.documents.length, 4)
+    assert.deepEqual(payload.goals, { genre: '冒险', chapters: 32 })
     const chapter = payload.documents.find(doc => doc.kind === 'chapter')
     assert.equal(chapter.body, '重开的正文')
     assert.equal(chapter.rev, 5)
@@ -788,6 +893,7 @@ test('desktop database migration preserves reopened text and authoritative final
     const store = openStore(join(directory, 'web'))
     try {
       const p = store.importBackup(payload)
+      assert.deepEqual(store.projectGoals(p.id), { goals: payload.goals, rev: 1 })
       assert.equal(store.chapters(p.id, false)[0].body, '旧定稿')
       assert.equal(store.chapters(p.id, true)[0].body, '重开的正文')
     } finally { store.db.close() }

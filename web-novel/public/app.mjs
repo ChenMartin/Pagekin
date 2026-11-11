@@ -1,10 +1,12 @@
 import { manuscriptBytes, manuscriptRequestBytes, splitManuscript } from './manuscript.mjs'
 import { screenplayWorkspace } from './screenplay-ui.mjs'
+import { novelGoals } from './novel-goals.mjs'
 
 const $ = id => document.getElementById(id)
 const names = { settings: '设定与架构', character: '人物', blueprint: '章节蓝图', chapter: '正文', reference: '参考资料' }
 const stages = ['settings', 'character', 'blueprint', 'chapter']
-const runNames = { draft: '写稿', outline: '写前细纲', review: '审稿', revise: '修稿' }
+const chapterRuns = { draft: '写稿', outline: '写前细纲', review: '审稿', revise: '修稿' }
+const runNames = { ...chapterRuns, plan: 'AI 规划', passage: '选段 AI' }
 const runStates = { running: '生成中', done: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断' }
 const batchStates = { running: '进行中', paused: '已暂停', done: '已结束', cancelled: '已取消' }
 const threadKinds = { plot: '剧情线索', foreshadow: '伏笔' }
@@ -146,7 +148,12 @@ function paint(state = editor) {
   $('reload-remote').disabled = Boolean(state.saving || state.mutating || composing)
   $('status').hidden = state.doc.kind !== 'chapter'
   $('status').textContent = locked ? '重新打开定稿' : '定稿'
-  $('ai').hidden = state.doc.kind !== 'chapter'
+  const planning = state.doc.kind !== 'chapter'
+  $('ai-passage').hidden = planning || !model || locked
+  $('ai-passage').disabled = state.job?.status === 'running'
+  $('ai').hidden = false
+  $('ai-heading').textContent = planning ? 'AI ' + names[state.doc.kind] : 'AI 细纲、写稿、审稿与修稿'
+  $('outline-controls').hidden = planning
   $('selected-outline').textContent = !state.outline ? '可先生成写前细纲，确认后用于写稿。'
     : state.outline.baseRev !== state.doc.rev ? '正文已更新，请重新生成细纲或取消引用。' : '已选细纲，下一次写稿将引用。'
   $('clear-outline').hidden = !state.outline
@@ -155,7 +162,11 @@ function paint(state = editor) {
     : '可从参考资料库中选择本次生成所需的资料。'
   $('clear-references').hidden = state.references.size === 0
   $('reference-query-label').hidden = state.references.size === state.referenceSpans.size
-  for (const btn of document.querySelectorAll('[data-run]')) btn.disabled = !model || locked || state.job?.status === 'running'
+  for (const btn of document.querySelectorAll('[data-run]')) {
+    btn.hidden = planning !== (btn.dataset.run === 'plan')
+    btn.disabled = !model || locked || state.job?.status === 'running'
+    if (btn.dataset.run === 'plan') btn.textContent = '生成' + names[state.doc.kind] + '候选'
+  }
   $('preview-context').disabled = locked
   if (state.job?.reviewReport) {
     const current = currentReview(state)
@@ -403,6 +414,7 @@ function renderCatalog(selected = editor?.doc.id ?? '') {
     button.setAttribute('aria-pressed', String(button.dataset.stage === stage))
   }
   $('new-document').textContent = '新建' + names[stage]
+  $('batch-blueprints').hidden = stage !== 'blueprint' || !model
   $('catalog-label').textContent = '打开' + names[stage]
   $('chapter-filter-label').hidden = stage !== 'chapter'
   choices($('documents'), filtered.map(row => [row.id, numberedTitle(row)]), '选择文档', selected)
@@ -516,7 +528,7 @@ async function openDocument(id) {
   if (request !== navigation) return
   const state = showEditor(doc)
   await loadRecovery(state)
-  if (doc.kind === 'chapter' && state === editor) await findActive(state)
+  if (state === editor) await findActive(state)
 }
 
 async function loadRecovery(state) {
@@ -542,9 +554,7 @@ async function selectProject(id, selected, initialStage = 'chapter') {
   $('projects').value = id
   $('project-tools').hidden = !id
   $('chapter-filter').value = ''
-  for (const [element, suffix] of [['export', 'export'], ['export-all', 'export?drafts=1'], ['backup', 'backup']]) {
-    $(element).href = `/api/projects/${id}/${suffix}`
-  }
+  $('backup').href = `/api/projects/${id}/backup`
   const doc = rows.find(row => row.id === selected)
   stage = doc?.kind ?? initialStage
   clearEditor()
@@ -597,6 +607,63 @@ function actionButton(label, action) {
   return button
 }
 
+function exportManuscript() {
+  if (!project) return
+  const path = `/api/projects/${project}/export`
+  const [scopeLabel, scope] = selectField('正文范围', {
+    final: '只导出最近定稿', all: '导出全部章节的 NAS 当前版本（含草稿）',
+  }, 'final')
+  const [formatLabel, format] = selectField('文件格式', {
+    md: '合并 Markdown', txt: '合并 TXT（UTF-8）', zip: '分章 Markdown（ZIP）',
+  }, 'md')
+  const download = document.createElement('a')
+  download.textContent = '下载正文'
+  const update = () => {
+    const query = new URLSearchParams({ format: format.value })
+    if (scope.value === 'all') query.set('drafts', '1')
+    download.href = path + '?' + query
+  }
+  scope.addEventListener('change', update)
+  format.addEventListener('change', update)
+  update()
+  dialog('导出正文', [scopeLabel, formatLabel, download])
+}
+
+async function editProjectGoals() {
+  const pid = project
+  const path = `/projects/${pid}/goals`
+  let current = await api(path)
+  if (pid !== project) return
+  const fields = novelGoals.map(({ key, label, max, maxLength }) => field(label, {
+    name: key, required: false, value: current.goals[key] ?? '',
+    ...(max ? { type: 'number', min: 1, max, step: 1 } : { maxLength }),
+  }))
+  const feedback = document.createElement('div')
+  feedback.setAttribute('role', 'status')
+  const help = document.createElement('p')
+  help.textContent = '所填目标会随本作品的 AI 任务发送。各项均可留空。'
+  dialog('写作目标', [help, ...fields.map(([label]) => label), feedback], async () => {
+    if (pid !== project) return
+    const goals = Object.fromEntries(fields.map(([, input]) => [
+      input.name, input.type === 'number' ? (input.value === '' ? null : input.valueAsNumber) : input.value,
+    ]))
+    try {
+      await api(path, 'PUT', { goals, baseRev: current.rev })
+      if (feedback.isConnected && $('dialog').open) $('dialog').close()
+    } catch (error) {
+      feedback.textContent = error.message
+      if (error.status !== 409 || !error.current) return
+      const comparison = document.createElement('p')
+      comparison.textContent = novelGoals.map(({ key, label }) => label + ' ' + (error.current.goals[key] ?? '未填写')).join(' · ')
+      feedback.append(comparison, actionButton('采用 NAS 版本并继续编辑', () => {
+        current = error.current
+        for (const [, input] of fields) input.value = current.goals[input.name] ?? ''
+        feedback.replaceChildren()
+      }))
+    }
+  }, '保存写作目标')
+}
+
 function searchProject() {
   const pid = project
   const [label, query] = field('标题或正文关键词', { type: 'search', maxLength: 100 })
@@ -627,7 +694,7 @@ async function viewReference(pid, id, span) {
   const body = document.createElement('pre')
   body.textContent = span ? material.body.slice(span.start, span.end) : material.body
   const state = editor
-  const canSelect = model && state?.doc.kind === 'chapter' && state.doc.status !== 'final'
+  const canSelect = model && state && state.doc.status !== 'final'
   dialog(material.title, [body], canSelect ? () => {
     if (state !== editor) throw new Error('当前章节已切换')
     if (state.references.size >= 5 && !state.references.has(id)) throw new Error('最多可选择五份参考资料')
@@ -1076,8 +1143,9 @@ function renderJob(state) {
     job.continued_from && '分段续跑', job.applied_rev !== null && '已应用', job.error].filter(Boolean).join(' · ') : ''
   $('cancel-run').hidden = job?.status !== 'running'
   $('continue-run').hidden = !model || !job?.canContinue
-  $('apply-run').hidden = !job || !['draft', 'revise'].includes(job.kind) ||
-    job.status === 'running' || !job.source_hash || !job.output?.trim() || job.applied_rev !== null
+  $('apply-run').hidden = !job || !['draft', 'revise', 'plan', 'passage'].includes(job.kind) ||
+    job.status === 'running' || (['plan', 'passage'].includes(job.kind) && job.status !== 'done') || !job.source_hash ||
+    !job.output?.trim() || job.applied_rev !== null
   $('use-outline').hidden = !model || job?.kind !== 'outline' || job.status !== 'done' || !job.source_hash ||
     job.base_rev !== state.doc.rev || state.doc.status === 'final'
   $('use-review').hidden = job?.kind !== 'review' || job.status === 'running' || !job.output || Boolean(job.reviewReport)
@@ -1099,21 +1167,25 @@ async function findActive(state) {
   if (active && editor === state) await viewRun(state, active.id)
 }
 
-async function startRun(kind) {
-  const state = editor
-  await clean(state)
-  const guidance = $('guidance').value
+function writingRequest(state, kind, extra) {
   const referenceIds = [...state.references.keys()]
   const referenceSpans = [...state.referenceSpans.values()]
   const referenceQuery = referenceIds.length > referenceSpans.length ? $('reference-query').value : ''
   const outlineId = kind === 'draft' ? state.outline?.id ?? null : null
-  const previous = state.jobRequest
-  if (previous && (previous.kind !== kind || previous.baseRev !== state.doc.rev || previous.guidance !== guidance ||
-      JSON.stringify(previous.referenceIds) !== JSON.stringify(referenceIds) || previous.referenceQuery !== referenceQuery ||
-      JSON.stringify(previous.referenceSpans) !== JSON.stringify(referenceSpans) || previous.outlineId !== outlineId)) {
-    throw new Error('上次任务提交状态未知。请用相同操作重试，或查看任务历史。')
+  return { kind, baseRev: state.doc.rev, guidance: $('guidance').value, referenceIds, referenceQuery, referenceSpans, outlineId, ...extra }
+}
+
+async function startRun(kind, extra) {
+  const state = editor
+  await clean(state)
+  const request = writingRequest(state, kind, extra)
+  if (state.jobRequest) {
+    const { mutationId, ...previous } = state.jobRequest
+    if (JSON.stringify(previous) !== JSON.stringify(request)) {
+      throw new Error('上次任务提交状态未知。请用相同操作重试，或查看任务历史。')
+    }
   }
-  state.jobRequest ??= { kind, baseRev: state.doc.rev, guidance, referenceIds, referenceQuery, referenceSpans, outlineId, mutationId: uuid() }
+  state.jobRequest ??= { ...request, mutationId: uuid() }
   try {
     state.jobView = (state.jobView ?? 0) + 1
     state.job = await api(docPath(state) + '/runs', 'POST', state.jobRequest)
@@ -1125,37 +1197,69 @@ async function startRun(kind) {
   }
 }
 
+async function showContext(state, result, kind, extra) {
+  result.textContent = ''
+  try {
+    await clean(state)
+    const data = await api(docPath(state) + '/context', 'POST', writingRequest(state, kind, extra))
+    if (!result.isConnected || state !== editor) return
+    const size = document.createElement('p')
+    const length = data.messages.reduce((total, message) => total + message.content.length, 0)
+    size.textContent = length.toLocaleString() + ' / ' + data.limit.toLocaleString() + ' 字符。预览不会调用模型。'
+    result.append(size)
+    for (const { role, content } of data.messages) {
+      const heading = document.createElement('h3')
+      const text = document.createElement('pre')
+      heading.textContent = role === 'system' ? '写作指令' : '正文与资料'
+      text.textContent = content
+      result.append(heading, text)
+    }
+  } catch (error) { result.textContent = error.message }
+}
+
 function previewContext() {
   const state = editor
   const picker = document.createElement('select')
   const label = document.createElement('label')
   label.append('任务类型', picker)
-  for (const [kind, title] of Object.entries(runNames)) picker.append(new Option(title, kind))
+  const options = state.doc.kind === 'chapter' ? chapterRuns : { plan: '生成' + names[state.doc.kind] + '候选' }
+  for (const [kind, title] of Object.entries(options)) picker.append(new Option(title, kind))
   const result = document.createElement('div')
-  dialog('预览模型输入', [label, result], async () => {
-    result.textContent = ''
+  dialog('预览模型输入', [label, result], () => showContext(state, result, picker.value), '生成预览')
+}
+
+function editPassage() {
+  const state = editor
+  const input = bodyControl()
+  const start = input.selectionStart
+  const end = input.selectionEnd
+  const quote = input.value.slice(start, end)
+  if (!quote.trim() || quote.length > 6000) throw new Error('请先选中 1–6000 字符的正文')
+  const label = document.createElement('label')
+  const mode = document.createElement('select')
+  mode.append(new Option('在选段后续写', 'continue'), new Option('润色', 'polish'),
+    new Option('扩写', 'expand'), new Option('改成对话', 'dialogue'))
+  label.append('选段操作', mode)
+  const excerpt = document.createElement('pre')
+  excerpt.textContent = quote
+  const guidanceLabel = document.createElement('label')
+  const guidance = document.createElement('textarea')
+  guidance.rows = 3
+  guidance.maxLength = 6000
+  guidanceLabel.append('本次要求', guidance)
+  const result = document.createElement('div')
+  const options = () => ({ guidance: guidance.value, passage: { mode: mode.value, start, end, quote } })
+  const preview = actionButton('预览发送内容', () => showContext(state, result, 'passage', options()))
+  dialog('选段 AI', [label, excerpt, guidanceLabel, preview, result], async () => {
+    if (state !== editor) return
     try {
-      await clean(state)
-      const data = await api(docPath(state) + '/context', 'POST', {
-        kind: picker.value, baseRev: state.doc.rev, guidance: $('guidance').value, referenceIds: [...state.references.keys()],
-        referenceQuery: state.references.size > state.referenceSpans.size ? $('reference-query').value : '',
-        referenceSpans: [...state.referenceSpans.values()],
-        outlineId: picker.value === 'draft' ? state.outline?.id ?? null : null,
-      })
-      if (!result.isConnected || state !== editor) return
-      const size = document.createElement('p')
-      const length = data.messages.reduce((total, message) => total + message.content.length, 0)
-      size.textContent = length.toLocaleString() + ' / ' + data.limit.toLocaleString() + ' 字符。预览不会调用模型。'
-      result.append(size)
-      for (const { role, content } of data.messages) {
-        const heading = document.createElement('h3')
-        const text = document.createElement('pre')
-        heading.textContent = role === 'system' ? '写作指令' : '正文与资料'
-        text.textContent = content
-        result.append(heading, text)
+      await startRun('passage', options())
+      if (editor === state && result.isConnected) {
+        $('ai').open = true
+        $('dialog').close()
       }
     } catch (error) { result.textContent = error.message }
-  }, '生成预览')
+  }, '生成选段候选')
 }
 
 async function listRuns() {
@@ -1205,7 +1309,7 @@ function showProjectRuns() {
   const visible = () => panel.isConnected && $('dialog').open && project === pid
   const active = actionButton('进行中', () => select('active'))
   const history = actionButton('历史', () => select('history'))
-  controls.append(active, history, actionButton('批量写作记录', () => listBatches(pid)))
+  controls.append(active, history, actionButton('批量任务记录', () => listBatches(pid)))
   panel.append(controls, message, list)
   dialog('运行中心', [panel])
   select(scope)
@@ -1296,12 +1400,38 @@ async function listBatches(pid) {
   const batches = await api(`/projects/${pid}/batches`)
   if (pid !== project) return
   const rows = batches.map(batch => actionButton(
-    `${batchStates[batch.status]} · 已生成 ${batch.completed} / ${batch.total} 章 · ${new Date(batch.created).toLocaleString()}`, async () => {
+    `${batch.operation === 'plan' ? '蓝图' : '正文'} · ${batchStates[batch.status]} · 已生成 ${batch.completed} / ${batch.total} 章 · ${new Date(batch.created).toLocaleString()}`, async () => {
       const current = await api(`/projects/${pid}/batches/${batch.id}`)
       if (pid === project) showBatch(pid, current)
     }))
-  dialog('批量写作', [...(model ? [actionButton('新建写作批次', () => newBatch(pid))] : []),
-    ...(rows.length ? rows : [document.createTextNode('当前没有批量写作记录。')])])
+  dialog('批量任务', [...(model ? [actionButton('新建写作批次', () => newBatch(pid)),
+    actionButton('批量生成蓝图', () => newBlueprintBatch(pid))] : []),
+    ...(rows.length ? rows : [document.createTextNode('当前没有批量任务记录。')])])
+}
+
+function newBlueprintBatch(pid) {
+  const next = Math.min(99999, Math.max(0, ...documents.filter(row => row.kind === 'blueprint').map(row => row.number)) + 1)
+  const [startLabel, start] = field('起始章号', { type: 'number', min: 1, max: 99999, value: next })
+  const [endLabel, end] = field('结束章号', { type: 'number', min: 1, max: 99999, value: next })
+  const label = document.createElement('label')
+  const guidance = document.createElement('textarea')
+  guidance.maxLength = 6000
+  guidance.rows = 3
+  label.append('本批规划要求', guidance)
+  const help = document.createElement('p')
+  help.textContent = '每批最多 20 章。缺失的蓝图会建立空白文档，已有内容的蓝图会跳过。'
+  const error = document.createElement('p')
+  error.setAttribute('role', 'alert')
+  const mutationId = uuid()
+  dialog('批量生成蓝图', [help, startLabel, endLabel, label, error], async () => {
+    try {
+      if (editor) await clean(editor)
+      if (project !== pid || !error.isConnected) return
+      const batch = await api(`/projects/${pid}/batches`, 'POST', { mutationId, guidance: guidance.value,
+        blueprintRange: { start: start.valueAsNumber, end: end.valueAsNumber } })
+      if (project === pid && error.isConnected && $('dialog').open) showBatch(pid, batch)
+    } catch (failure) { error.textContent = failure.message }
+  }, '开始生成蓝图候选')
 }
 
 async function newBatch(pid) {
@@ -1424,7 +1554,7 @@ function showBatch(pid, first) {
     schedule()
   }
 
-  dialog('批量写作进度', [panel])
+  dialog(first.operation === 'plan' ? '批量蓝图进度' : '批量写作进度', [panel])
   render(first)
 }
 
@@ -1433,17 +1563,17 @@ async function showWritingSkills(pid) {
   const { skills, bindings, rev } = await api(path)
   if (pid !== project) return
   const help = document.createElement('p')
-  help.textContent = '为细纲、写稿、审稿和修稿分别选择提示词。模型输入预览会显示实际使用的内容。'
+  help.textContent = '可分别设置规划与细纲、写稿、审稿和修稿的提示词。实际内容可在模型输入预览中查看。'
   const error = document.createElement('p')
   error.setAttribute('role', 'alert')
   const selections = new Map()
-  const labels = Object.entries(runNames).map(([kind, title]) => {
+  const labels = Object.entries(chapterRuns).map(([kind, title]) => {
     const label = document.createElement('label')
     const select = document.createElement('select')
     choices(select, skills.map(skill => [skill.id, skill.title]), '无 Skill', bindings[kind] ?? '')
     select.dataset.skillStage = kind
     selections.set(kind, select)
-    label.append(title, select)
+    label.append(kind === 'outline' ? '规划与细纲' : title, select)
     return label
   })
   const library = document.createElement('div')
@@ -1530,7 +1660,9 @@ click('logout', async () => { await leave(); await api('/session', 'DELETE'); lo
 click('library-menu', showLibrary)
 click('workspace-settings', showSettings)
 click('workbench-overview', () => showOverview())
+click('project-goals', editProjectGoals)
 click('project-runs', showProjectRuns)
+click('export', exportManuscript)
 click('focus-writing', () => setFocusWriting(!document.body.classList.contains('focus-writing')))
 for (const button of $('stage-nav').querySelectorAll('[data-stage]')) {
   button.addEventListener('click', () => {
@@ -1541,6 +1673,7 @@ for (const button of $('stage-nav').querySelectorAll('[data-stage]')) {
   })
 }
 click('batch-writing', () => listBatches(project))
+click('batch-blueprints', () => newBlueprintBatch(project))
 click('writing-skills', () => showWritingSkills(project))
 const screenplay = screenplayWorkspace({ api, dialog, field, actionButton, localTransaction, uuid, isCurrent: pid => project === pid })
 click('screenplay-workspace', () => screenplay.list(project))
@@ -1694,7 +1827,7 @@ click('reload-remote', async () => {
   $('reference-query').value = referenceQuery
   paint(next)
   await loadRecovery(next)
-  if (model && next.doc.kind === 'chapter' && next === editor) await findActive(next)
+  if (next === editor) await findActive(next)
 })
 click('history', showHistory)
 click('status', async () => {
@@ -1713,6 +1846,7 @@ for (const button of document.querySelectorAll('[data-run]')) {
 }
 click('runs', listRuns)
 click('preview-context', previewContext)
+click('ai-passage', editPassage)
 click('use-outline', () => {
   const state = editor
   const job = state?.job
@@ -1864,13 +1998,22 @@ click('apply-run', async () => {
   const state = editor
   const job = state.job
   const path = `/projects/${state.doc.project_id}/runs/${job.id}`
+  if (job.kind === 'passage') {
+    await clean(state)
+    const { current, candidate } = await api(path + '/candidate')
+    if (editor === state && state.job?.id === job.id) {
+      dialog('比较并确认选段候选', [compare('当前正文', current, '应用后正文', candidate)],
+        () => applyCandidate(state, job, path + '/apply'), '应用选段改动')
+    }
+    return
+  }
   if (job.kind === 'revise' && job.status === 'done') {
     await clean(state)
     const plan = await api(path + '/merge')
     if (editor === state && state.job?.id === job.id) chooseRevision(state, job, path + '/merge', plan)
     return
   }
-  dialog('比较并确认 AI 候选', [compare('当前正文', state.body, '候选正文', job.output)],
+  dialog('比较并确认 AI 候选', [compare('当前' + names[state.doc.kind], state.body, '候选内容', job.output)],
     () => applyCandidate(state, job, path + '/apply'), '应用为新版本')
 })
 click('close-dialog', async () => { if (await screenplay.canClose()) $('dialog').close() })
