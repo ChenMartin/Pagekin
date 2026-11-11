@@ -2,7 +2,8 @@ import { manuscriptBytes, manuscriptRequestBytes, splitManuscript } from './manu
 import { screenplayWorkspace } from './screenplay-ui.mjs'
 
 const $ = id => document.getElementById(id)
-const names = { settings: '设定与架构', character: '人物', blueprint: '蓝图', chapter: '正文', reference: '参考资料' }
+const names = { settings: '设定与架构', character: '人物', blueprint: '章节蓝图', chapter: '正文', reference: '参考资料' }
+const stages = ['settings', 'character', 'blueprint', 'chapter']
 const runNames = { draft: '写稿', outline: '写前细纲', review: '审稿', revise: '修稿' }
 const runStates = { running: '生成中', done: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断' }
 const batchStates = { running: '进行中', paused: '已暂停', done: '已结束', cancelled: '已取消' }
@@ -11,7 +12,10 @@ const threadStates = { planned: '计划埋设', open: '待回收', resolved: '�
 let project = ''
 let editor
 let documents = []
+let stage = 'chapter'
+const stageDocuments = new Map()
 let model = false
+let semanticEnabled = false
 let navigation = 0
 let dialogAction
 let draftDb
@@ -133,13 +137,16 @@ function paint(state = editor) {
   $('previous-chapter').hidden = $('next-chapter').hidden = state.doc.kind !== 'chapter'
   $('previous-chapter').disabled = !adjacentChapter(state, -1)
   $('next-chapter').disabled = !adjacentChapter(state, 1)
+  const pairedKind = { chapter: 'blueprint', blueprint: 'chapter' }[state.doc.kind]
+  $('paired-document').hidden = !pairedKind
+  if (pairedKind) $('paired-document').textContent = '本章' + (pairedKind === 'blueprint' ? '蓝图' : '正文')
   $('recover').hidden = !state.recovered.length
   $('conflict').hidden = !state.conflict
   $('reload-remote').hidden = state.remoteRev <= state.doc.rev || Boolean(state.conflict)
   $('reload-remote').disabled = Boolean(state.saving || state.mutating || composing)
   $('status').hidden = state.doc.kind !== 'chapter'
   $('status').textContent = locked ? '重新打开定稿' : '定稿'
-  $('ai').hidden = state.doc.kind !== 'chapter' || !model
+  $('ai').hidden = state.doc.kind !== 'chapter'
   $('selected-outline').textContent = !state.outline ? '可先生成写前细纲，确认后用于写稿。'
     : state.outline.baseRev !== state.doc.rev ? '正文已更新，请重新生成细纲或取消引用。' : '已选细纲，下一次写稿将引用。'
   $('clear-outline').hidden = !state.outline
@@ -148,7 +155,7 @@ function paint(state = editor) {
     : '可从参考资料库中选择本次生成所需的资料。'
   $('clear-references').hidden = state.references.size === 0
   $('reference-query-label').hidden = state.references.size === state.referenceSpans.size
-  for (const btn of document.querySelectorAll('[data-run]')) btn.disabled = locked || state.job?.status === 'running'
+  for (const btn of document.querySelectorAll('[data-run]')) btn.disabled = !model || locked || state.job?.status === 'running'
   $('preview-context').disabled = locked
   if (state.job?.reviewReport) {
     const current = currentReview(state)
@@ -375,7 +382,7 @@ async function leave() {
 }
 
 function remember() {
-  try { sessionStorage.setItem('pagekin-location', JSON.stringify([project, editor?.doc.id, $('kind').value])) }
+  try { sessionStorage.setItem('pagekin-location', JSON.stringify([project, editor?.doc.id, stage])) }
   catch { /* Browser storage can be unavailable. */ }
 }
 
@@ -388,12 +395,42 @@ function choices(element, rows, label, selected = '') {
   element.value = selected
 }
 
-async function refreshDocuments(selected = '') {
+function renderCatalog(selected = editor?.doc.id ?? '') {
+  const chapterStatus = $('chapter-filter').value
+  const filtered = documents.filter(row => row.kind === stage &&
+    (stage !== 'chapter' || !chapterStatus || row.status === chapterStatus))
+  for (const button of $('stage-nav').querySelectorAll('[data-stage]')) {
+    button.setAttribute('aria-pressed', String(button.dataset.stage === stage))
+  }
+  $('new-document').textContent = '新建' + names[stage]
+  $('catalog-label').textContent = '打开' + names[stage]
+  $('chapter-filter-label').hidden = stage !== 'chapter'
+  choices($('documents'), filtered.map(row => [row.id, numberedTitle(row)]), '选择文档', selected)
+
+  if ($('empty').hidden) return
+  $('overview-title').textContent = project ? $('projects').selectedOptions[0]?.textContent || '作品概览' : '书房'
+  const counts = stages.map(kind => documents.filter(row => row.kind === kind).length)
+  const finalized = documents.filter(row => row.kind === 'chapter' && row.status === 'final').length
+  $('overview-summary').textContent = project
+    ? `设定与架构 ${counts[0]} 份 · 人物 ${counts[1]} 人 · 蓝图 ${counts[2]} 章 · 正文 ${counts[3]} 章（${finalized} 章已定稿）`
+    : '选择一部作品，或新建作品开始写作。'
+  const list = $('overview-documents')
+  list.replaceChildren()
+  if (!project) return
+  const title = document.createElement('h2')
+  title.textContent = names[stage]
+  list.append(title)
+  if (!filtered.length) list.append(document.createTextNode('此阶段没有符合条件的文档。'))
+  const latest = filtered.slice().sort((a, b) => b.updated.localeCompare(a.updated)).slice(0, 8)
+  for (const row of latest) list.append(actionButton(numberedTitle(row), () => openDocument(row.id)))
+}
+
+async function refreshDocuments(selected) {
   const pid = project
   const rows = pid ? await api(`/projects/${pid}/documents`) : []
   if (pid !== project) return
   documents = rows
-  choices($('documents'), rows.filter(row => row.kind === $('kind').value).map(row => [row.id, numberedTitle(row)]), '选择文档', selected)
+  renderCatalog(selected ?? editor?.doc.id)
   observeRevision(editor, rows.find(row => row.id === editor?.doc.id)?.rev)
 }
 
@@ -408,7 +445,7 @@ function syncCatalog() {
   if (!pid) return
   clearTimeout(syncTimer)
   syncTimer = setTimeout(() => {
-    if (project === pid) void refreshDocuments($('documents').value).catch(() => {})
+    if (project === pid) void refreshDocuments().catch(() => {})
   }, 120)
 }
 
@@ -432,6 +469,9 @@ function showEditor(doc) {
   $('find-query').value = ''
   $('replace-query').value = ''
   $('find-result').textContent = ''
+  stage = doc.kind
+  stageDocuments.set(stage, doc.id)
+  if (stage === 'chapter' && $('chapter-filter').value && $('chapter-filter').value !== doc.status) $('chapter-filter').value = ''
   editor = {
     doc, title: doc.title, body: doc.body, key: uuid(), edit: 0, acked: 0,
     pending: null, recovered: [], job: null, jobRequest: null,
@@ -446,6 +486,7 @@ function showEditor(doc) {
   $('reference-query').value = ''
   $('ai').open = false
   renderJob(editor)
+  renderCatalog(doc.id)
   paint()
   remember()
   return editor
@@ -458,6 +499,8 @@ function clearEditor() {
   composing = false
   $('editor').hidden = true
   $('empty').hidden = false
+  setFocusWriting(false)
+  renderCatalog()
   remember()
 }
 
@@ -472,11 +515,8 @@ async function openDocument(id) {
   await leave()
   if (request !== navigation) return
   const state = showEditor(doc)
-  $('kind').value = doc.kind
-  choices($('documents'), documents.filter(row => row.kind === doc.kind).map(row => [row.id, numberedTitle(row)]), '选择文档', doc.id)
-  remember()
   await loadRecovery(state)
-  if (model && doc.kind === 'chapter' && state === editor) await findActive(state)
+  if (doc.kind === 'chapter' && state === editor) await findActive(state)
 }
 
 async function loadRecovery(state) {
@@ -487,7 +527,7 @@ async function loadRecovery(state) {
   paint(state)
 }
 
-async function selectProject(id, selected) {
+async function selectProject(id, selected, initialStage = 'chapter') {
   const request = ++navigation
   await leave()
   if (request !== navigation) return
@@ -496,24 +536,25 @@ async function selectProject(id, selected) {
   await leave()
   if (request !== navigation) return
   project = id
+  stageDocuments.clear()
   subscribeProject(id)
   documents = rows
   $('projects').value = id
   $('project-tools').hidden = !id
+  $('chapter-filter').value = ''
   for (const [element, suffix] of [['export', 'export'], ['export-all', 'export?drafts=1'], ['backup', 'backup']]) {
     $(element).href = `/api/projects/${id}/${suffix}`
   }
-  clearEditor()
   const doc = rows.find(row => row.id === selected)
-  if (doc) $('kind').value = doc.kind
-  choices($('documents'), rows.filter(row => row.kind === $('kind').value).map(row => [row.id, numberedTitle(row)]), '选择文档', doc?.id)
+  stage = doc?.kind ?? initialStage
+  clearEditor()
   if (doc) await openDocument(doc.id)
 }
 
-async function refreshProjects(selected = '', selectedDoc) {
+async function refreshProjects(selected = '', selectedDoc, initialStage) {
   const rows = await api('/projects')
   choices($('projects'), rows.map(row => [row.id, row.title]), '选择作品', selected)
-  await selectProject(rows.some(row => row.id === selected) ? selected : '', selectedDoc)
+  await selectProject(rows.some(row => row.id === selected) ? selected : '', selectedDoc, initialStage)
 }
 
 function dialog(title, contents, action, submit = '确定') {
@@ -571,8 +612,6 @@ function searchProject() {
         if (hit.kind === 'reference') return viewReference(pid, hit.id)
         await openDocument(hit.id)
         if (editor?.doc.id === hit.id) {
-          $('kind').value = hit.kind
-          remember()
           await refreshDocuments(hit.id)
           $('dialog').close()
         }
@@ -747,11 +786,10 @@ async function threadList() {
   dialog('剧情线索与伏笔', [actionButton('新增线索', () => editThread(pid)), filterLabel, list])
 }
 
-function newDocument(content = '', title = '') {
+function newDocument(content = '', title = '', kind = stage, chapterNumber) {
   const pid = project
-  const kind = $('kind').value
   const [titleField, name] = field('标题', { maxLength: 160, value: title })
-  const number = Math.max(0, ...documents.filter(doc => doc.kind === kind).map(doc => doc.number ?? 0)) + 1
+  const number = chapterNumber ?? Math.max(0, ...documents.filter(doc => doc.kind === kind).map(doc => doc.number ?? 0)) + 1
   const [numberField, ordinal] = field('章节号', { type: 'number', min: 1, max: 99999, value: number })
   const numbered = ['chapter', 'blueprint'].includes(kind)
   dialog(`新建${names[kind]}`, [titleField, ...(numbered ? [numberField] : [])], async () => {
@@ -1037,10 +1075,10 @@ function renderJob(state) {
   $('run-status').textContent = job ? [runNames[job.kind], runStates[job.status],
     job.continued_from && '分段续跑', job.applied_rev !== null && '已应用', job.error].filter(Boolean).join(' · ') : ''
   $('cancel-run').hidden = job?.status !== 'running'
-  $('continue-run').hidden = !job?.canContinue
+  $('continue-run').hidden = !model || !job?.canContinue
   $('apply-run').hidden = !job || !['draft', 'revise'].includes(job.kind) ||
     job.status === 'running' || !job.source_hash || !job.output?.trim() || job.applied_rev !== null
-  $('use-outline').hidden = job?.kind !== 'outline' || job.status !== 'done' || !job.source_hash ||
+  $('use-outline').hidden = !model || job?.kind !== 'outline' || job.status !== 'done' || !job.source_hash ||
     job.base_rev !== state.doc.rev || state.doc.status === 'final'
   $('use-review').hidden = job?.kind !== 'review' || job.status === 'running' || !job.output || Boolean(job.reviewReport)
   paint(state)
@@ -1132,6 +1170,128 @@ async function listRuns() {
     })) : [document.createTextNode('暂无任务')])
 }
 
+async function showLibrary() {
+  const rows = await api('/projects')
+  const buttons = rows.map(row => actionButton(row.id === project ? '返回 · ' + row.title : row.title, async () => {
+    if (row.id !== project) await selectProject(row.id)
+    if (row.id === project) $('dialog').close()
+  }))
+  dialog('书房', [...buttons, actionButton('新建作品', () => $('new-project').click()),
+    actionButton('恢复备份', () => $('backup-file').click())])
+}
+
+async function showOverview(next = stage) {
+  const request = ++navigation
+  await leave()
+  if (request !== navigation) return
+  stage = next
+  clearEditor()
+}
+
+function showProjectRuns() {
+  const pid = project
+  const panel = document.createElement('div')
+  const controls = document.createElement('div')
+  controls.className = 'tools'
+  const list = document.createElement('div')
+  list.className = 'batch-list'
+  list.setAttribute('aria-label', '任务列表')
+  const message = document.createElement('p')
+  message.setAttribute('role', 'status')
+  let scope = 'active'
+  let request = 0
+  let timer
+  let previous
+  const visible = () => panel.isConnected && $('dialog').open && project === pid
+  const active = actionButton('进行中', () => select('active'))
+  const history = actionButton('历史', () => select('history'))
+  controls.append(active, history, actionButton('批量写作记录', () => listBatches(pid)))
+  panel.append(controls, message, list)
+  dialog('运行中心', [panel])
+  select(scope)
+
+  function select(next) {
+    scope = next
+    previous = undefined
+    active.setAttribute('aria-pressed', String(scope === 'active'))
+    history.setAttribute('aria-pressed', String(scope === 'history'))
+    list.replaceChildren()
+    message.textContent = '正在读取任务…'
+    void refresh()
+  }
+
+  async function refresh() {
+    clearTimeout(timer)
+    if (!visible()) return
+    const seq = ++request
+    try {
+      const rows = await api(`/projects/${pid}/runs?scope=${scope}`)
+      if (!visible() || seq !== request) return
+      message.textContent = rows.length ? '' : scope === 'active' ? '当前没有进行中的章节任务。' : '当前没有任务历史。'
+      const snapshot = JSON.stringify(rows)
+      if (snapshot === previous) return
+      previous = snapshot
+      list.replaceChildren(...rows.map(row => {
+        const item = document.createElement('section')
+        const summary = document.createElement('p')
+        summary.textContent = [new Date(row.created).toLocaleString(), row.applied_rev !== null && '已应用', row.error].filter(Boolean).join(' · ')
+        item.append(actionButton(`${numberedTitle(row)} · ${runNames[row.kind]} · ${runStates[row.status]}`, async () => {
+          if (editor?.doc.id !== row.document_id) await openDocument(row.document_id)
+          if (!visible() || editor?.doc.id !== row.document_id) return
+          await viewRun(editor, row.id)
+          if (visible()) $('dialog').close()
+        }), summary)
+        return item
+      }))
+    } catch (error) {
+      if (seq === request) message.textContent = error.message
+    } finally {
+      if (seq === request && visible() && scope === 'active') timer = setTimeout(refresh, 2000)
+    }
+  }
+}
+
+const themes = { system: '跟随系统', light: '浅色', dark: '深色' }
+const textSizes = { standard: '标准', large: '大字', extra: '特大字' }
+
+function applyAppearance() {
+  let saved
+  try { saved = JSON.parse(localStorage.getItem('pagekin-appearance')) } catch { /* Optional browser preferences. */ }
+  document.documentElement.dataset.theme = typeof saved?.theme === 'string' && Object.hasOwn(themes, saved.theme) ? saved.theme : 'system'
+  document.documentElement.dataset.textSize = typeof saved?.textSize === 'string' && Object.hasOwn(textSizes, saved.textSize) ? saved.textSize : 'standard'
+}
+
+function showSettings() {
+  const preference = (title, values, selected) => {
+    const label = document.createElement('label')
+    const select = document.createElement('select')
+    select.append(...Object.entries(values).map(([key, value]) => new Option(value, key)))
+    select.value = selected
+    label.append(title, select)
+    return [label, select]
+  }
+  const root = document.documentElement
+  const [themeLabel, theme] = preference('外观主题', themes, root.dataset.theme)
+  const [sizeLabel, size] = preference('正文字号', textSizes, root.dataset.textSize)
+  const services = document.createElement('p')
+  services.textContent = `写作模型${model ? '已配置' : '待配置'} · 语义检索${semanticEnabled ? '已配置' : '待配置'} · ${enhancedBody ? 'CodeMirror' : '普通编辑器'}`
+  const guide = document.createElement('p')
+  guide.textContent = '模型连接由 NAS 的 Compose 环境变量配置。外观和字号保存在当前浏览器。'
+  dialog('设置', [themeLabel, sizeLabel, services, guide], () => {
+    root.dataset.theme = theme.value
+    root.dataset.textSize = size.value
+    try { localStorage.setItem('pagekin-appearance', JSON.stringify({ theme: theme.value, textSize: size.value })) }
+    catch { note('浏览器无法保留外观设置，当前页面已应用。') }
+    $('dialog').close()
+  }, '保存外观')
+}
+
+function setFocusWriting(enabled) {
+  document.body.classList.toggle('focus-writing', enabled)
+  $('focus-writing').setAttribute('aria-pressed', String(enabled))
+  $('focus-writing').textContent = enabled ? '退出专注' : '专注写作'
+}
+
 async function listBatches(pid) {
   const batches = await api(`/projects/${pid}/batches`)
   if (pid !== project) return
@@ -1140,7 +1300,8 @@ async function listBatches(pid) {
       const current = await api(`/projects/${pid}/batches/${batch.id}`)
       if (pid === project) showBatch(pid, current)
     }))
-  dialog('批量写作', [actionButton('新建写作批次', () => newBatch(pid)), ...rows])
+  dialog('批量写作', [...(model ? [actionButton('新建写作批次', () => newBatch(pid))] : []),
+    ...(rows.length ? rows : [document.createTextNode('当前没有批量写作记录。')])])
 }
 
 async function newBatch(pid) {
@@ -1243,7 +1404,7 @@ function showBatch(pid, first) {
       if (batch.status === 'running') controls.append(actionButton('暂停批次', () => change('pause')))
       if (batch.status === 'paused') {
         const resume = actionButton('继续批次', () => change('resume'))
-        resume.disabled = active
+        resume.disabled = active || !model
         controls.append(resume)
       }
       if (['running', 'paused'].includes(batch.status)) controls.append(actionButton('取消批次', () => change('cancel')))
@@ -1366,6 +1527,19 @@ $('login').addEventListener('submit', event => {
   })
 })
 click('logout', async () => { await leave(); await api('/session', 'DELETE'); location.reload() })
+click('library-menu', showLibrary)
+click('workspace-settings', showSettings)
+click('workbench-overview', () => showOverview())
+click('project-runs', showProjectRuns)
+click('focus-writing', () => setFocusWriting(!document.body.classList.contains('focus-writing')))
+for (const button of $('stage-nav').querySelectorAll('[data-stage]')) {
+  button.addEventListener('click', () => {
+    const next = button.dataset.stage
+    if (next === stage) return
+    const id = stageDocuments.get(next)
+    runAction(() => id ? openDocument(id) : showOverview(next))
+  })
+}
 click('batch-writing', () => listBatches(project))
 click('writing-skills', () => showWritingSkills(project))
 const screenplay = screenplayWorkspace({ api, dialog, field, actionButton, localTransaction, uuid, isCurrent: pid => project === pid })
@@ -1391,12 +1565,14 @@ click('rename-project', () => {
     try {
       const updated = await api('/projects/' + pid, 'PATCH', { title: title.value, baseTitle })
       option.textContent = updated.title
+      if (project === pid) renderCatalog()
       if (title.isConnected && $('dialog').open) $('dialog').close()
     } catch (error) {
       result.textContent = error.message
       if (error.status === 409 && error.current) {
         baseTitle = error.current.title
         option.textContent = baseTitle
+        if (project === pid) renderCatalog()
         result.append('。当前书名为“' + baseTitle + '”。再次保存将使用输入框中的书名。')
       }
     }
@@ -1474,9 +1650,8 @@ $('text-file').addEventListener('change', event => runAction(async () => {
   if (file.size > 720_000) throw new Error('正文文件过大，请按章节导入')
   const content = await file.text()
   if (content.length > 180_000) throw new Error('单个文档最多 180000 字符')
-  $('kind').value = 'chapter'
   await refreshDocuments()
-  newDocument(content, file.name.replace(/\.[^.]+$/, '').slice(0, 160))
+  newDocument(content, file.name.replace(/\.[^.]+$/, '').slice(0, 160), 'chapter')
 }))
 $('projects').addEventListener('change', event => {
   const id = event.target.value
@@ -1490,7 +1665,7 @@ $('documents').addEventListener('change', event => {
     catch (error) { event.target.value = editor?.doc.id ?? ''; throw error }
   })
 })
-$('kind').addEventListener('change', () => runAction(() => refreshDocuments(editor?.doc.id)))
+$('chapter-filter').addEventListener('change', () => renderCatalog())
 for (const element of [$('title'), $('body')]) {
   element.addEventListener('input', edit)
   element.addEventListener('compositionstart', () => setComposing(true))
@@ -1701,6 +1876,12 @@ click('apply-run', async () => {
 click('close-dialog', async () => { if (await screenplay.canClose()) $('dialog').close() })
 click('open-find', () => findPanel($('find-panel').hidden))
 click('close-find', () => { findPanel(false); bodyControl().focus({ preventScroll: true }) })
+click('paired-document', () => {
+  const { doc, title } = editor
+  const kind = doc.kind === 'chapter' ? 'blueprint' : 'chapter'
+  const counterpart = documents.find(row => row.kind === kind && row.number === doc.number)
+  return counterpart ? openDocument(counterpart.id) : newDocument('', title, kind, doc.number)
+})
 click('find-back', () => locate(-1))
 click('find-next', () => locate(1))
 click('replace-one', replaceOne)
@@ -1746,6 +1927,8 @@ document.addEventListener('keydown', event => {
   if (event.key === 'Escape' && !$('find-panel').hidden) {
     findPanel(false)
     bodyControl().focus({ preventScroll: true })
+  } else if (event.key === 'Escape' && document.body.classList.contains('focus-writing')) {
+    setFocusWriting(false)
   }
   if (editor && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
     event.preventDefault()
@@ -1774,8 +1957,9 @@ async function boot() {
   try {
     const session = await api('/session')
     model = session.model
-    $('batch-writing').hidden = !model
-    $('semantic-search').hidden = !session.semanticSearch
+    $('model-status').hidden = model
+    semanticEnabled = session.semanticSearch
+    $('semantic-search').hidden = !semanticEnabled
     $('release-version').textContent = session.version ? 'v' + session.version : ''
     if (session.enhancedEditor) await enableEnhancedEditor()
   } catch (error) {
@@ -1785,10 +1969,10 @@ async function boot() {
   }
   $('login').hidden = true
   $('workspace').hidden = false
-  $('logout').hidden = false
+  $('workspace-menu').hidden = false
   let saved
   try { saved = JSON.parse(sessionStorage.getItem('pagekin-location')) } catch { /* Optional. */ }
-  if (Array.from($('kind').options).some(option => option.value === saved?.[2])) $('kind').value = saved[2]
-  await refreshProjects(saved?.[0], saved?.[1])
+  await refreshProjects(saved?.[0], saved?.[1], stages.includes(saved?.[2]) ? saved[2] : 'chapter')
 }
+applyAppearance()
 runAction(boot)

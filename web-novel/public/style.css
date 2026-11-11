@@ -7,10 +7,15 @@
   --line: light-dark(#d9d6c9, #454a40);
   --accent: light-dark(#285445, #9bd2bb);
   --accent-ink: light-dark(#fff, #17291f);
+  --prose-size: 1.15rem;
   font-family: system-ui, "Microsoft YaHei", sans-serif;
   background: var(--paper);
   color: var(--ink);
 }
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+:root[data-text-size="large"] { --prose-size: 1.35rem; }
+:root[data-text-size="extra"] { --prose-size: 1.55rem; }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 body { margin: 0; }
@@ -23,7 +28,17 @@ form#login { max-width: 24rem; margin: 3rem auto; display: grid; gap: 1rem; }
 #workspace { display: grid; grid-template-columns: minmax(12rem, 17rem) minmax(0, 1fr); gap: 1.5rem; align-items: start; }
 aside, #editor, #empty { min-width: 0; padding: 1rem; border: 1px solid var(--line); border-radius: .65rem; background: var(--panel); }
 aside select { margin: .35rem 0 .65rem; }
-hr { border: 0; border-top: 1px solid var(--line); margin: 1rem 0; }
+#stage-nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .4rem; margin: .75rem 0; }
+#stage-nav button { justify-content: center; }
+button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.catalog-controls { justify-content: space-between; }
+#chapter-filter-label { display: flex; align-items: center; gap: .35rem; }
+#chapter-filter { width: auto; margin: 0; }
+.workspace-tools { margin-top: .55rem; }
+.workspace-tools .tools { margin-bottom: 0; }
+.overview-documents button { display: flex; width: 100%; margin: .35rem 0; text-align: start; overflow-wrap: anywhere; }
+.focus-writing #workspace { grid-template-columns: minmax(0, 1fr); max-width: 62rem; margin-inline: auto; }
+.focus-writing #workspace > aside { display: none; }
 .tools { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-block: .5rem; }
 input, textarea, select, button { font: inherit; color: inherit; border: 1px solid var(--line); border-radius: .35rem; background: var(--panel); }
 input, textarea, select { width: 100%; min-height: 2.65rem; padding: .5rem .65rem; }
@@ -41,10 +56,10 @@ a { color: var(--accent); }
 .find-panel input[type=checkbox] { width: auto; min-height: auto; }
 .find-mirror { position: fixed; inset: 0 auto auto 0; visibility: hidden; pointer-events: none; }
 #find-result { color: var(--muted); }
-#body { margin-top: .65rem; min-height: 48vh; resize: vertical; font-family: "Songti SC", SimSun, Georgia, serif; font-size: 1.15rem; line-height: 1.85; }
+#body { margin-top: .65rem; min-height: 48vh; resize: vertical; font-family: "Songti SC", SimSun, Georgia, serif; font-size: var(--prose-size); line-height: 1.85; }
 #body-editor-host { margin-top: .65rem; border: 1px solid var(--line); border-radius: .35rem; background: var(--panel); }
 #body-editor-host .cm-editor { min-height: 48vh; max-height: 68vh; }
-#body-editor-host .cm-scroller { overflow: auto; font-family: "Songti SC", SimSun, Georgia, serif; font-size: 1.15rem; line-height: 1.85; }
+#body-editor-host .cm-scroller { overflow: auto; font-family: "Songti SC", SimSun, Georgia, serif; font-size: var(--prose-size); line-height: 1.85; }
 #body-editor-host .cm-content { padding: .65rem .4rem; }
 #body-editor-host .cm-editor.cm-focused { outline: 2px solid var(--accent); outline-offset: 1px; }
 #editor-notices { font-size: .8rem; }
@@ -84,6 +99,7 @@ dialog::backdrop { background: #0008; }
 .revision-list pre { margin: 0; max-height: 12rem; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 @media (max-width: 720px) {
+  .masthead { flex-wrap: wrap; gap: .35rem; }
   #workspace { grid-template-columns: minmax(0, 1fr); gap: .65rem; }
   main { padding: .65rem; }
   aside, #editor, #empty { padding: .75rem; }

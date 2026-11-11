@@ -349,6 +349,13 @@ test('novel workflow through HTTP across devices, generation, export and restart
     assert.deepEqual((await request(review)).result.reviewReport, reviewResult.reviewReport)
     const paused = await run('draft', 3, 'hold')
     await awaitRun(paused, job => !!job.output)
+    const activeRuns = (await request(base + '/runs?scope=active')).result
+    assert.deepEqual(activeRuns.map(row => [row.id, row.document_id, row.status]), [[paused.split('/').at(-1), chapter.id, 'running']])
+    assert.deepEqual((await request('/api/projects/' + second.id + '/runs?scope=active')).result, [])
+    await request(base + '/runs?scope=unknown', { status: 400 })
+    const recentRuns = (await request(base + '/runs?scope=history')).result
+    assert.ok(recentRuns.some(row => row.id === review.split('/').at(-1)))
+    assert.ok(recentRuns.every(row => row.status !== 'running' && !Object.hasOwn(row, 'output')))
     await request(paused + '/cancel', { method: 'POST' })
     assert.equal((await awaitRun(paused, job => job.status === 'cancelled')).output, '候选正文')
     await request(doc + '/status', { method: 'POST', value: { baseRev: 3, action: 'finalize' } })

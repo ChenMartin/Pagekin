@@ -493,6 +493,16 @@ async function route(req, res) {
       return json(res, { messages, limit: contextLimit })
     }
   }
+  if (resource === 'runs' && method === 'GET' && id === undefined) {
+    const scope = url.searchParams.get('scope') ?? 'active'
+    if (!['active', 'history'].includes(scope)) throw new ApiError(400, '任务筛选无效')
+    const statusFilter = scope === 'active' ? "r.status='running'" : "r.status<>'running'"
+    return json(res, storage.all(`
+      SELECT r.id,r.kind,r.status,r.created,r.applied_rev,r.error,r.document_id,d.title,d.number
+      FROM documents d JOIN runs r ON r.document_id=d.id
+      WHERE d.project_id=? AND ${statusFilter}
+      ORDER BY r.created DESC,r.id DESC LIMIT 50`, pid))
+  }
   if (resource === 'runs' && id) {
     if (method === 'GET' && action === undefined) return json(res, storage.runDetail(pid, id))
     if (method === 'POST' && action === 'continue') {

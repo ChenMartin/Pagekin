@@ -11,7 +11,11 @@
 <body>
   <header class="masthead">
     <div><strong>书童</strong> <span>小说工作区</span> <small id="release-version"></small></div>
-    <button id="logout" hidden>退出登录</button>
+    <div id="workspace-menu" class="tools" hidden>
+      <button id="library-menu">书房</button>
+      <button id="workspace-settings">设置</button>
+      <button id="logout">退出登录</button>
+    </div>
   </header>
   <main>
     <form id="login" hidden>
@@ -30,42 +34,60 @@
           <input id="backup-file" type="file" accept=".json,.ainovel,application/json" hidden>
         </div>
         <div id="project-tools" hidden>
-          <div class="tools">
-            <button id="rename-project">修改书名</button>
-            <a id="export">导出定稿</a>
-            <a id="export-all">导出全部正文</a>
-            <a id="backup">备份作品</a>
+          <nav aria-label="作品入口" class="tools">
+            <button id="workbench-overview">作品概览</button>
+            <button id="project-runs">运行中心</button>
             <button id="search-project">搜索作品</button>
-            <button id="narrative-threads">剧情线索与伏笔</button>
-            <button id="reference-library">参考资料</button>
-            <button id="semantic-search" hidden>资料语义检索</button>
-            <button id="batch-writing" hidden>批量写作</button>
-            <button id="writing-skills">写作 Skill</button>
-            <button id="screenplay-workspace">剧本改编</button>
-            <input id="reference-file" type="file" accept=".txt,.md,text/plain,text/markdown" hidden>
+          </nav>
+          <nav id="stage-nav" aria-label="创作阶段">
+            <button data-stage="settings" aria-pressed="false">设定与架构</button>
+            <button data-stage="character" aria-pressed="false">人物</button>
+            <button data-stage="blueprint" aria-pressed="false">章节蓝图</button>
+            <button data-stage="chapter" aria-pressed="true">正文</button>
+          </nav>
+          <div class="tools catalog-controls">
+            <button id="new-document">新建正文</button>
+            <label id="chapter-filter-label">章节状态
+              <select id="chapter-filter">
+                <option value="">全部</option>
+                <option value="draft">草稿</option>
+                <option value="final">已定稿</option>
+              </select>
+            </label>
           </div>
-          <hr>
-          <label for="kind">创作资料</label>
-          <select id="kind">
-            <option value="settings">设定与架构</option>
-            <option value="character">人物</option>
-            <option value="blueprint">章节蓝图</option>
-            <option value="chapter" selected>正文</option>
-          </select>
-          <div class="tools">
-            <button id="new-document">新建</button>
-            <button id="import-text">导入单章</button>
-            <button id="import-manuscript">导入整稿</button>
-            <input id="text-file" type="file" accept=".txt,.md,text/plain,text/markdown" hidden>
-            <input id="manuscript-file" type="file" accept=".txt,.md,text/plain,text/markdown" hidden>
-          </div>
-          <label for="documents">打开文档</label>
+          <label for="documents" id="catalog-label">打开正文</label>
           <select id="documents"></select>
+          <details class="workspace-tools" open>
+            <summary>资料与工作流</summary>
+            <div class="tools">
+              <button id="narrative-threads">剧情线索与伏笔</button>
+              <button id="reference-library">参考资料</button>
+              <button id="semantic-search" hidden>资料语义检索</button>
+              <button id="batch-writing">批量写作</button>
+              <button id="writing-skills">写作 Skill</button>
+              <button id="screenplay-workspace">剧本改编</button>
+            </div>
+          </details>
+          <details class="workspace-tools">
+            <summary>文件与备份</summary>
+            <div class="tools">
+              <button id="rename-project">修改书名</button>
+              <button id="import-text">导入单章</button>
+              <button id="import-manuscript">导入整稿</button>
+              <a id="export">导出定稿</a>
+              <a id="export-all">导出全部正文</a>
+              <a id="backup">备份作品</a>
+            </div>
+          </details>
+          <input id="reference-file" type="file" accept=".txt,.md,text/plain,text/markdown" hidden>
+          <input id="text-file" type="file" accept=".txt,.md,text/plain,text/markdown" hidden>
+          <input id="manuscript-file" type="file" accept=".txt,.md,text/plain,text/markdown" hidden>
         </div>
       </aside>
       <section id="empty">
-        <h1>书房</h1>
-        <p>选择一部作品，或新建作品开始写作。</p>
+        <h1 id="overview-title">书房</h1>
+        <p id="overview-summary">选择一部作品，或新建作品开始写作。</p>
+        <div id="overview-documents" class="overview-documents"></div>
       </section>
       <section id="editor" aria-label="写作编辑器" hidden>
         <div class="editor-head">
@@ -77,6 +99,8 @@
           <button id="open-find" type="button" aria-expanded="false" aria-controls="find-panel">查找／替换</button>
           <button id="previous-chapter" type="button" hidden>上一章</button>
           <button id="next-chapter" type="button" hidden>下一章</button>
+          <button id="paired-document" type="button" hidden></button>
+          <button id="focus-writing" type="button" aria-pressed="false">专注写作</button>
         </div>
         <section id="find-panel" class="find-panel" aria-label="文档内查找与替换" hidden>
           <label>查找 <input id="find-query" type="search" maxlength="200" autocomplete="off"></label>
@@ -112,6 +136,7 @@
         </div>
         <details id="ai" hidden>
           <summary>AI 细纲、写稿、审稿与修稿</summary>
+          <p id="model-status" hidden>写作模型待配置。可查看既有任务、候选和模型输入预览。</p>
           <p id="selected-outline">可先生成写前细纲，确认后用于写稿。</p>
           <button id="clear-outline" hidden>取消引用细纲</button>
           <p id="selected-references"></p>
