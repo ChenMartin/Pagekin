@@ -32,6 +32,7 @@ const modelMock = createServer(async (req, res) => {
     }
     if (instruction.includes('返回修订后的完整正文')) content = revisionCandidate
     if (instruction.includes('生成当前章的章节蓝图')) content = '## 章目标\n找出失踪船票。'
+    if (instruction.includes('本次只生成「世界观」模块')) content = '## 世界规则\n灯塔每月熄灭一天。'
     if (instruction.includes('只返回替换片段')) content = '新的选段。'
     if (instruction.includes('审查当前正文')) content = JSON.stringify({ issues: [
       { title: '补写动作', severity: 'major', quote: '断网的本机', reason: '缺少动作', suggestion: '加入登船动作' },
@@ -462,6 +463,24 @@ try {
     scope.value = 'all'; format.value = 'zip'; format.dispatchEvent(new Event('change'))`)
   assert.match(await evaluate("document.querySelector('#dialog-body a').getAttribute('href')"), /\/export\?format=zip&drafts=1$/)
   await click('#close-dialog')
+  await click('[data-stage=settings]')
+  await click('#architecture-templates')
+  await evaluate("Array.from(document.querySelectorAll('#dialog-body button')).find(button => button.textContent === '新建世界观').click()")
+  await visible('#dialog-body input')
+  await click('#dialog-submit')
+  await until(() => evaluate(bodyText + ".includes('规则、限制与代价')"), 'Architecture template did not open')
+  await click('#ai summary')
+  await click('[data-run=plan]')
+  await visible('#dialog-body select')
+  assert.equal(await evaluate("document.querySelector('#dialog-body select').value"), 'world')
+  await click('#dialog-submit')
+  await visible('#apply-run')
+  await click('#apply-run')
+  await visible('#dialog-body .compare')
+  await click('#dialog-submit')
+  await until(() => evaluate(bodyText + ".includes('灯塔每月熄灭一天。')"), 'Scoped architecture candidate did not apply')
+  await click('[data-stage=chapter]')
+  await until(() => evaluate("document.querySelector('#title').value === '测试章节'"), 'Chapter did not reopen after architecture planning')
   await click('#focus-writing')
   assert.equal(await evaluate("document.querySelector('#workspace aside').getClientRects().length"), 0)
   await click('#focus-writing')

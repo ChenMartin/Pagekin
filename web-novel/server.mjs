@@ -49,6 +49,7 @@ const files = new Map([
   ['/app.mjs', ['app.mjs', 'text/javascript']],
   ['/manuscript.mjs', ['manuscript.mjs', 'text/javascript']],
   ['/novel-goals.mjs', ['novel-goals.mjs', 'text/javascript']],
+  ['/architecture.mjs', ['architecture.mjs', 'text/javascript']],
   ['/screenplay-ui.mjs', ['screenplay-ui.mjs', 'text/javascript']],
   ['/style.css', ['style.css', 'text/css']],
 ].map(([path, [file, type]]) => [path, [readFileSync(new URL(`./public/${file}`, import.meta.url)), type]]))

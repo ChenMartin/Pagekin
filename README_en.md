@@ -24,7 +24,7 @@ The `codex/web-novel-fnos` branch of this fork adds a [self-hosted Web workspace
 
 | Area | Web workspace |
 | --- | --- |
-| Novel writing | Project goals, story setup, characters, blueprints, chapters and story threads |
+| Novel writing | Project goals, premise, ensemble, worldbuilding and plot templates, character cards, blueprints, chapters and story threads |
 | Editing and sync | CodeMirror, autosave, offline drafts, conflict comparison, final chapters and version history |
 | AI workflow | AI story and character planning, chapter-range blueprint batches, short outlines, drafting, selected-passage editing, review and revision. Preview model inputs and approve candidates |
 | References and files | Keyword and optional semantic search, TXT/Markdown manuscripts and desktop `.ainovel` imports, TXT/Markdown/ZIP exports |

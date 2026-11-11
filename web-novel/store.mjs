@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { manuscriptChapterLimit } from './public/manuscript.mjs'
 import { schemaVersion } from './version.mjs'
 import { novelGoals } from './public/novel-goals.mjs'
+import { architectureSections } from './public/architecture.mjs'
 import { reviewReport } from './review-report.mjs'
 import { mergeRevision, revisionChanges } from './revision-merge.mjs'
 import { continuationPrefix } from './continuation.mjs'
@@ -509,16 +510,22 @@ export function openStore(directory) {
           start < 0 || end <= start || end - start > 6000) throw new ApiError(400, '请选择有效的正文片段和操作')
       passage = { mode, start, end, quote: string(quote, 6000, true) }
     }
-    return { kind, guidance, baseRev, refs, referenceQuery, outlineId, spans: spans.map(({ id, start, end }) => ({ id, start, end })), passage }
+    const planSection = value.planSection
+    if (planSection !== undefined && (kind !== 'plan' || typeof planSection !== 'string' || !Object.hasOwn(architectureSections, planSection))) {
+      throw new ApiError(400, '架构模块无效')
+    }
+    return { kind, guidance, baseRev, refs, referenceQuery, outlineId, spans: spans.map(({ id, start, end }) => ({ id, start, end })),
+      passage, planSection }
   }
 
-  function requestFingerprint(id, { kind, baseRev, guidance, refs, referenceQuery, spans, outlineId, passage }) {
+  function requestFingerprint(id, { kind, baseRev, guidance, refs, referenceQuery, spans, outlineId, passage, planSection }) {
     const fingerprint = [id, baseRev, kind, guidance]
     if (refs.length || referenceQuery) fingerprint.push(refs)
     if (referenceQuery) fingerprint.push(referenceQuery)
     if (spans.length) fingerprint.push(spans)
     if (outlineId) fingerprint.push({ outlineId })
     if (passage) fingerprint.push({ passage })
+    if (planSection) fingerprint.push({ planSection })
     return hash(JSON.stringify(fingerprint))
   }
 
@@ -641,12 +648,13 @@ export function openStore(directory) {
     if (doc.status !== 'draft' || (planning ? doc.kind === 'chapter' : doc.kind !== 'chapter')) {
       throw new ApiError(422, '请选择与当前文档匹配的 AI 操作')
     }
+    if (request.planSection && doc.kind !== 'settings') throw new ApiError(422, '架构模块只用于设定与架构文档')
     if (['review', 'revise'].includes(request.kind) && !doc.body.trim()) throw new ApiError(422, '请先填写正文')
     if (request.passage) passageRange(doc, request.passage)
     const source = sources(doc, request.refs, request.spans, planning, batch)
     const skill = requestSkill(doc.project_id, request.kind, request.passage)
     const context = { doc, ...source, skill, sourceHash: skillSource(source.sourceHash, skill), guidance: request.guidance,
-      referenceQuery: request.referenceQuery, passage: request.passage }
+      referenceQuery: request.referenceQuery, passage: request.passage, planSection: request.planSection }
     if (!request.outlineId) return context
     const outline = completedOutline(doc, request.outlineId)
     const expected = requestFingerprint(doc.id, { ...request, kind: 'outline', outlineId: null })

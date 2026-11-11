@@ -751,6 +751,16 @@ test('novel workflow through HTTP across devices, generation, export and restart
       if (target === blueprint) assert.match(result.prompt, /前章独有线索/)
       assert.equal((await request(result.jobPath + '/apply', { method: 'POST' })).result.body, result.done.output)
     }
+    const settingPath = projectPath + '/documents/' + setting.id
+    for (const [section, title] of Object.entries({ premise: '故事前提', cast: '人物群像', world: '世界观', plot: '情节大纲' })) {
+      const preview = (await request(settingPath + '/context', { method: 'POST',
+        value: { kind: 'plan', baseRev: 2, planSection: section } })).result
+      assert.ok(preview.messages[0].content.includes('本次只生成「' + title + '」模块'))
+    }
+    await request(settingPath + '/context', { method: 'POST', status: 400,
+      value: { kind: 'plan', baseRev: 2, planSection: '__proto__' } })
+    await request(projectPath + '/documents/' + person.id + '/context', { method: 'POST', status: 422,
+      value: { kind: 'plan', baseRev: 2, planSection: 'world' } })
     const latestBlueprint = (await request(projectPath + '/documents/' + blueprint.id)).result
     const stalePlan = await startFor(latestBlueprint, { kind: 'plan' })
     await request(projectPath + '/documents/' + setting.id, { method: 'PUT', cookie: b,

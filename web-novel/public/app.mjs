@@ -1,6 +1,7 @@
 import { manuscriptBytes, manuscriptRequestBytes, splitManuscript } from './manuscript.mjs'
 import { screenplayWorkspace } from './screenplay-ui.mjs'
 import { novelGoals } from './novel-goals.mjs'
+import { architectureSections } from './architecture.mjs'
 
 const $ = id => document.getElementById(id)
 const names = { settings: '设定与架构', character: '人物', blueprint: '章节蓝图', chapter: '正文', reference: '参考资料' }
@@ -414,6 +415,7 @@ function renderCatalog(selected = editor?.doc.id ?? '') {
     button.setAttribute('aria-pressed', String(button.dataset.stage === stage))
   }
   $('new-document').textContent = '新建' + names[stage]
+  $('architecture-templates').hidden = stage !== 'settings'
   $('batch-blueprints').hidden = stage !== 'blueprint' || !model
   $('catalog-label').textContent = '打开' + names[stage]
   $('chapter-filter-label').hidden = stage !== 'chapter'
@@ -871,6 +873,18 @@ function newDocument(content = '', title = '', kind = stage, chapterNumber) {
   })
 }
 
+function architectureTemplates() {
+  const entries = Object.values(architectureSections).map(({ title, headings }) => {
+    const existing = documents.find(doc => doc.kind === 'settings' && doc.title === title)
+    return actionButton(existing ? '打开' + title : '新建' + title, async () => {
+      if (!existing) return newDocument(headings.map(heading => '## ' + heading).join('\n\n') + '\n', title, 'settings')
+      await openDocument(existing.id)
+      if (editor?.doc.id === existing.id) $('dialog').close()
+    })
+  })
+  dialog('架构模板', entries)
+}
+
 function manuscriptPreview(pid, parsed, existing) {
   const occupied = new Set(existing.filter(doc => doc.kind === 'chapter').map(doc => doc.number))
   const last = Math.max(0, ...occupied)
@@ -1226,6 +1240,28 @@ function previewContext() {
   for (const [kind, title] of Object.entries(options)) picker.append(new Option(title, kind))
   const result = document.createElement('div')
   dialog('预览模型输入', [label, result], () => showContext(state, result, picker.value), '生成预览')
+}
+
+function planArchitecture() {
+  const state = editor
+  const sections = Object.entries(architectureSections)
+  const suggested = sections.find(([, section]) => section.title === state.title)?.[0] ?? 'general'
+  const [label, scope] = selectField('规划范围', {
+    general: '整体设定与架构',
+    ...Object.fromEntries(sections.map(([key, section]) => [key, section.title])),
+  }, suggested)
+  const help = document.createElement('p')
+  help.textContent = '候选用于替换当前整份文档。建议为每个架构模块使用独立文档。'
+  const result = document.createElement('div')
+  const options = () => scope.value === 'general' ? undefined : { planSection: scope.value }
+  const preview = actionButton('预览发送内容', () => showContext(state, result, 'plan', options()))
+  dialog('生成架构候选', [label, help, preview, result], async () => {
+    if (state !== editor) return
+    try {
+      await startRun('plan', options())
+      if (state === editor && result.isConnected) $('dialog').close()
+    } catch (error) { result.textContent = error.message }
+  }, '生成候选')
 }
 
 function editPassage() {
@@ -1712,6 +1748,7 @@ click('rename-project', () => {
   }, '保存书名')
 })
 click('new-document', () => newDocument())
+click('architecture-templates', architectureTemplates)
 click('search-project', searchProject)
 click('narrative-threads', threadList)
 click('reference-library', referenceLibrary)
@@ -1842,7 +1879,10 @@ click('status', async () => {
   })
 })
 for (const button of document.querySelectorAll('[data-run]')) {
-  button.addEventListener('click', () => runAction(() => startRun(button.dataset.run)))
+  button.addEventListener('click', () => runAction(() => {
+    if (button.dataset.run === 'plan' && editor?.doc.kind === 'settings') return planArchitecture()
+    return startRun(button.dataset.run)
+  }))
 }
 click('runs', listRuns)
 click('preview-context', previewContext)
