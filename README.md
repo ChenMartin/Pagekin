@@ -24,7 +24,7 @@
 
 | 用途 | Web 工作区 |
 | --- | --- |
-| 长篇写作 | 作品目标、四项架构模板、人物卡与连载状态、人物关系、蓝图、正文、线索与伏笔 |
+| 长篇写作 | 作品目标、四项架构模板、人物连载、章节进度表、蓝图与正文、跨章线索与伏笔提醒 |
 | 编辑与同步 | CodeMirror、自动保存、断网草稿、多设备冲突对比、定稿与历史 |
 | AI 辅助 | 设定与人物规划、批量蓝图、写前细纲、单章与批量写稿、选段改写、审稿修稿及定稿人物变化候选 |
 | 资料与文件 | 参考小说拆解、关键词与语义检索、TXT／Markdown 整稿、桌面 `.ainovel` 与人物历史导入、正文导出 |
@@ -42,7 +42,7 @@ docker compose up -d --build
 
 默认端口为 3100，默认绑定 NAS 宿主机的回环地址。配置 HTTPS 或局域网联调参数后再从其他设备访问。手写可直接使用，AI 和语义检索分别配置自己的模型服务。 [部署、使用与升级](web-novel/README.md)
 
-GitHub 已发布的 `v0.2.0-rc.1` 离线镜像使用 Web SQLite schema 11，包含小说与手工剧本改编。当前分支源码构建为 `0.2.0-dev.6`，首次启动升级至 schema 16。升级前请备份数据卷。 [发布与升级](web-novel/RELEASE.md) · [当前实施进度](docs/research/nas-web/07-implementation-progress.md) · [小说到成片设计](docs/research/nas-web/06-novel-to-film.md)
+GitHub 已发布的 `v0.2.0-rc.1` 离线镜像使用 Web SQLite schema 11，包含小说与手工剧本改编。当前分支源码构建为 `0.2.0-dev.7`，首次启动升级至 schema 16。升级前请备份数据卷。 [发布与升级](web-novel/RELEASE.md) · [当前实施进度](docs/research/nas-web/07-implementation-progress.md) · [小说到成片设计](docs/research/nas-web/06-novel-to-film.md)
 
 ## 上游桌面版
 

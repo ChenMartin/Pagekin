@@ -622,12 +622,14 @@ try {
   await dialogButton('读原文')
   await until(() => evaluate("document.querySelector('#dialog-body pre')?.textContent.includes('章节末尾')"), 'Pinned source was not displayed')
   const importedPeople = await evaluate(`(async () => {
-    const document = (id, kind, title, body, number = null, status = 'draft') =>
+    const sourceDoc = (id, kind, title, body, number = null, status = 'draft') =>
       ({ id, kind, title, body, number, status, rev: 1, history: [] });
     const source = {
-      format: 'pagekin-web-novel-v1', title: '桌面人物迁移浏览器样稿',
-      documents: [document('rain','character','阿雨','红伞'), document('other','character','领航员',''),
-        document('chapter-1','chapter','出航','阿雨在旧码头。',1,'final')],
+      format: 'pagekin-web-novel-v1', title: '桌面人物迁移浏览器样稿', goals: { chapters: 35 },
+      documents: [sourceDoc('rain','character','阿雨','红伞'), sourceDoc('other','character','领航员',''),
+        sourceDoc('chapter-1','chapter','出航','阿雨在旧码头。',1,'final'),
+        sourceDoc('blueprint-1','blueprint','出航蓝图','从码头开始。',1)],
+      threads: [{ title: '失踪船票', body: '尾声核对', kind: 'foreshadow', status: 'open', due: 1 }],
       desktopContinuity: [{ eventId: 'state', characterId: 'rain', characterName: '阿雨',
         targetId: null, targetName: null, field: 'location', value: '旧码头', chapter: 1, kind: 'derived',
         series: 'location', seq: 0, sourceId: 'chapter-1', sourceRev: 1, quote: '阿雨在旧码头。',
@@ -650,7 +652,25 @@ try {
   await visible('#dialog-body .batch-list summary')
   await click('#dialog-body .batch-list summary')
   assert.match(await evaluate("document.querySelector('#dialog-body').textContent"), /桌面定稿派生[\s\S]*原文引证[\s\S]*阿雨在旧码头/)
-  console.log('Browser workflow passed (' + (enhanced ? 'CodeMirror' : 'plain') + '): novel writing, recovery, AI workflows, screenplay and desktop continuity')
+  await click('#close-dialog')
+  await click('#project-progress')
+  await visible('.progress-table tbody button')
+  assert.match(await evaluate("document.querySelector('.progress-table tbody tr').textContent"), /出航蓝图[\s\S]*出航[\s\S]*已定稿/)
+  await dialogButton('下一页')
+  await until(() => evaluate("document.querySelector('.progress-table tbody th').textContent === '31'"), 'Progress did not page to chapter 31')
+  await fill('.progress-navigation input', '1')
+  await dialogButton('跳转')
+  await until(() => evaluate("document.querySelector('.progress-table tbody th').textContent === '1'"), 'Progress did not jump back to chapter 1')
+  await click('#dialog-body details summary')
+  await dialogButton('第 1 章 · 失踪船票')
+  await until(() => evaluate("document.querySelector('#dialog-title').textContent === '编辑线索'"), 'Progress warning did not open its thread editor')
+  assert.equal(await evaluate("document.querySelector('#dialog-body input').value"), '失踪船票')
+  await click('#dialog-submit')
+  await until(() => evaluate("document.querySelector('#dialog-title').textContent === '长篇进度'"), 'Saving a thread did not return to the progress view')
+  await visible('.progress-table tbody td:nth-child(3) button')
+  await click('.progress-table tbody td:nth-child(3) button')
+  await until(() => evaluate("document.querySelector('#title').value === '出航' && !document.querySelector('#dialog').open"), 'Progress did not open the chosen chapter')
+  console.log('Browser workflow passed (' + (enhanced ? 'CodeMirror' : 'plain') + '): writing, screenplay, desktop continuity and novel progress')
 } finally {
   socket?.close()
   for (const child of [browser, app]) {

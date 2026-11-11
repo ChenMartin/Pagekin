@@ -24,7 +24,7 @@ The `codex/web-novel-fnos` branch of this fork adds a [self-hosted Web workspace
 
 | Area | Web workspace |
 | --- | --- |
-| Novel writing | Project goals, story architecture templates, character cards, chapter-linked character states and relationships, blueprints, chapters and story threads |
+| Novel writing | Project goals, architecture templates, character continuity, chapter progress, blueprints, prose and story-thread reminders |
 | Editing and sync | CodeMirror, autosave, offline drafts, conflict comparison, final chapters and version history |
 | AI workflow | Story and character planning, blueprint batches, short outlines, drafting, selected-passage editing, review, revision and evidence-backed character state suggestions |
 | References and files | Reference-novel analysis and style Skills, keyword and semantic search, manuscript imports and exports, desktop `.ainovel` import with character history |
@@ -40,7 +40,7 @@ docker compose up -d --build
 
 The service binds to the host loopback address on port 3100 by default. Configure HTTPS or a trusted LAN address for other devices. Writing works without a model. AI drafting and semantic search each use their own model configuration. [Setup and upgrades](web-novel/README.md)
 
-The published `v0.2.0-rc.1` offline image for Linux amd64 on fnOS uses Web SQLite schema 11 and includes the novel and manual screenplay workspaces. Builds from this branch report `0.2.0-dev.6` and migrate the database to schema 16 on startup. Back up the data volume before upgrading. [Release and upgrade](web-novel/RELEASE.md) · [Implementation progress](docs/research/nas-web/07-implementation-progress.md) · [Novel-to-film design](docs/research/nas-web/06-novel-to-film.md)
+The published `v0.2.0-rc.1` offline image for Linux amd64 on fnOS uses Web SQLite schema 11 and includes the novel and manual screenplay workspaces. Builds from this branch report `0.2.0-dev.7` and migrate the database to schema 16 on startup. Back up the data volume before upgrading. [Release and upgrade](web-novel/RELEASE.md) · [Implementation progress](docs/research/nas-web/07-implementation-progress.md) · [Novel-to-film design](docs/research/nas-web/06-novel-to-film.md)
 
 ## Upstream desktop edition
 

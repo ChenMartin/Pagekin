@@ -37,6 +37,14 @@ button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink
 .workspace-tools { margin-top: .55rem; }
 .workspace-tools .tools { margin-bottom: 0; }
 .overview-documents button { display: flex; width: 100%; margin: .35rem 0; text-align: start; overflow-wrap: anywhere; }
+.progress-table { width: 100%; table-layout: fixed; border-collapse: collapse; }
+.progress-table th, .progress-table td { padding: .45rem .3rem; vertical-align: top; text-align: start; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.progress-table th:first-child { width: 3.4rem; }
+.progress-table th:last-child { width: 4.5rem; }
+.progress-table button { max-width: 100%; text-align: start; overflow-wrap: anywhere; }
+.progress-table td span { color: var(--muted); }
+#dialog-body .progress-navigation label { display: flex; align-items: center; gap: .4rem; margin: 0 0 .4rem; }
+.progress-navigation input { width: 5.5rem; }
 .focus-writing #workspace { grid-template-columns: minmax(0, 1fr); max-width: 62rem; margin-inline: auto; }
 .focus-writing #workspace > aside { display: none; }
 .tools { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-block: .5rem; }

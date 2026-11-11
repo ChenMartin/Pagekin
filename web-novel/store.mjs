@@ -9,6 +9,7 @@ import { architectureSections } from './public/architecture.mjs'
 import { openReferenceNovels, referenceNovelSchema } from './reference-novels.mjs'
 import { characterContinuity, continuitySchema } from './character-continuity.mjs'
 import { desktopContinuity, desktopContinuitySchema } from './desktop-continuity.mjs'
+import { novelProgress } from './novel-progress.mjs'
 import { continuityReport } from './continuity-report.mjs'
 import { characterStateFields } from './public/character-state.mjs'
 import { reviewReport } from './review-report.mjs'
@@ -1045,6 +1046,16 @@ export function openStore(directory) {
         due IS NULL,due,planted IS NULL,planted,updated DESC,id`, pid)
   }
 
+  function thread(pid, id) {
+    const row = get('SELECT * FROM narrative_threads WHERE project_id=? AND id=?', pid, id)
+    if (!row) throw new ApiError(404, '线索不存在')
+    return row
+  }
+
+  function progress(pid, start) {
+    return novelProgress({ all, get }, pid, projectGoals(pid).goals.chapters ?? null, start)
+  }
+
   function saveThread(pid, id, value) {
     const { title, body } = input(value)
     string(body, 6000)
@@ -1066,9 +1077,7 @@ export function openStore(directory) {
         UPDATE narrative_threads SET title=?,body=?,kind=?,status=?,planted=?,due=?,resolved=?,rev=rev+1,updated=?
         WHERE id=? AND project_id=? AND rev=?`, ...values, now(), id, pid, revision(value.baseRev))
       if (changed.changes === 0) {
-        const old = get('SELECT * FROM narrative_threads WHERE project_id=? AND id=?', pid, id)
-        if (!old) throw new ApiError(404, '线索不存在')
-        throw new ApiError(409, '另一设备已更新这条线索，请重新打开后核对', old)
+        throw new ApiError(409, '另一设备已更新这条线索，请重新打开后核对', thread(pid, id))
       }
     } else {
       id = randomUUID()
@@ -1345,7 +1354,7 @@ export function openStore(directory) {
 
   return { db, get, all, run, tx, project, document, createProject, renameProject, addDocument, importChapters, eventHead, projectEvents, pruneEvents, screenplay,
     projectGoals, saveProjectGoals, referenceNovels, continuity, continuityRuns, desktopHistory,
-    save, chapters, search, addReference, reference, threads, saveThread,
+    save, chapters, search, addReference, reference, threads, thread, saveThread, progress,
     transition, history, restore, getRun, runDetail, startRun, previewRun, continueRun, applyRun, previewPassage, previewRevision, applyRevision, backup, importBackup,
     listBatches, batchChapters, getBatch, createBatch, changeBatch, nextBatchRun, pauseBatch,
     listSkills, writingSkill, installSkill, bindSkills, deleteSkill }

@@ -791,7 +791,7 @@ function selectField(label, options, value) {
   return [wrapper, select]
 }
 
-function editThread(pid, thread) {
+function editThread(pid, thread, afterSave = threadList) {
   const [titleLabel, title] = field('线索标题', { maxLength: 160, value: thread?.title ?? '' })
   const [kindLabel, kind] = selectField('类型', threadKinds, thread?.kind ?? 'foreshadow')
   const [statusLabel, status] = selectField('状态', threadStates, thread?.status ?? 'planned')
@@ -829,7 +829,7 @@ function editThread(pid, thread) {
       }
       return
     }
-    if ($('dialog').open && title.isConnected && project === pid) await threadList()
+    if ($('dialog').open && title.isConnected && project === pid) await afterSave()
   }, '保存线索')
 }
 
@@ -1331,6 +1331,145 @@ async function showOverview(next = stage) {
   clearEditor()
 }
 
+function showProgress(start = 1) {
+  const pid = project
+  if (!pid) return
+  const path = '/projects/' + pid
+  const panel = document.createElement('div')
+  const counts = document.createElement('p')
+  const feedback = document.createElement('p')
+  feedback.setAttribute('role', 'status')
+  const [jumpLabel, jump] = field('起始章号', { type: 'number', min: 1, max: 99999, value: start, required: false })
+  const controls = document.createElement('div')
+  controls.className = 'tools progress-navigation'
+  const previous = actionButton('上一页', () => load(page.previous))
+  const next = actionButton('下一页', () => load(page.next))
+  const unfinalized = actionButton('首个未定稿章', () => load(page.nextDraft))
+  const go = actionButton('跳转', jumpToChapter)
+  controls.append(previous, next, jumpLabel, go, unfinalized)
+  jump.addEventListener('keydown', event => {
+    if (event.key !== 'Enter') return
+    event.preventDefault()
+    runAction(jumpToChapter)
+  })
+  const warnings = document.createElement('details')
+  const warningTitle = document.createElement('summary')
+  const warningList = document.createElement('div')
+  warningList.className = 'batch-list'
+  warnings.append(warningTitle, warningList)
+  const table = document.createElement('table')
+  table.className = 'progress-table'
+  table.setAttribute('aria-label', '章节进度')
+  const header = table.createTHead().insertRow()
+  for (const title of ['章', '蓝图', '正文', '线索']) {
+    const heading = document.createElement('th')
+    heading.scope = 'col'
+    heading.textContent = title
+    header.append(heading)
+  }
+  const body = table.createTBody()
+  panel.append(counts, controls, feedback, warnings, table)
+  let page
+  let request = 0
+  const visible = element => element.isConnected && $('dialog').open && project === pid
+  const milestoneLabels = { planted: '埋设', due: '预计回收', resolved: '实际回收' }
+  const warningLabels = {
+    'plant-confirm': '埋设章已定稿，待核对埋设',
+    'due-final': '预计回收章已定稿，待核对回收',
+    'due-passed': '已定稿章节越过预计回收章',
+    'resolve-unfinalized': '实际回收章待定稿',
+  }
+  dialog('长篇进度', [panel])
+  void load(start)
+
+  function jumpToChapter() {
+    const number = jump.valueAsNumber
+    if (!Number.isInteger(number) || !jump.checkValidity()) {
+      feedback.textContent = '请输入 1–' + jump.max + ' 的章号'
+      return
+    }
+    return load(number)
+  }
+
+  async function load(number) {
+    if (!number) return
+    const seq = ++request
+    previous.disabled = next.disabled = unfinalized.disabled = go.disabled = true
+    feedback.textContent = '正在读取章节进度…'
+    try {
+      const result = await api(path + '/progress?start=' + number)
+      if (!visible(panel) || seq !== request) return
+      page = result
+      render()
+    } catch (error) {
+      if (visible(panel) && seq === request) feedback.textContent = error.message
+    } finally {
+      if (seq === request) {
+        previous.disabled = page?.previous == null
+        next.disabled = page?.next == null
+        unfinalized.disabled = page?.nextDraft == null
+        go.disabled = false
+      }
+    }
+  }
+
+  async function openThread(id, origin, first) {
+    const thread = await api(path + '/threads/' + id)
+    if (visible(origin)) editThread(pid, thread, () => showProgress(first))
+  }
+
+  function showMilestones(row, first) {
+    const list = document.createElement('div')
+    list.className = 'batch-list'
+    for (const entry of row.milestones) list.append(actionButton(
+      milestoneLabels[entry.type] + ' · ' + entry.title + ' · ' + threadStates[entry.status],
+      () => openThread(entry.id, list, first)))
+    dialog('第 ' + row.number + ' 章线索', [actionButton('返回长篇进度', () => showProgress(first)), list])
+  }
+
+  function addDocumentCell(cell, doc, state) {
+    if (!doc) { cell.textContent = '—'; return }
+    cell.append(actionButton(doc.title, async () => {
+      await openDocument(doc.id)
+      if (visible(panel) && editor?.doc.id === doc.id) $('dialog').close()
+    }))
+    const status = document.createElement('span')
+    status.textContent = state
+    cell.append(status)
+  }
+
+  function render() {
+    const { first, last, limit, counts: total, target, chapters, warningCount } = page
+    jump.max = limit
+    jump.value = first
+    counts.textContent = ['蓝图 ' + total.blueprints + ' 章', '正文 ' + total.chapters + ' 章',
+      '已有定稿 ' + total.finalized + ' 章' + (target ? '／目标 ' + target + ' 章' : ''),
+      total.reopened && '其中 ' + total.reopened + ' 章已重开'].filter(Boolean).join(' · ')
+    feedback.textContent = '第 ' + first + '–' + last + ' 章 · 至第 ' + limit + ' 章'
+    warnings.hidden = !warningCount
+    warningTitle.textContent = '线索待核对 · ' + warningCount + ' 项'
+    warningList.replaceChildren(...page.warnings.map(entry => actionButton(
+      '第 ' + entry.number + ' 章 · ' + entry.title + ' · ' + warningLabels[entry.code],
+      () => openThread(entry.id, panel, first))))
+    if (warningCount > page.warnings.length) warningList.append('显示前 ' + page.warnings.length + ' 项。')
+    body.replaceChildren()
+    for (const row of chapters) {
+      const tr = body.insertRow()
+      const number = document.createElement('th')
+      number.scope = 'row'
+      number.textContent = row.number
+      tr.append(number)
+      addDocumentCell(tr.insertCell(), row.blueprint, row.blueprint?.hasText ? '已写' : '空蓝图')
+      const prose = row.prose
+      addDocumentCell(tr.insertCell(), prose, prose?.status === 'final' ? '已定稿'
+        : prose?.hasFinal ? '定稿后重开' : prose?.hasText ? '草稿' : '空稿')
+      const cell = tr.insertCell()
+      if (row.milestones.length) cell.append(actionButton(row.milestones.length + ' 项', () => showMilestones(row, first)))
+      else cell.textContent = '—'
+    }
+  }
+}
+
 function showProjectRuns() {
   const pid = project
   const panel = document.createElement('div')
@@ -1705,6 +1844,7 @@ click('logout', async () => { await leave(); await api('/session', 'DELETE'); lo
 click('library-menu', showLibrary)
 click('workspace-settings', showSettings)
 click('workbench-overview', () => showOverview())
+click('project-progress', () => showProgress())
 click('project-goals', editProjectGoals)
 click('project-runs', showProjectRuns)
 click('export', exportManuscript)

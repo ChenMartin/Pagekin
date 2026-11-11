@@ -460,8 +460,12 @@ async function route(req, res) {
   if (method === 'GET' && id === undefined && resource === 'events') return subscribe(req, res, pid, token)
   if (resource === 'threads' && action === undefined) {
     if (method === 'GET' && id === undefined) return json(res, storage.threads(pid))
+    if (method === 'GET' && id) return json(res, storage.thread(pid, id))
     if (method === 'POST' && id === undefined) return json(res, storage.saveThread(pid, null, await body(req)), 201)
     if (method === 'PUT' && id) return json(res, storage.saveThread(pid, id, await body(req)))
+  }
+  if (resource === 'progress' && id === undefined && method === 'GET') {
+    return json(res, storage.progress(pid, Number(url.searchParams.get('start') ?? '1')))
   }
   if (resource === 'continuity') {
     const chapter = Number(url.searchParams.get('chapter') ?? '0')

@@ -996,6 +996,42 @@ test('novel workflow through HTTP across devices, generation, export and restart
     await request(continuityPath + '/suggestions?chapter=9&finalRev=2', { status: 409 })
     await request(continuityPath, { method: 'PUT', value: { ...candidate, finalRev: 5 }, status: 409 })
     assert.deepEqual((await request(continuityPath + '/suggestions?chapter=9&finalRev=5')).result, [])
+
+    const progressProject = (await request('/api/projects', { method: 'POST', status: 201, value: { title: '长篇进度样稿' } })).result
+    const progressPath = '/api/projects/' + progressProject.id
+    await request(progressPath + '/goals', { method: 'PUT', value: { goals: { chapters: 65 }, baseRev: 0 } })
+    const progressDoc = async value => (await request(progressPath + '/documents', { method: 'POST', status: 201, value })).result
+    await progressDoc({ kind: 'blueprint', number: 1, title: '首章蓝图', body: '先埋伏笔' })
+    await progressDoc({ kind: 'blueprint', number: 31, title: '后续蓝图', body: '\n　' })
+    const firstFinal = await progressDoc({ kind: 'chapter', number: 1, title: '第一章', body: '出发。' })
+    const thirdFinal = await progressDoc({ kind: 'chapter', number: 3, title: '第三章', body: '到达。' })
+    await progressDoc({ kind: 'chapter', number: 4, title: '第四章空稿', body: '' })
+    for (const row of [firstFinal, thirdFinal]) await request(progressPath + '/documents/' + row.id + '/status',
+      { method: 'POST', value: { action: 'finalize', baseRev: 1 } })
+    await request(progressPath + '/documents/' + firstFinal.id + '/status', { method: 'POST', value: { action: 'reopen', baseRev: 2 } })
+    const progressThread = async value => (await request(progressPath + '/threads', {
+      method: 'POST', status: 201, value: { kind: 'foreshadow', body: '', ...value },
+    })).result
+    await progressThread({ title: '埋设确认', status: 'planned', planted: 1, due: 4 })
+    const dueThread = await progressThread({ title: '到期已定稿', status: 'open', due: 3 })
+    await progressThread({ title: '越过断章', status: 'open', due: 2 })
+    await progressThread({ title: '回收待定稿', status: 'resolved', resolved: 4 })
+    await progressThread({ title: '已归档', status: 'archived', due: 99 })
+    const progress = (await request(progressPath + '/progress')).result
+    assert.deepEqual(progress.counts, { blueprints: 2, chapters: 3, finalized: 2, reopened: 1 })
+    assert.deepEqual([progress.first, progress.last, progress.limit, progress.nextDraft, progress.next], [1, 30, 65, 2, 31])
+    assert.equal(progress.chapters[0].prose.status, 'draft')
+    assert.equal(progress.chapters[0].prose.hasFinal, true)
+    assert.deepEqual(progress.chapters[1].milestones.map(row => row.type), ['due'])
+    assert.equal(progress.chapters[1].prose, null)
+    assert.deepEqual(progress.warnings.map(row => row.code), ['plant-confirm', 'due-passed', 'due-final', 'resolve-unfinalized'])
+    const nextPage = (await request(progressPath + '/progress?start=31')).result
+    assert.equal(nextPage.chapters[0].blueprint.hasText, false)
+    assert.deepEqual([nextPage.first, nextPage.last, nextPage.previous], [31, 60, 1])
+    assert.equal((await request(progressPath + '/progress?start=65')).result.next, null)
+    await request(progressPath + '/progress?start=0', { status: 400 })
+    assert.equal((await request(progressPath + '/threads/' + dueThread.id)).result.title, '到期已定稿')
+    await request(projectPath + '/threads/' + dueThread.id, { status: 404 })
   } finally {
     await stop(server)
     upstream.closeAllConnections()
