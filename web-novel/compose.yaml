@@ -2,7 +2,7 @@ name: web-novel
 services:
   pagekin:
     build: .
-    image: pagekin-web-novel:0.2.0-dev.5
+    image: pagekin-web-novel:0.2.0-dev.6
     platform: linux/amd64
     init: true
     restart: unless-stopped

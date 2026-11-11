@@ -14,6 +14,7 @@ const chapterLabel = chapter => chapter ? '第 ' + chapter + ' 章后' : '开篇
 const recordLabel = ({ chapter, finalRev }) => chapterLabel(chapter) + (chapter ? ' · 定稿 v' + finalRev : '')
 const runStatus = { running: '提取中', done: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断' }
 const evidenceStatus = { verified: '原文唯一匹配', ambiguous: '引文重复', missing: '定稿中未找到', unavailable: '缺少原文' }
+const desktopSourceNames = { author: '桌面作者记录', adopted: '桌面作者采纳', derived: '桌面定稿派生', legacy: '桌面迁移基线' }
 
 export function continuityWorkspace({ api, dialog, actionButton, uuid, isCurrent, modelEnabled }) {
   const root = pid => '/projects/' + pid + '/continuity'
@@ -23,8 +24,10 @@ export function continuityWorkspace({ api, dialog, actionButton, uuid, isCurrent
     const roster = await api(root(pid))
     if (!isCurrent(pid)) return
     const { characters, finals } = roster
+    const desktopButton = roster.desktopHistory
+      ? actionButton('查看桌面人物历史', () => showDesktopHistory(pid, roster, characterId ?? '')) : null
     if (!characters.length) {
-      dialog('人物连载', [node('p', '先在人物阶段新建人物卡。')])
+      dialog('人物连载', [node('p', '先在人物阶段新建人物卡。'), ...(desktopButton ? [desktopButton] : [])])
       return
     }
     const person = node('select')
@@ -35,8 +38,60 @@ export function continuityWorkspace({ api, dialog, actionButton, uuid, isCurrent
       ...finals.map(row => new Option(chapterLabel(row.number) + ' · ' + row.title + ' · 定稿 v' + row.rev, row.number)))
     if (finals.some(row => row.number === chapter)) source.value = chapter
     dialog('人物连载', [label('人物卡', person), label('记录位置', source),
+      ...(desktopButton ? [desktopButton] : []),
       actionButton('查看该位置的人物关系', () => showRelationships(pid, roster, person.value, Number(source.value)))],
       () => edit(pid, roster, person.value, Number(source.value)), '打开状态与关系')
+  }
+
+  function showDesktopHistory(pid, roster, id) {
+    const filter = node('select')
+    filter.append(new Option('全部人物', ''), ...roster.characters.map(row => new Option(row.title, row.id)),
+      new Option('已移除或未匹配的人物', 'unlinked'))
+    filter.value = id
+    const results = node('div')
+    results.className = 'batch-list'
+    const feedback = node('p')
+    feedback.setAttribute('role', 'status')
+    const actions = node('div')
+    actions.className = 'tools'
+    const previous = actionButton('上一页', () => refresh(offset - 50))
+    const next = actionButton('下一页', () => refresh(offset + 50))
+    actions.append(previous, next)
+    let offset = 0
+    let sequence = 0
+    filter.addEventListener('change', () => { void refresh(0) })
+    dialog('桌面人物历史', [actionButton('返回人物连载', () => list(pid)), label('筛选人物', filter), feedback, results, actions])
+    void refresh(0)
+
+    async function refresh(start) {
+      const key = ++sequence
+      previous.disabled = next.disabled = true
+      feedback.textContent = '正在读取桌面历史…'
+      const query = new URLSearchParams({ offset: start })
+      if (filter.value) query.set('character', filter.value)
+      try {
+        const { rows, more } = await api(root(pid) + '/desktop-history?' + query)
+        if (sequence !== key || !open(results) || !isCurrent(pid)) return
+        offset = start
+        previous.disabled = !offset
+        next.disabled = !more
+        feedback.textContent = rows.length ? '第 ' + (offset + 1) + '–' + (offset + rows.length) + ' 条' : '此筛选下没有桌面历史。'
+        results.replaceChildren(...rows.map(row => {
+          const when = !row.chapter ? '开篇' : ['author', 'adopted'].includes(row.kind)
+            ? '自第 ' + row.chapter + ' 章起' : '第 ' + row.chapter + ' 章后'
+          const field = row.field === 'relation' ? '→ ' + (row.targetName || '未匹配人物') : characterStateFields[row.field]
+          const detail = node('details')
+          detail.append(node('summary', [when, row.characterName || '未匹配人物', field].join(' · ')),
+            node('p', desktopSourceNames[row.kind] + (row.active ? '' : ' · 仅历史参考')),
+            node('pre', row.value || '此项已清除'))
+          if (row.sourceRev) detail.append(node('p', '来源 · 第 ' + row.sourceChapter + ' 章 v' + row.sourceRev))
+          if (row.quote) detail.append(node('p', '原文引证'), node('pre', row.quote))
+          return detail
+        }))
+      } catch (error) {
+        if (sequence === key && open(results)) feedback.textContent = error.message
+      }
+    }
   }
 
   async function showRelationships(pid, roster, id, chapter) {
@@ -73,8 +128,8 @@ export function continuityWorkspace({ api, dialog, actionButton, uuid, isCurrent
     const path = root(pid) + '/' + id
     const data = await api(path + '?chapter=' + chapter)
     if (!isCurrent(pid) || !stillOpen()) return
-    const { current, previous, source, history } = data
-    const starting = current ?? previous
+    const { current, previous, source, history, importedState } = data
+    const starting = current ?? importedState ?? previous
     const names = new Map(roster.characters.map(row => [row.id, row.title]))
     const picks = new Map()
     const fields = Object.entries(characterStateFields).map(([key, title]) => {
@@ -126,7 +181,7 @@ export function continuityWorkspace({ api, dialog, actionButton, uuid, isCurrent
       updateAdd()
     }
 
-    for (const entry of starting?.relationships ?? []) addRelation(entry)
+    for (const entry of starting?.relationships.slice(0, relationshipLimit) ?? []) addRelation(entry)
     updateAdd()
     const back = actionButton('选择人物或章节', () => list(pid, { characterId: id, chapter }))
     const historyButton = actionButton('查看连载记录', () => showHistory(pid, roster, id, chapter, history))
@@ -134,10 +189,17 @@ export function continuityWorkspace({ api, dialog, actionButton, uuid, isCurrent
     const feedback = node('p')
     feedback.setAttribute('role', 'status')
     const status = current ? '当前记录 v' + current.rev
-      : previous ? '表单已带入' + recordLabel(previous) + '的状态。保存前请核对所有字段和关系。'
+      : importedState ? '表单已带入在此位置有效的桌面状态。保存前请核对。'
+        : previous ? '表单已带入' + recordLabel(previous) + '的状态。保存前请核对所有字段和关系。'
         : '填写此位置的人物状态和关系。留空字段表示此位置没有记录。'
+    const oversized = importedState && (Object.values(importedState.state).some(value => value.length > characterStateLimit) ||
+      importedState.relationships.length > relationshipLimit ||
+      importedState.relationships.some(row => row.relation.length > relationshipTextLimit))
+    const importedNotice = oversized ? [node('p', '部分桌面记录超出 Web 表单容量。可查看完整桌面历史，再整理后保存。')] : []
     dialog(names.get(id) + ' · ' + recordLabel({ chapter, finalRev: source.rev }), [
-      back, historyButton, node('p', status), ...(chapter ? [suggestions(pid, id, source, fields, picks, initialJob)] : []),
+      back, historyButton,
+      ...(roster.desktopHistory ? [actionButton('查看桌面人物历史', () => showDesktopHistory(pid, roster, id))] : []),
+      node('p', status), ...importedNotice, ...(chapter ? [suggestions(pid, id, source, fields, picks, initialJob)] : []),
       ...fields.map(row => row.label),
       node('h3', '人物关系'), add, relationList, feedback,
     ], async () => {

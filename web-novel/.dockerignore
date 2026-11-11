@@ -13,6 +13,8 @@
 !reference-novels.mjs
 !character-continuity.mjs
 !continuity-report.mjs
+!desktop-character-import.mjs
+!desktop-continuity.mjs
 !version.mjs
 !maintenance.mjs
 !semantic.mjs

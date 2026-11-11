@@ -1012,6 +1012,7 @@ test('opening an existing Web database migrates v1 and keeps chapter data', asyn
     const p = store.createProject('旧版本作品')
     const doc = store.addDocument(p.id, { kind: 'chapter', number: 1, title: '原章', body: '原文' })
     store.db.exec(`
+      DROP TABLE desktop_character_events;
       DROP TABLE character_continuity;
       DROP TABLE reference_analyses; DROP TABLE reference_novel_chapters; DROP TABLE reference_novels;
       DROP TABLE project_goals;
@@ -1056,8 +1057,13 @@ test('desktop database migration preserves reopened text and authoritative final
       PRAGMA user_version=9;
       CREATE TABLE project_core (id TEXT,project_name TEXT,worldbuilding TEXT,genre TEXT,total_chapters INTEGER);
       INSERT INTO project_core VALUES ('main','海边','风暴常见','冒险',32);
-      CREATE TABLE characters(name TEXT, appearance TEXT);
-      INSERT INTO characters VALUES ('阿雨','红伞');
+      CREATE TABLE characters(character_id TEXT,name TEXT,appearance TEXT,retired INTEGER,cs_location TEXT,cs_updated_at_chapter INTEGER);
+      INSERT INTO characters VALUES ('rain','阿雨','红伞',0,'桌面现状',1),('pilot','领航员','船帽',0,'',NULL);
+      CREATE TABLE character_relationships(relationship_id TEXT,source_character_id TEXT,target_character_id TEXT,relation TEXT,
+        source_display_snapshot TEXT,target_display_snapshot TEXT);
+      INSERT INTO character_relationships VALUES ('guide','rain','pilot','同船','阿雨','领航员');
+      CREATE TABLE character_continuity_events(event_id TEXT,subject_id TEXT,subject_name TEXT,target_id TEXT,target_name TEXT,
+        aspect TEXT,value TEXT,effective_chapter INTEGER,provenance_json TEXT,draft_id INTEGER,evidence_json TEXT);
       CREATE TABLE blueprints(chapter_number INTEGER, title TEXT, purpose TEXT);
       INSERT INTO blueprints VALUES (1,'旧灯塔','铺设伏笔');
       CREATE TABLE contents(id INTEGER PRIMARY KEY,body TEXT);
@@ -1067,7 +1073,7 @@ test('desktop database migration preserves reopened text and authoritative final
       CREATE TABLE finalization_outbox(draft_id INTEGER,finalization_id TEXT,chapter_title TEXT,content_hash TEXT,content_snapshot TEXT);
     `)
     const add = db.prepare('INSERT INTO drafts_all VALUES (?,1,?,?,?,?)')
-    add.run(1, 1, 'draft', 1, '[]')
+    add.run(1, 1, 'superseded', 1, '[]')
     add.run(2, 2, 'finalized', 2, '[]')
     add.run(3, 3, 'revised', 3, JSON.stringify([{
       kind: 'finalized', chapterNumber: 1, draftId: 2, contentHash: hash('旧定稿'), finalizationId: 'final-a',
@@ -1077,11 +1083,32 @@ test('desktop database migration preserves reopened text and authoritative final
     }]))
     add.run(5, 5, 'deleted', 5, '[]')
     db.prepare('INSERT INTO finalization_outbox VALUES (?,?,?,?,?)').run(2, 'final-a', '旧灯塔', hash('旧定稿'), '旧定稿')
+    db.prepare('INSERT INTO finalization_outbox VALUES (?,?,?,?,?)').run(1, 'final-stale', '最早版本', hash('初稿'), '初稿')
+    const writeEvent = db.prepare('INSERT INTO character_continuity_events VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+    const activeSource = { draftId: 2, finalizationId: 'final-a', chapterNumber: 1, contentHash: hash('旧定稿') }
+    const staleSource = { draftId: 1, finalizationId: 'final-stale', chapterNumber: 1, contentHash: hash('初稿') }
+    const writeState = (id, subject, aspect, value, chapter, kind, source, quote, seq = 0) => writeEvent.run(id, subject,
+      subject === 'rain' ? '阿雨' : subject === 'pilot' ? '领航员' : '已移除的人物', null, null, aspect, value, chapter,
+      JSON.stringify({ kind, source }), kind === 'derived' ? source.draftId : null,
+      JSON.stringify({ quote, seq }))
+    writeState('rain-opening', 'rain', 'location', '开篇码头', 0, 'legacy')
+    writeState('rain-current', 'rain', 'location', '旧灯塔', 1, 'derived', activeSource, { start: 0, end: 3, text: '旧定稿' }, 1)
+    writeState('rain-old', 'rain', 'location', '已被换掉的状态', 1, 'derived', staleSource, { start: 0, end: 2, text: '初稿' }, 99)
+    writeState('rain-planned', 'rain', 'location', '计划从第三章在南岸', 3, 'author')
+    writeState('pilot-current', 'pilot', 'keyItems', '灯塔钥匙', 1, 'derived', activeSource)
+    writeState('pilot-author', 'pilot', 'mentalState', '作者在第一章确认', 1, 'author')
+    writeState('pilot-derived', 'pilot', 'mentalState', '同章派生旧心情', 1, 'derived', activeSource, undefined, 99)
+    writeState('old-character', 'removed', 'location', '可查的旧人物', 1, 'legacy')
+    const relation = (id, series, value, chapter, kind, seq) => writeEvent.run(id, 'rain', '阿雨', 'pilot', '旧称呼', 'relation',
+      value, chapter, JSON.stringify({ kind }), null, JSON.stringify({ relationshipId: series, seq }))
+    relation('rel-1', 'guide', '同船', 0, 'legacy', 0)
+    relation('rel-2', 'bond', '表亲', 0, 'legacy', 0)
+    relation('rel-3', 'guide', '', 3, 'author', 1)
     db.close()
     const before = await readFile(source)
     const payload = desktopCopy(source)
     assert.deepEqual(await readFile(source), before)
-    assert.equal(payload.documents.length, 4)
+    assert.equal(payload.documents.length, 5)
     assert.deepEqual(payload.goals, { genre: '冒险', chapters: 32 })
     const chapter = payload.documents.find(doc => doc.kind === 'chapter')
     assert.equal(chapter.body, '重开的正文')
@@ -1093,6 +1120,48 @@ test('desktop database migration preserves reopened text and authoritative final
       assert.deepEqual(store.projectGoals(p.id), { goals: payload.goals, rev: 1 })
       assert.equal(store.chapters(p.id, false)[0].body, '旧定稿')
       assert.equal(store.chapters(p.id, true)[0].body, '重开的正文')
+      const roster = store.continuity.roster(p.id)
+      const rain = roster.characters.find(person => person.title === '阿雨')
+      const pilot = roster.characters.find(person => person.title === '领航员')
+      const stateAt = (person, number) => store.continuity.context(p.id, [person.id], number)[0]
+      assert.equal(stateAt(rain, 1).state.location, '开篇码头')
+      assert.equal(stateAt(rain, 2).state.location, '旧灯塔')
+      assert.equal(stateAt(rain, 3).state.location, '计划从第三章在南岸')
+      assert.deepEqual(stateAt(rain, 2).relationships, [{ targetId: pilot.id, name: pilot.title, relation: '同船\n表亲' }])
+      assert.deepEqual(stateAt(rain, 3).relationships, [{ targetId: pilot.id, name: pilot.title, relation: '表亲' }])
+      assert.equal(stateAt(pilot, 2).state.mentalState, '作者在第一章确认')
+      assert.equal(stateAt(pilot, 2).state.keyItems, '灯塔钥匙')
+      const timeline = store.desktopHistory.history(p.id, rain.id, 0).rows
+      assert.equal(timeline.find(row => row.eventId === 'rain-old').active, 0)
+      assert.equal(timeline.find(row => row.eventId === 'rain-old').quote, '初稿')
+      assert.equal(timeline.find(row => row.eventId === 'rain-current').quote, '旧定稿')
+      assert.equal(store.desktopHistory.history(p.id, 'unlinked', 0).rows[0].value, '可查的旧人物')
+      const chapterDoc = store.get("SELECT id FROM documents WHERE project_id=? AND kind='chapter'", p.id)
+      store.continuity.save(p.id, rain.id, { chapter: 1, finalRev: 2, baseRev: 0,
+        state: { location: 'Web 校正在北岸', mentalState: 'Web 保留状态' }, relationships: [] })
+      assert.equal(stateAt(rain, 2).state.location, 'Web 校正在北岸')
+      assert.deepEqual(stateAt(rain, 3).state, { ...stateAt(rain, 2).state, location: '计划从第三章在南岸' })
+      store.transition(p.id, chapterDoc.id, { baseRev: 5, action: 'finalize' })
+      assert.equal(stateAt(rain, 2).state.location, '开篇码头')
+      assert.equal(stateAt(pilot, 2).state.keyItems, undefined)
+      assert.equal(store.desktopHistory.history(p.id, rain.id, 0).rows.find(row => row.eventId === 'rain-current').active, 0)
+      const copied = store.importBackup(store.backup(p.id))
+      const copiedRain = store.continuity.roster(copied.id).characters.find(person => person.title === '阿雨')
+      const copiedRows = store.desktopHistory.history(copied.id, copiedRain.id, 0).rows
+      assert.notEqual(copiedRain.id, rain.id)
+      assert.equal(copiedRows.find(row => row.eventId === 'rain-current').quote, '旧定稿')
+      assert.notEqual(copiedRows.find(row => row.eventId === 'rain-current').sourceId, chapterDoc.id)
+      const legacy = join(directory, 'legacy.db')
+      await writeFile(legacy, before)
+      const legacyDb = new DatabaseSync(legacy)
+      legacyDb.exec('DROP TABLE character_continuity_events; PRAGMA user_version=8')
+      legacyDb.close()
+      const old = store.importBackup(desktopCopy(legacy))
+      const oldRain = store.continuity.roster(old.id).characters.find(person => person.title === '阿雨')
+      assert.deepEqual(store.continuity.context(old.id, [oldRain.id], 1), [])
+      const [legacyState] = store.continuity.context(old.id, [oldRain.id], 2)
+      assert.equal(legacyState.state.location, '桌面现状')
+      assert.equal(legacyState.relationships[0].relation, '同船')
     } finally { store.db.close() }
     await writeFile(source + '-wal', '')
     assert.throws(() => desktopCopy(source), /WAL/)
@@ -1110,6 +1179,9 @@ test('desktop database migration preserves reopened text and authoritative final
     const uploaded = await upload(storedDesktopArchive(before))
     const copied = await uploaded.json()
     assert.equal(uploaded.status, 201, JSON.stringify(copied))
+    const importedHistory = await fetch(server.base + '/api/projects/' + copied.id + '/continuity/desktop-history', { headers: { Cookie: cookie } })
+    assert.equal(importedHistory.status, 200)
+    assert.equal((await importedHistory.json()).rows.find(row => row.eventId === 'rain-current').quote, '旧定稿')
     const exported = await fetch(server.base + '/api/projects/' + copied.id + '/export', { headers: { Cookie: cookie } })
     assert.match(await exported.text(), /旧定稿/)
     const listing = await fetch(server.base + '/api/projects', { headers: { Cookie: cookie } })

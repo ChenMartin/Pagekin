@@ -8,6 +8,7 @@ import { novelGoals } from './public/novel-goals.mjs'
 import { architectureSections } from './public/architecture.mjs'
 import { openReferenceNovels, referenceNovelSchema } from './reference-novels.mjs'
 import { characterContinuity, continuitySchema } from './character-continuity.mjs'
+import { desktopContinuity, desktopContinuitySchema } from './desktop-continuity.mjs'
 import { continuityReport } from './continuity-report.mjs'
 import { characterStateFields } from './public/character-state.mjs'
 import { reviewReport } from './review-report.mjs'
@@ -265,6 +266,14 @@ export function openStore(directory) {
       COMMIT;
     `)
   }
+  if (version < 16) {
+    db.exec(`
+      BEGIN IMMEDIATE;
+      ${desktopContinuitySchema}
+      PRAGMA user_version=16;
+      COMMIT;
+    `)
+  }
   db.prepare("UPDATE runs SET status='interrupted',error='服务重启，已保留收到的内容' WHERE status='running'").run()
   db.prepare("UPDATE writing_batches SET status='paused',error='服务重启，待手动继续' WHERE status='running'").run()
   db.prepare("UPDATE reference_analyses SET status='interrupted',error='服务重启，已保留收到的内容' WHERE status='running'").run()
@@ -286,7 +295,8 @@ export function openStore(directory) {
 
   const screenplay = screenplayStore({ get, all, run, tx, hash, now })
   const referenceNovels = openReferenceNovels({ get, all, run, tx, hash, now, writingAvailable })
-  const continuity = characterContinuity({ get, all, run, tx, now, document, candidateEvidence })
+  const desktopHistory = desktopContinuity({ get, all, run, document })
+  const continuity = characterContinuity({ get, all, run, tx, now, document, candidateEvidence, desktopHistory })
 
   function project(id) {
     const row = get('SELECT * FROM projects WHERE id=?', id)
@@ -1215,6 +1225,7 @@ export function openStore(directory) {
       references: all('SELECT title,body FROM reference_material WHERE project_id=? ORDER BY created,id', pid),
       referenceNovels: referenceNovels.backup(pid),
       characterContinuity: continuity.backup(pid),
+      desktopContinuity: desktopHistory.backup(pid),
       threads: threads(pid).map(({ title, body, kind, status, planted, due, resolved }) => ({ title, body, kind, status, planted, due, resolved })),
       writingSkills: { library: all('SELECT id,title,body FROM writing_skills WHERE project_id=? ORDER BY created,id', pid), bindings: skillProfile(pid).bindings },
       adaptations: screenplay.backup(pid),
@@ -1285,6 +1296,7 @@ export function openStore(directory) {
         checkpoint(document(p.id, doc.id), 'import')
       }
       if (data.characterContinuity !== undefined) continuity.importBackup(p.id, data.characterContinuity, mapping)
+      if (data.desktopContinuity !== undefined) desktopHistory.importBackup(p.id, data.desktopContinuity, mapping)
       const importedRuns = new Map()
       for (const source of data.runs ?? []) {
         object(source)
@@ -1332,7 +1344,7 @@ export function openStore(directory) {
   }
 
   return { db, get, all, run, tx, project, document, createProject, renameProject, addDocument, importChapters, eventHead, projectEvents, pruneEvents, screenplay,
-    projectGoals, saveProjectGoals, referenceNovels, continuity, continuityRuns,
+    projectGoals, saveProjectGoals, referenceNovels, continuity, continuityRuns, desktopHistory,
     save, chapters, search, addReference, reference, threads, saveThread,
     transition, history, restore, getRun, runDetail, startRun, previewRun, continueRun, applyRun, previewPassage, previewRevision, applyRevision, backup, importBackup,
     listBatches, batchChapters, getBatch, createBatch, changeBatch, nextBatchRun, pauseBatch,

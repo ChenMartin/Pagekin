@@ -29,7 +29,7 @@ const decode = row => row ? {
   state: JSON.parse(row.state), relationships: JSON.parse(row.relationships), evidence: JSON.parse(row.evidence),
 } : null
 
-export function characterContinuity({ get, all, run, tx, now, document, candidateEvidence }) {
+export function characterContinuity({ get, all, run, tx, now, document, candidateEvidence, desktopHistory }) {
   function character(pid, id) {
     const row = document(pid, id)
     if (row.kind !== 'character') throw new ApiError(404, '人物卡不存在')
@@ -41,7 +41,7 @@ export function characterContinuity({ get, all, run, tx, now, document, candidat
     const finals = all(`SELECT d.number,h.title,h.rev FROM documents d JOIN history h
       ON h.document_id=d.id AND h.rev=(SELECT MAX(f.rev) FROM history f WHERE f.document_id=d.id AND f.status='final')
       WHERE d.project_id=? AND d.kind='chapter' ORDER BY d.number`, pid)
-    return { characters, finals }
+    return { characters, finals, desktopHistory: desktopHistory.hasHistory(pid) }
   }
 
   function head(pid, chapter) {
@@ -67,7 +67,9 @@ export function characterContinuity({ get, all, run, tx, now, document, candidat
     const source = head(pid, chapter)
     const history = all(`SELECT c.chapter_number chapter,c.final_rev finalRev,c.rev,c.updated,${effective} active
       FROM character_continuity c WHERE c.character_id=? ORDER BY c.chapter_number DESC,c.final_rev DESC LIMIT 100`, id)
-    return { source, current: decode(snapshot(id, chapter, source.rev)), previous: decode(latest(id, chapter)), history }
+    const [projected] = context(pid, [id], chapter + 1)
+    return { source, current: decode(snapshot(id, chapter, source.rev)), previous: decode(latest(id, chapter)), history,
+      importedState: projected?.desktopEvents ? projected : null }
   }
 
   function archived(pid, id, chapter, finalRev) {
@@ -129,13 +131,14 @@ export function characterContinuity({ get, all, run, tx, now, document, candidat
         FROM character_continuity c WHERE c.character_id IN (${ids.map(() => '?').join(',')})
         AND c.chapter_number<? AND ${effective})
       SELECT * FROM choices WHERE rn=1 ORDER BY chapter_number DESC,character_id`, ...ids, before)
-    if (!rows.length) return []
+    if (!rows.length && !desktopHistory.hasHistory(pid)) return []
     const names = new Map(all("SELECT id,title FROM documents WHERE project_id=? AND kind='character'", pid).map(row => [row.id, row.title]))
-    return rows.map(row => {
+    const native = rows.map(row => {
       const data = decode(row)
       return { id: row.character_id, name: names.get(row.character_id), chapter: data.chapter, finalRev: data.finalRev, rev: data.rev,
         state: data.state, relationships: data.relationships.map(entry => ({ ...entry, name: names.get(entry.targetId) })) }
     })
+    return desktopHistory.merge(pid, ids, before, native, names)
   }
 
   function relationshipsAt(pid, value) {

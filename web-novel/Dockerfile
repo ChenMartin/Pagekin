@@ -11,6 +11,7 @@ FROM base
 WORKDIR /app
 COPY --chown=node:node server.mjs store.mjs input.mjs screenplay-store.mjs desktop-archive.mjs desktop-copy.mjs writing-context.mjs review-report.mjs revision-merge.mjs continuation.mjs version.mjs maintenance.mjs semantic.mjs ./
 COPY --chown=node:node manuscript-export.mjs reference-novels.mjs character-continuity.mjs continuity-report.mjs ./
+COPY --chown=node:node desktop-character-import.mjs desktop-continuity.mjs ./
 COPY --chown=node:node public ./public
 COPY --from=editor-build --chown=node:node /build/public/editor.bundle.mjs /build/public/editor.notices.txt ./public/
 RUN mkdir /data && chown node:node /data

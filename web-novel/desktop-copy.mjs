@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 import { hash, now, string } from './store.mjs'
 import { novelGoals } from './public/novel-goals.mjs'
+import { desktopCharacterEvents } from './desktop-character-import.mjs'
 
 const schemas = new Set([7, 8, 9])
 const working = new Set(['draft', 'reviewed', 'revised'])
@@ -81,9 +82,9 @@ export function desktopCopy(source, stagingRoot = tmpdir()) {
       documents.push({ id, kind, title: string(title, 160, true), body: string(body, 180_000), number, status, rev, history })
     }
     add('settings', 'settings', '作品设定与架构', sections(project, settingsFields))
-    for (const [index, row] of db.prepare('SELECT * FROM characters ORDER BY name').all().entries()) {
-      add(`character-${index}`, 'character', row.name, sections(row, characterFields))
-    }
+    const characters = db.prepare('SELECT * FROM characters ORDER BY name,rowid').all()
+      .map((row, index) => ({ id: `character-${index}`, row }))
+    for (const { id, row } of characters) add(id, 'character', row.name, sections(row, characterFields))
     const blueprints = db.prepare('SELECT * FROM blueprints ORDER BY chapter_number').all()
     const titles = new Map(blueprints.map(row => [row.chapter_number, row.title?.trim()]))
     for (const row of blueprints) {
@@ -129,7 +130,8 @@ export function desktopCopy(source, stagingRoot = tmpdir()) {
         goals[field.key] = value.trim().slice(0, field.maxLength)
       }
     }
-    return { format: 'pagekin-web-novel-v1', title: string(project.project_name, 160, true), goals, documents, runs: [] }
+    const desktopContinuity = desktopCharacterEvents(db, characters, chapters, hash)
+    return { format: 'pagekin-web-novel-v1', title: string(project.project_name, 160, true), goals, documents, desktopContinuity, runs: [] }
   }, stagingRoot)
 }
 

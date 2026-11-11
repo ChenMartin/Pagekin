@@ -466,6 +466,9 @@ async function route(req, res) {
   if (resource === 'continuity') {
     const chapter = Number(url.searchParams.get('chapter') ?? '0')
     if (method === 'GET' && id === undefined) return json(res, storage.continuity.roster(pid))
+    if (id === 'desktop-history' && action === undefined && method === 'GET') {
+      return json(res, storage.desktopHistory.history(pid, url.searchParams.get('character'), Number(url.searchParams.get('offset') ?? '0')))
+    }
     if (id === 'relationships' && action === undefined && method === 'GET') {
       return json(res, storage.continuity.relationshipsAt(pid, chapter))
     }

@@ -621,7 +621,36 @@ try {
   await dialogButton('返回剧本集')
   await dialogButton('读原文')
   await until(() => evaluate("document.querySelector('#dialog-body pre')?.textContent.includes('章节末尾')"), 'Pinned source was not displayed')
-  console.log('Browser workflow passed (' + (enhanced ? 'CodeMirror' : 'plain') + '): novel writing, recovery, AI workflows and screenplay adaptation')
+  const importedPeople = await evaluate(`(async () => {
+    const document = (id, kind, title, body, number = null, status = 'draft') =>
+      ({ id, kind, title, body, number, status, rev: 1, history: [] });
+    const source = {
+      format: 'pagekin-web-novel-v1', title: '桌面人物迁移浏览器样稿',
+      documents: [document('rain','character','阿雨','红伞'), document('other','character','领航员',''),
+        document('chapter-1','chapter','出航','阿雨在旧码头。',1,'final')],
+      desktopContinuity: [{ eventId: 'state', characterId: 'rain', characterName: '阿雨',
+        targetId: null, targetName: null, field: 'location', value: '旧码头', chapter: 1, kind: 'derived',
+        series: 'location', seq: 0, sourceId: 'chapter-1', sourceRev: 1, quote: '阿雨在旧码头。',
+        bound: true, eligible: true }],
+    };
+    const response = await fetch('/api/import', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(source) });
+    if (!response.ok) throw new Error(await response.text());
+    return (await response.json()).id;
+  })()`)
+  await reload()
+  await visible('#projects')
+  await until(() => evaluate(`Array.from(document.querySelector('#projects').options).some(row => row.value === ${JSON.stringify(importedPeople)})`), 'Imported novel did not appear')
+  await fill('#projects', importedPeople)
+  await evaluate("document.querySelector('#projects').dispatchEvent(new Event('change'))")
+  await until(() => evaluate("document.querySelector('#overview-title').textContent === '桌面人物迁移浏览器样稿'"), 'Imported novel did not open')
+  await visible('#character-continuity')
+  await click('#character-continuity')
+  await dialogButton('查看桌面人物历史')
+  await visible('#dialog-body .batch-list summary')
+  await click('#dialog-body .batch-list summary')
+  assert.match(await evaluate("document.querySelector('#dialog-body').textContent"), /桌面定稿派生[\s\S]*原文引证[\s\S]*阿雨在旧码头/)
+  console.log('Browser workflow passed (' + (enhanced ? 'CodeMirror' : 'plain') + '): novel writing, recovery, AI workflows, screenplay and desktop continuity')
 } finally {
   socket?.close()
   for (const child of [browser, app]) {
