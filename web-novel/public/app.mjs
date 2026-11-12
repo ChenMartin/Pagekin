@@ -2115,7 +2115,8 @@ for (const button of $('stage-nav').querySelectorAll('[data-stage]')) {
 click('batch-writing', () => listBatches(project))
 click('batch-blueprints', () => newBlueprintBatch(project))
 click('writing-skills', () => showWritingSkills(project))
-const screenplay = screenplayWorkspace({ api, dialog, field, actionButton, localTransaction, uuid, isCurrent: pid => project === pid })
+const screenplay = screenplayWorkspace({ api, dialog, field, actionButton, localTransaction, uuid, isCurrent: pid => project === pid,
+  modelEnabled: () => model, modelName })
 click('screenplay-workspace', () => screenplay.list(project))
 click('new-project', () => {
   const [label, title] = field(ui("作品名称"), { maxLength: 160 })

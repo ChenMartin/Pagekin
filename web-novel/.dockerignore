@@ -3,6 +3,8 @@
 !store.mjs
 !input.mjs
 !screenplay-store.mjs
+!storyboard.mjs
+!production-runs.mjs
 !desktop-archive.mjs
 !desktop-copy.mjs
 !writing-context.mjs

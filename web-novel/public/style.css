@@ -98,6 +98,12 @@ dialog::backdrop { background: #0008; }
 .script-fields { min-width: 0; border: 1px solid var(--line); border-radius: .4rem; margin: .65rem 0; padding: .65rem; }
 .script-line { padding: .65rem 0; border-top: 1px solid var(--line); }
 #screenplay-episode-editor .tools button { margin-bottom: 0; }
+.storyboard-list, .storyboard-cards { display: grid; gap: .45rem; margin: .55rem 0; }
+.storyboard-cards { grid-template-columns: repeat(auto-fit, minmax(min(12rem, 100%), 1fr)); }
+#dialog-body .storyboard-cards button, #dialog-body .storyboard-list button { margin: 0; text-align: left; }
+.storyboard-cards button { min-height: 5rem; overflow-wrap: anywhere; }
+.storyboard-cards span { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; margin-top: .25rem; }
+#storyboard-editor .tools button { margin-bottom: 0; }
 .compare { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
 .revision-list { max-height: 46dvh; overflow-y: auto; }
 .revision-list article { border-top: 1px solid var(--line); padding: .65rem 0; }

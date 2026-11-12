@@ -30,6 +30,8 @@ const storage = openStore(directory)
 const semantic = openSemantic(storage)
 const models = openModelProfiles(storage)
 const webdav = openWebDavBackup(storage, directory)
+const referenceGeneration = { prefix: 'reference:', update: storage.referenceNovels.update }
+const productionGeneration = { prefix: 'production:', update: storage.production.update }
 const sessionSeconds = 7 * 86400
 const attempts = new Map()
 const active = new Map()
@@ -50,6 +52,8 @@ const files = new Map([
   ['/novel-goals.mjs', ['novel-goals.mjs', 'text/javascript']],
   ['/architecture.mjs', ['architecture.mjs', 'text/javascript']],
   ['/screenplay-ui.mjs', ['screenplay-ui.mjs', 'text/javascript']],
+  ['/production-ui.mjs', ['production-ui.mjs', 'text/javascript']],
+  ['/storyboard-ui.mjs', ['storyboard-ui.mjs', 'text/javascript']],
   ['/reference-novel-ui.mjs', ['reference-novel-ui.mjs', 'text/javascript']],
   ['/character-state.mjs', ['character-state.mjs', 'text/javascript']],
   ['/character-continuity-ui.mjs', ['character-continuity-ui.mjs', 'text/javascript']],
@@ -258,9 +262,9 @@ function providerError(status) {
   return `模型服务返回 HTTP ${status}，请检查模型配置、额度与上下文长度`
 }
 
-async function generate(profile, job, messages, prefix = '', reference = false) {
+async function generate(profile, job, messages, prefix = '', target) {
   const controller = new AbortController()
-  const activeKey = reference ? 'reference:' + job.id : job.id
+  const activeKey = (target?.prefix ?? '') + job.id
   active.set(activeKey, controller)
   let raw = ''
   let lastWrite = 0
@@ -310,7 +314,7 @@ async function generate(profile, job, messages, prefix = '', reference = false) 
         }
         if (Date.now() - lastWrite >= 650) {
           const output = visible().slice(0, 180_000)
-          if (reference) storage.referenceNovels.update(job.id, { output })
+          if (target) target.update(job.id, { output })
           else storage.run("UPDATE runs SET output=? WHERE id=? AND status='running'", output, job.id)
           lastWrite = Date.now()
         }
@@ -334,7 +338,7 @@ async function generate(profile, job, messages, prefix = '', reference = false) 
     clearTimeout(timeout)
     active.delete(activeKey)
     const output = visible().slice(0, 180_000)
-    if (reference) status = storage.referenceNovels.update(job.id, { status, error, output })
+    if (target) status = target.update(job.id, { status, error, output })
     else storage.run('UPDATE runs SET status=?,error=?,output=? WHERE id=?', status, error, output, job.id)
   }
   return status
@@ -370,7 +374,7 @@ function runReferenceBatch(pid, id, profile) {
     while (!stopping) {
       const next = references.nextBatch(id, profile.contextLimit)
       if (!next) return
-      if (await generate(profile, next.job, next.messages, '', true) !== 'done') {
+      if (await generate(profile, next.job, next.messages, '', referenceGeneration) !== 'done') {
         const { error } = references.analysis(pid, next.job.id)
         references.pauseBatch(id, error || '本区间未完成，可继续重试')
         return
@@ -447,6 +451,30 @@ async function route(req, res) {
     if (method === 'PUT') return json(res, storage.saveProjectGoals(pid, await body(req, 8192)))
   }
   const screenplay = storage.screenplay
+  if (resource === 'production-runs') {
+    const production = storage.production
+    if (method === 'GET' && action === undefined) return json(res, id ? production.detail(pid, id)
+      : production.list(pid, url.searchParams.get('target'), url.searchParams.get('kind')))
+    if (method === 'POST' && id === 'preview' && action === undefined) {
+      const value = await body(req, 16_384)
+      const limit = previewBudget()
+      const { messages } = production.prepare(pid, value, limit)
+      return json(res, { messages, limit })
+    }
+    if (method === 'POST' && id === undefined) {
+      const value = await body(req, 16_384)
+      const profile = models.required()
+      const { job, messages } = production.start(pid, value, profile)
+      if (messages) void generate(profile, job, messages, '', productionGeneration).catch(() => console.error('无法记录制片文本任务结果'))
+      return json(res, job, 202)
+    }
+    if (method === 'POST' && id && action === 'cancel') {
+      const job = production.detail(pid, id)
+      active.get(productionGeneration.prefix + id)?.abort('cancelled')
+      return json(res, job, 202)
+    }
+    if (method === 'POST' && id && action === 'apply') return json(res, production.apply(pid, id, await body(req, 4096)))
+  }
   if (resource === 'adaptations') {
     if (method === 'GET' && action === undefined) {
       if (id === 'eligible') return json(res, screenplay.eligible(pid))
@@ -456,6 +484,23 @@ async function route(req, res) {
     if (method === 'POST' && id && action === 'episodes') return json(res, screenplay.createEpisode(pid, id, await body(req, 8192)), 201)
   }
   if (resource === 'episodes' && id) {
+    const storyboard = storage.storyboard
+    if (method === 'GET' && action === 'storyboard') return json(res, storyboard.detail(pid, id))
+    if (method === 'PUT' && action === 'storyboard') return json(res, storyboard.change(pid, id, await body(req)))
+    if (method === 'GET' && action === 'storyboard-history') {
+      const rev = url.searchParams.get('rev')
+      return json(res, rev === null ? storyboard.history(pid, id) : storyboard.detail(pid, id, Number(rev)))
+    }
+    if (method === 'GET' && action === 'storyboard-export') {
+      const rev = url.searchParams.has('rev') ? Number(url.searchParams.get('rev')) : undefined
+      if (url.searchParams.get('format') === 'json') {
+        res.setHeader('Content-Disposition', 'attachment; filename="storyboard.json"')
+        return json(res, storyboard.detail(pid, id, rev))
+      }
+      const text = storyboard.exportMarkdown(pid, id, rev)
+      res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8', 'Content-Disposition': 'attachment; filename="storyboard.md"' })
+      return res.end(text)
+    }
     if (method === 'GET' && action === undefined) return json(res, screenplay.episode(pid, id))
     if (method === 'PUT' && action === undefined) return json(res, screenplay.changeEpisode(pid, id, await body(req), 'save'))
     if (method === 'GET' && action === 'source') return json(res, screenplay.episodeSource(pid, id, url.searchParams.get('chapter')))
@@ -580,7 +625,7 @@ async function route(req, res) {
       const value = await body(req, 16_384)
       const profile = models.required()
       const { job, messages } = references.start(pid, id, value, profile.contextLimit, profile.ref)
-      if (messages) void generate(profile, job, messages, '', true).catch(() => console.error('无法记录参考小说拆解结果'))
+      if (messages) void generate(profile, job, messages, '', referenceGeneration).catch(() => console.error('无法记录参考小说拆解结果'))
       return json(res, job, 202)
     }
     if (id && method === 'POST' && action === 'batch') {

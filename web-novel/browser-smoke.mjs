@@ -24,6 +24,7 @@ const modelMock = createServer(async (req, res) => {
   if (req.url === '/v1/chat/completions') {
     res.writeHead(200, { 'Content-Type': 'text/event-stream' })
     const instruction = payload.messages[0].content
+    const prompt = payload.messages.at(-1).content
     let content = '本章先调查船票。'
     let finish = 'stop'
     if (payload.messages.at(-1).content.includes('浏览器续跑演练')) {
@@ -52,6 +53,11 @@ const modelMock = createServer(async (req, res) => {
       { title: '补写动作', severity: 'major', quote: '断网的本机', reason: '缺少动作', suggestion: '加入登船动作' },
       { title: '模型误引', severity: 'minor', quote: '原文没有这句话', reason: '引文待核对', suggestion: '调整灯塔描写' },
     ] })
+    if (prompt.startsWith('【分集提案】')) content = JSON.stringify({ episodes: [{ title: '灯塔密信', synopsis: '灯塔守夜人收到密信。', sources: [1] }] })
+    if (prompt.startsWith('【剧本候选】')) content = JSON.stringify({ scenes: [{ title: '灯塔夜巡', location: '灯塔', time: '夜', interior: 'exterior', sources: [1],
+      elements: [{ type: 'action', text: '守夜人举灯。' }, { type: 'dialogue', text: '信就在这里。', speaker: '守夜人' }] }] })
+    if (prompt.startsWith('【分镜候选】')) content = JSON.stringify({ shots: [{ size: 'wide', durationMs: 4000, visual: '灯塔和守夜人的剪影',
+      camera: '低机位', movement: '缓慢推进', dialogue: '信就在这里。', prompt: '海雾与灯塔的逆光剪影' }] })
     res.end('data: ' + JSON.stringify({ choices: [{ delta: { content }, finish_reason: finish }] }) + '\n\ndata: [DONE]\n\n')
     return
   }
@@ -82,6 +88,7 @@ try {
     : fileURLToPath(new URL('./server.mjs', import.meta.url))
   app = spawn(process.execPath, [entry], {
     env: { ...process.env, APP_PASSWORD: password, APP_PASSWORD_FILE: '', APP_SECURE_COOKIE: '0',
+      WEBDAV_BACKUP_URL: '',
       APP_ORIGIN: '', APP_HOST: '127.0.0.1', PORT: '0', APP_DATA_DIR: join(root, 'data'),
       APP_EDITOR: process.env.PAGEKIN_TEST_EDITOR === 'plain' ? 'plain' : 'auto',
       EMBEDDING_BASE_URL: modelBase,
@@ -671,6 +678,59 @@ try {
   await dialogButton('返回剧本集')
   await dialogButton('读原文')
   await until(() => evaluate("document.querySelector('#dialog-body pre')?.textContent.includes('章节末尾')"), 'Pinned source was not displayed')
+  await dialogButton('返回剧本集')
+  await dialogButton('返回改编项目')
+  await dialogButton('AI 分集提案')
+  await visible('#production-sources input[type=checkbox]')
+  await click('#production-sources input[type=checkbox]')
+  await click('#production-preview')
+  await until(() => evaluate("document.querySelector('#dialog-body pre')?.textContent.includes('【分集提案】')"), 'Episode plan preview was unavailable')
+  await click('#dialog-submit')
+  await until(() => evaluate("document.querySelector('.production-proposal')?.textContent.includes('灯塔密信')"), 'Episode proposal was unavailable')
+  await dialogButton('创建选中的剧本集')
+  await dialogButton('第 1 季 · 第 2 集')
+  await visible('#script-episode-synopsis')
+  assert.equal(await evaluate("document.querySelector('#script-episode-synopsis').value"), '灯塔守夜人收到密信。')
+  await dialogButton('AI 剧本候选')
+  await until(() => evaluate("document.querySelector('#dialog-title').textContent === 'AI 剧本候选'"), 'Screenplay generation did not open')
+  await click('#dialog-submit')
+  await until(() => evaluate("document.querySelector('.production-proposal')?.textContent.includes('守夜人举灯。')"), 'Screenplay comparison was unavailable')
+  await dialogButton('采用候选')
+  await visible('#script-scene-title')
+  assert.equal(await evaluate("document.querySelector('#script-scene-title').value"), '灯塔夜巡')
+  await dialogButton('确认剧本')
+  await until(() => evaluate("document.querySelector('#script-save-status')?.textContent.includes('已确认')"), 'Generated screenplay did not confirm')
+  await dialogButton('分镜工作区')
+  await visible('#storyboard-add-shot')
+  await click('#storyboard-add-shot')
+  await fill('#shot-visual', '本机先记一个近景。')
+  await until(() => evaluate("document.querySelector('#storyboard-status')?.textContent.includes('本机草稿')"), 'Storyboard draft was not persisted locally')
+  await reload()
+  await visible('#screenplay-workspace')
+  await click('#screenplay-workspace')
+  await dialogButton('夜航短剧')
+  await dialogButton('第 1 季 · 第 2 集')
+  await dialogButton('分镜工作区')
+  await dialogButton('比较本机分镜')
+  await click('#dialog-submit')
+  await visible('#shot-visual')
+  assert.equal(await evaluate("document.querySelector('#shot-visual').value"), '本机先记一个近景。')
+  await click('#dialog-submit')
+  await until(() => evaluate("document.querySelector('#storyboard-status')?.textContent.includes('分镜 v1')"), 'Storyboard was not saved to NAS')
+  await dialogButton('AI 分场拆镜')
+  await until(() => evaluate("document.querySelector('#dialog-title').textContent === 'AI 分场拆镜'"), 'Shot generation did not open')
+  await click('#dialog-submit')
+  await until(() => evaluate("document.querySelector('.production-proposal')?.textContent.includes('灯塔和守夜人的剪影')"), 'Shot comparison was unavailable')
+  await dialogButton('采用候选')
+  await until(() => evaluate("document.querySelector('#shot-visual')?.value === '灯塔和守夜人的剪影'"), 'Shot candidate did not apply')
+  await dialogButton('镜头卡')
+  await visible('.storyboard-cards button')
+  await dialogButton('确认分镜')
+  await until(() => evaluate("document.querySelector('#storyboard-status')?.textContent.includes('已确认')"), 'Storyboard did not confirm')
+  await dialogButton('拆镜任务记录')
+  await dialogButton('已完成 · 已采用')
+  await until(() => evaluate("document.querySelector('.production-proposal')?.textContent.includes('灯塔和守夜人的剪影')"), 'Applied shot task was unavailable from a confirmed storyboard')
+  await click('#close-dialog')
   const importedPeople = await evaluate(`(async () => {
     const sourceDoc = (id, kind, title, body, number = null, status = 'draft') =>
       ({ id, kind, title, body, number, status, rev: 1, history: [] });
@@ -757,7 +817,7 @@ try {
   await until(() => evaluate("document.querySelector('#dialog-body').textContent.includes('已完成 · 已拆解 3 / 3 节')"), 'Reference queue status did not persist')
   await dialogButton('整书归纳')
   await until(() => evaluate("document.querySelector('#dialog-title').textContent === '整书归纳'"), 'Reference queue did not lead to synthesis')
-  console.log('Browser workflow passed (' + (enhanced ? 'CodeMirror' : 'plain') + '): novel, architecture, evidence, locale, screenplay, EPUB and reference batch')
+  console.log('Browser workflow passed (' + (enhanced ? 'CodeMirror' : 'plain') + '): novel, screenplay proposals, storyboard, EPUB and reference batch')
 } finally {
   socket?.close()
   for (const child of [browser, app]) {

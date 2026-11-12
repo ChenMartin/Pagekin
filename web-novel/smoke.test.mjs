@@ -81,6 +81,7 @@ async function launch(directory, port) {
   const child = spawn(process.execPath, [entry], {
     env: {
       ...process.env, APP_PASSWORD: password, APP_PASSWORD_FILE: '', APP_SECURE_COOKIE: '0',
+      WEBDAV_BACKUP_URL: '',
       APP_HOST: '127.0.0.1', APP_ORIGIN: '', APP_DATA_DIR: directory, PORT: '0', LLM_MODEL: 'test',
       LLM_BASE_URL: `http://127.0.0.1:${port}/v1`, LLM_API_KEY: '', LLM_CONTEXT_CHARS: '8000',
       LLM_PROFILES_FILE: '', LLM_PROFILES_JSON: JSON.stringify([
@@ -1217,6 +1218,180 @@ test('novel workflow through HTTP across devices, generation, export and restart
   }
 })
 
+test('production candidates pin inputs, apply atomically and produce a versioned storyboard', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'pagekin-production-'))
+  let modelCalls = 0
+  const upstream = createServer(async (req, res) => {
+    const chunks = []
+    for await (const chunk of req) chunks.push(chunk)
+    const input = JSON.parse(Buffer.concat(chunks))
+    const prompt = input.messages.at(-1).content
+    modelCalls++
+    let result
+    if (prompt.startsWith('【分集提案】')) result = { episodes: [
+      { title: '港口来信', synopsis: '阿雨拾到密信。', sources: [1] }, { title: '渡轮', synopsis: '信随渡轮离港。', sources: [2] },
+    ] }
+    if (prompt.startsWith('【剧本候选】')) result = { scenes: [
+      { title: '夜港', location: '码头', time: '夜', interior: 'exterior', sources: [1],
+        elements: [{ type: 'dialogue', text: '我们今晚走。', speaker: '阿雨', character: 1 }] },
+      { title: '渡轮内', location: '船舱', time: '夜', interior: 'interior', sources: [1], elements: [{ type: 'action', text: '船缓缓靠岸。' }] },
+    ] }
+    if (prompt.startsWith('【分镜候选】')) result = { shots: [{ size: 'wide', durationMs: 4000, visual: '渡轮靠岸全景', prompt: '夜景，稳定镜头' }] }
+    if (prompt.includes('坏来源')) result.scenes[0].sources = [99]
+    const content = JSON.stringify(result)
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' })
+    res.write('data: ' + JSON.stringify({ choices: [{ delta: { content } }] }) + '\n\n')
+    if (!prompt.includes('保持运行')) res.end('data: [DONE]\n\n')
+  })
+  let server
+  let cookie
+  async function request(path, method = 'GET', value, status = 200) {
+    const response = await fetch(server.base + '/api' + path, { method, signal: AbortSignal.timeout(4000),
+      headers: { ...(cookie ? { Cookie: cookie } : {}), ...(value === undefined ? {} : { 'Content-Type': 'application/json' }) },
+      body: value === undefined ? undefined : JSON.stringify(value) })
+    const text = await response.text()
+    assert.equal(response.status, status, `${method} ${path}: ${text}`)
+    if (path === '/session' && method === 'POST') cookie = response.headers.get('set-cookie').split(';')[0]
+    return response.headers.get('content-type')?.includes('json') ? JSON.parse(text) : text
+  }
+  async function waitFor(path, condition) {
+    for (let i = 0; i < 100; i++) {
+      const row = await request(path)
+      if (condition(row)) return row
+      await delay(25)
+    }
+    assert.fail('Production task did not reach its expected state')
+  }
+  try {
+    upstream.listen(0, '127.0.0.1')
+    await once(upstream, 'listening')
+    const port = upstream.address().port
+    server = await launch(directory, port)
+    await request('/session', 'POST', { password })
+    const project = await request('/projects', 'POST', { title: '影视测试' }, 201)
+    const other = await request('/projects', 'POST', { title: '隔离项目' }, 201)
+    const path = '/projects/' + project.id
+    const docs = path + '/documents'
+    const finals = []
+    for (let number = 1; number <= 2; number++) {
+      const doc = await request(docs, 'POST', { kind: 'chapter', title: '原章 ' + number, number, body: '仅供改编的小说原文 ' + number }, 201)
+      finals.push(await request(docs + '/' + doc.id + '/status', 'POST', { action: 'finalize', baseRev: doc.rev }))
+    }
+    const actor = await request(docs, 'POST', { kind: 'character', title: '阿雨', body: '航海者' }, 201)
+    const adapt = await request(path + '/adaptations', 'POST', { mutationId: randomUUID(), title: '夜航漫剧', format: 'comic', aspect: '9:16', seconds: 90 }, 201)
+    const adaptPath = path + '/adaptations/' + adapt.id
+    const queue = path + '/production-runs'
+    const refs = finals.map(({ id, rev }) => ({ id, rev }))
+    const planInput = { kind: 'plan', target: adapt.id, season: 1, first: 1, count: 2, sources: refs, mutationId: randomUUID() }
+    const preview = await request(queue + '/preview', 'POST', planInput)
+    assert.equal(modelCalls, 0)
+    assert.match(preview.messages[1].content, /仅供改编的小说原文 1/)
+    const planPath = queue + '/' + (await request(queue, 'POST', planInput, 202)).id
+    const plan = await waitFor(planPath, row => row.status !== 'running')
+    assert.equal(plan.status, 'done')
+    assert.deepEqual(plan.candidate.episodes.map(row => row.sourceIds), [[refs[0].id], [refs[1].id]])
+    assert.equal((await request(queue, 'POST', planInput, 202)).id, plan.id)
+    assert.equal(modelCalls, 1)
+    await request(queue, 'POST', { ...planInput, guidance: '重复编号变更' }, 409)
+    await request('/projects/' + other.id + '/production-runs/' + plan.id, 'GET', undefined, 404)
+    const existing = await request(adaptPath + '/episodes', 'POST', { title: '保留已有第二集', number: 2, season: 1,
+      sources: [refs[1]], mutationId: randomUUID() }, 201)
+    const updatedSource = docs + '/' + refs[0].id
+    const sourceDraft = await request(updatedSource + '/status', 'POST', { action: 'reopen', baseRev: refs[0].rev })
+    const sourceSave = await request(updatedSource, 'PUT', { baseRev: sourceDraft.rev, mutationId: randomUUID(),
+      title: finals[0].title, body: '重写后的来源' })
+    await request(updatedSource + '/status', 'POST', { action: 'finalize', baseRev: sourceSave.rev })
+    await request(planPath + '/apply', 'POST', { selected: [1, 2] }, 409)
+    assert.deepEqual((await request(adaptPath)).episodes.map(row => row.id), [existing.id])
+    const adopted = await request(planPath + '/apply', 'POST', { selected: [1] })
+    assert.deepEqual(await request(planPath + '/apply', 'POST', { selected: [1] }), adopted)
+    await request(planPath + '/apply', 'POST', { selected: [2] }, 409)
+    const episode = adopted.episodes[0]
+    const episodePath = path + '/episodes/' + episode.id
+    let script = await request(episodePath)
+    assert.equal(script.synopsis, '阿雨拾到密信。')
+    assert.equal(script.sources[0].rev, refs[0].rev)
+    assert.equal(script.sources[0].updated, true)
+    const scriptPreview = await request(queue + '/preview', 'POST', { kind: 'script', target: episode.id, baseRev: script.rev })
+    assert.match(scriptPreview.messages[1].content, /航海者[\s\S]*仅供改编的小说原文 1/)
+    assert.doesNotMatch(scriptPreview.messages[1].content, /重写后的来源/)
+    const startScript = async (baseRev, guidance = '') => queue + '/' + (await request(queue, 'POST', {
+      kind: 'script', target: episode.id, baseRev, guidance, mutationId: randomUUID(),
+    }, 202)).id
+    const broken = await startScript(script.rev, '坏来源')
+    assert.equal((await waitFor(broken, row => row.status !== 'running')).status, 'failed')
+    await request(broken + '/apply', 'POST', {}, 422)
+    const cancelling = await startScript(script.rev, '保持运行')
+    await waitFor(cancelling, row => !!row.output)
+    await request(cancelling + '/cancel', 'POST', undefined, 202)
+    assert.equal((await waitFor(cancelling, row => row.status !== 'running')).status, 'cancelled')
+    const interrupted = await startScript(script.rev, '保持运行')
+    await waitFor(interrupted, row => !!row.output)
+    await request(queue, 'POST', { ...planInput, mutationId: randomUUID() }, 409)
+    await stop(server)
+    server = await launch(directory, port)
+    assert.equal((await request(interrupted)).status, 'interrupted')
+    const stale = await startScript(script.rev)
+    await waitFor(stale, row => row.status === 'done')
+    script = await request(episodePath, 'PUT', { baseRev: script.rev, mutationId: randomUUID(), title: script.title, synopsis: '作者更新提纲', scenes: [] })
+    await request(stale + '/apply', 'POST', {}, 409)
+    const generated = await startScript(script.rev)
+    const proposal = await waitFor(generated, row => row.status === 'done')
+    assert.equal(proposal.candidate.scenes[0].elements[0].characterId, actor.id)
+    await request(generated + '/apply', 'POST', {})
+    script = await request(episodePath)
+    assert.equal(script.status, 'draft')
+    assert.equal(script.scenes.length, 2)
+    const boardPath = episodePath + '/storyboard'
+    assert.equal((await request(boardPath)).scriptRev, null)
+    script = await request(episodePath + '/status', 'POST', { action: 'confirm', mutationId: randomUUID(), baseRev: script.rev })
+    const [first, second] = script.scenes
+    const manual = { id: randomUUID(), sceneId: first.id, visual: '手工近景', size: 'close', durationMs: 2500, characterIds: [actor.id] }
+    const save = { action: 'save', mutationId: randomUUID(), baseRev: 0, scriptRev: script.rev, shots: [manual] }
+    let board = await request(boardPath, 'PUT', save)
+    assert.deepEqual(await request(boardPath, 'PUT', save), board)
+    await request(boardPath, 'PUT', { ...save, mutationId: randomUUID() }, 409)
+    await request(boardPath, 'PUT', { action: 'confirm', mutationId: randomUUID(), baseRev: board.rev, scriptRev: script.rev }, 422)
+    const shots = await request(queue, 'POST', { kind: 'shots', target: episode.id, scriptRev: script.rev, baseRev: board.rev,
+      sceneId: second.id, mutationId: randomUUID() }, 202)
+    const shotsPath = queue + '/' + shots.id
+    assert.equal((await waitFor(shotsPath, row => row.status !== 'running')).status, 'done')
+    await request(shotsPath + '/apply', 'POST', {})
+    board = await request(boardPath)
+    assert.deepEqual(board.shots.map(shot => shot.visual), ['手工近景', '渡轮靠岸全景'])
+    board = await request(boardPath, 'PUT', { action: 'confirm', mutationId: randomUUID(), baseRev: board.rev, scriptRev: script.rev })
+    assert.equal(board.status, 'confirmed')
+    const oldBoardRev = board.rev
+    const oldScriptRev = script.rev
+    script = await request(episodePath + '/status', 'POST', { action: 'reopen', mutationId: randomUUID(), baseRev: script.rev })
+    assert.equal((await request(boardPath)).stale, true)
+    script = await request(episodePath, 'PUT', { baseRev: script.rev, mutationId: randomUUID(), title: script.title, scenes: [first] })
+    script = await request(episodePath + '/status', 'POST', { action: 'confirm', mutationId: randomUUID(), baseRev: script.rev })
+    assert.deepEqual((await request(boardPath)).removed, [second.id])
+    const rebase = { action: 'rebase', mutationId: randomUUID(), baseRev: board.rev, scriptRev: script.rev }
+    await request(boardPath, 'PUT', rebase, 422)
+    board = await request(boardPath, 'PUT', { ...rebase, dropRemoved: true })
+    assert.equal(board.stale, false)
+    assert.equal(board.shots.length, 1)
+    assert.match(await request(episodePath + '/storyboard-export?rev=' + oldBoardRev), /渡轮靠岸全景/)
+    assert.equal((await request(episodePath + '/storyboard-export?format=json&rev=' + oldBoardRev)).scriptRev, oldScriptRev)
+    const copy = await request('/import', 'POST', await request(path + '/backup'), 201)
+    const copiedPath = '/projects/' + copy.id
+    const [copiedAdapt] = await request(copiedPath + '/adaptations')
+    const [copiedEpisode] = (await request(copiedPath + '/adaptations/' + copiedAdapt.id)).episodes
+    const copiedBoard = await request(copiedPath + '/episodes/' + copiedEpisode.id + '/storyboard-history?rev=' + oldBoardRev)
+    assert.equal(copiedBoard.scriptRev, oldScriptRev)
+    assert.equal(copiedBoard.shots.length, 2)
+    assert.notEqual(copiedBoard.shots[0].characterIds[0], actor.id)
+    assert.equal(copiedEpisode.synopsis, '作者更新提纲')
+  } finally {
+    await stop(server)
+    upstream.closeAllConnections()
+    await new Promise(resolve => upstream.close(resolve))
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('scheduled WebDAV publishes verified snapshots and retries without duplicates', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'pagekin-webdav-'))
   const store = openStore(directory)
@@ -1419,6 +1594,7 @@ test('opening an existing Web database migrates v1 and keeps chapter data', asyn
     const p = store.createProject('旧版本作品')
     const doc = store.addDocument(p.id, { kind: 'chapter', number: 1, title: '原章', body: '原文' })
     store.db.exec(`
+      DROP TABLE production_runs; DROP TABLE storyboard_receipts; DROP TABLE storyboard_history;
       DROP TABLE thread_evidence;
       DROP TABLE architecture_sections;
       DROP TABLE webdav_backup;

@@ -1,10 +1,12 @@
 import { ui } from './locale.mjs'
+import { productionWorkspace } from './production-ui.mjs'
+import { shotText, storyboardWorkspace } from './storyboard-ui.mjs'
 const formats = { short: ui("短剧"), comic: ui("漫剧") }
 const interiors = { interior: ui("内景"), exterior: ui("外景"), mixed: ui("内外景") }
 const types = { action: ui("动作"), dialogue: ui("对白"), parenthetical: ui("括注"), transition: ui("转场"), caption: ui("字幕"), note: ui("注释") }
 const episodeLabel = episode => ui("第 $1 季 · 第 $2 集 · $3", episode.season, episode.number, episode.title)
 const sourceLabel = entry => ui("第 $1 章 · $2 · v$3", entry.number, entry.title, entry.rev)
-const editable = value => ({ title: value.title, scenes: structuredClone(value.scenes) })
+const editable = value => ({ title: value.title, synopsis: value.synopsis ?? '', scenes: structuredClone(value.scenes) })
 
 function node(tag, text = '') {
   const element = document.createElement(tag)
@@ -22,13 +24,15 @@ function selectField(label, options, value) {
 }
 
 function preview(value) {
-  return [value.title, ...value.scenes.map((scene, index) => [
+  return [value.title, value.synopsis, ...value.scenes.map((scene, index) => [
     `${index + 1}. ${scene.title || ui("未命名场次")} · ${interiors[scene.interior]} · ${scene.location} · ${scene.time}`,
     ...scene.elements.map(item => `${item.speaker || types[item.type]} · ${item.text}`),
-  ].join('\n'))].join('\n\n')
+  ].join('\n'))].filter(Boolean).join('\n\n')
 }
 
-export function screenplayWorkspace({ api, dialog, field, actionButton, localTransaction, uuid, isCurrent }) {
+export function screenplayWorkspace({ api, dialog, field, actionButton, localTransaction, uuid, isCurrent, modelEnabled, modelName }) {
+  const production = productionWorkspace({ api, dialog, field, actionButton, uuid, isCurrent, modelEnabled, modelName, scriptText: preview, shotText })
+  const board = storyboardWorkspace({ api, dialog, actionButton, localTransaction, uuid, isCurrent, production })
   let currentDraft
   const open = () => document.getElementById('dialog').open
   const visible = (state, panel = state.panel) => panel?.isConnected && open() && isCurrent(state.pid)
@@ -78,6 +82,7 @@ export function screenplayWorkspace({ api, dialog, field, actionButton, localTra
     if (!isCurrent(pid)) return
     const label = node('p', ui("$1 · $2 · 目标 $3 秒／集", formats[data.format], data.aspect, data.seconds))
     dialog(data.title, [label, actionButton(ui("新建剧本集"), () => newEpisode(pid, data)),
+      actionButton(ui('AI 分集提案'), () => production.plan(pid, data, () => adaptation(pid, id))),
       ...data.episodes.map(row => actionButton(`${episodeLabel(row)} · ${row.status === 'confirmed' ? ui("已确认") : ui("草稿")}`, () => loadEpisode(pid, row.id))),
       actionButton(ui("返回改编列表"), () => list(pid))])
   }
@@ -134,6 +139,7 @@ export function screenplayWorkspace({ api, dialog, field, actionButton, localTra
     state.status.textContent = state.dirty ? (state.localOk === true ? ui("本机草稿已保存 · NAS v$1", state.base.rev)
       : state.localOk === false ? ui("本机草稿保存失败，请先保存到 NAS") : ui("正在保存本机草稿…")) : server
     if (state.confirm) state.confirm.disabled = state.dirty || state.busy
+    if (state.generate) state.generate.disabled = state.dirty || state.busy
     state.form.disabled = state.base.status === 'confirmed' || state.busy
   }
 
@@ -319,7 +325,11 @@ export function screenplayWorkspace({ api, dialog, field, actionButton, localTra
     const exportLink = node('a', ui("导出 Markdown"))
     exportLink.href = '/api' + state.path + '/export'
     state.confirm = actionButton(locked ? ui("重开剧本") : ui("确认剧本"), () => operation(state, locked ? 'reopen' : 'confirm'))
-    panel.append(state.status, state.alert, sceneButtons('tools', state.confirm, exportLink,
+    const reopen = () => loadEpisode(state.pid, state.id)
+    state.generate = locked ? null : actionButton(ui('AI 剧本候选'), () => production.script(state.pid, state.base, reopen))
+    const ai = state.generate ?? actionButton(ui('剧本候选记录'), () => production.records(state.pid, state.id, 'script', reopen))
+    panel.append(state.status, state.alert, sceneButtons('tools', state.confirm, exportLink, ai,
+      actionButton(ui('分镜工作区'), async () => { if (await canLeave(state)) await board.open(state.pid, state.id, reopen) }),
       actionButton(ui("剧本历史"), () => history(state)), actionButton(ui("重新读取 NAS"), async () => { if (await canLeave(state)) await loadEpisode(state.pid, state.id) }),
       actionButton(ui("返回改编项目"), async () => { if (await canLeave(state)) await adaptation(state.pid, state.base.adaptation_id) })))
     for (const record of state.recovery.slice(0, 5)) {
@@ -335,6 +345,8 @@ export function screenplayWorkspace({ api, dialog, field, actionButton, localTra
     })))
     panel.append(sources)
     state.form.append(bindText(state, ui("剧本集标题"), state.content.title, 160, text => { state.content.title = text }, 'script-episode-title'))
+    state.form.append(bindText(state, ui('分集提纲'), state.content.synopsis ?? '', 3000,
+      text => { state.content.synopsis = text }, 'script-episode-synopsis', true))
     const scenes = state.content.scenes
     const addScene = actionButton(ui("添加场次"), () => {
       scenes.push({ id: uuid(), title: '', location: '', time: '', interior: 'interior', sourceIds: [], elements: [] })
@@ -386,5 +398,5 @@ export function screenplayWorkspace({ api, dialog, field, actionButton, localTra
     paint(state)
   }
 
-  return { list, canClose: () => visible(currentDraft ?? {}) ? canLeave(currentDraft) : true }
+  return { list, canClose: () => visible(currentDraft ?? {}) ? canLeave(currentDraft) : board.canClose() }
 }

@@ -45,7 +45,7 @@ export function screenplayStore({ get, all, run, tx, hash, now }) {
   }
 
   function details(pid, id) {
-    return { ...adaptation(pid, id), episodes: all(`SELECT id,season,number,title,status,rev FROM screenplay_episodes
+    return { ...adaptation(pid, id), episodes: all(`SELECT id,season,number,title,status,rev,synopsis FROM screenplay_episodes
       WHERE adaptation_id=? ORDER BY season,number`, id) }
   }
 
@@ -121,35 +121,41 @@ export function screenplayStore({ get, all, run, tx, hash, now }) {
   }
 
   function checkpoint(row) {
-    run('INSERT INTO screenplay_history VALUES (?,?,?,?,?,?)', row.id, row.rev, row.title, row.scenes, row.status, row.updated)
+    run(`INSERT INTO screenplay_history (episode_id,rev,title,scenes,status,updated,synopsis) VALUES (?,?,?,?,?,?,?)`,
+      row.id, row.rev, row.title, row.scenes, row.status, row.updated, row.synopsis ?? '')
   }
 
   function insertEpisode(adaptationId, id, number, season, sources, fingerprint, current) {
     if (get('SELECT 1 FROM screenplay_episodes WHERE adaptation_id=? AND season=? AND number=?', adaptationId, season, number)) {
       throw new ApiError(409, '该季已存在此集号')
     }
-    run('INSERT INTO screenplay_episodes VALUES (?,?,?,?,?,?,?,?,?,?,?)', id, adaptationId, season, number, JSON.stringify(sources), fingerprint,
-      current.title, current.scenes, current.rev, current.status, current.updated)
+    run(`INSERT INTO screenplay_episodes (id,adaptation_id,season,number,sources,create_hash,title,scenes,rev,status,updated,synopsis)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, id, adaptationId, season, number, JSON.stringify(sources), fingerprint,
+    current.title, current.scenes, current.rev, current.status, current.updated, current.synopsis ?? '')
   }
 
   function createEpisode(pid, adaptationId, value) {
+    return tx(() => insertDraft(pid, adaptationId, value))
+  }
+
+  // Also used inside the transaction that accepts a production proposal.
+  function insertDraft(pid, adaptationId, value) {
     const { title, season, number } = editionInput(value)
+    const synopsis = string(value.synopsis ?? '', 3000).trim()
     const id = uuid(value.mutationId)
-    return tx(() => {
-      adaptation(pid, adaptationId)
-      const sources = parseSources(pid, value.sources)
-      const fingerprint = hash(JSON.stringify([adaptationId, season, number, title, sources]))
-      const old = get('SELECT * FROM screenplay_episodes WHERE id=?', id)
-      if (old) {
-        if (old.create_hash !== fingerprint) throw new ApiError(409, '剧本集编号已被使用')
-        return episodeView(pid, old)
-      }
-      if (get('SELECT count(*) n FROM screenplay_episodes WHERE adaptation_id=?', adaptationId).n >= episodeLimit) throw new ApiError(422, '每个改编项目最多 300 集')
-      const current = { id, title, scenes: '[]', rev: 1, status: 'draft', updated: now() }
-      insertEpisode(adaptationId, id, number, season, sources, fingerprint, current)
-      checkpoint(current)
-      return episode(pid, id)
-    })
+    adaptation(pid, adaptationId)
+    const sources = parseSources(pid, value.sources)
+    const fingerprint = hash(JSON.stringify([adaptationId, season, number, title, sources, ...(synopsis ? [synopsis] : [])]))
+    const old = get('SELECT * FROM screenplay_episodes WHERE id=?', id)
+    if (old) {
+      if (old.create_hash !== fingerprint) throw new ApiError(409, '剧本集编号已被使用')
+      return episodeView(pid, old)
+    }
+    if (get('SELECT count(*) n FROM screenplay_episodes WHERE adaptation_id=?', adaptationId).n >= episodeLimit) throw new ApiError(422, '每个改编项目最多 300 集')
+    const current = { id, title, scenes: '[]', synopsis, rev: 1, status: 'draft', updated: now() }
+    insertEpisode(adaptationId, id, number, season, sources, fingerprint, current)
+    checkpoint(current)
+    return episode(pid, id)
   }
 
   function parseScenes(pid, value, sources) {
@@ -207,9 +213,24 @@ export function screenplayStore({ get, all, run, tx, hash, now }) {
 
   function version(pid, id, rev) {
     rowFor(pid, id)
-    const row = get('SELECT rev,title,scenes,status,updated FROM screenplay_history WHERE episode_id=? AND rev=?', id, revision(rev))
+    const row = get('SELECT rev,title,scenes,status,updated,synopsis FROM screenplay_history WHERE episode_id=? AND rev=?', id, revision(rev))
     if (!row) throw new ApiError(404, '剧本历史版本不存在')
     return { ...row, scenes: JSON.parse(row.scenes) }
+  }
+
+  function candidateScenes(pid, id, scenes) {
+    const checked = parseScenes(pid, scenes, JSON.parse(rowFor(pid, id).sources))
+    checkConfirmation(checked)
+    return JSON.parse(checked)
+  }
+
+  function adoptScenes(pid, id, baseRev, scenes) {
+    const current = rowFor(pid, id)
+    if (current.status !== 'draft' || current.rev !== baseRev) throw new ApiError(409, '剧本已更新，请重新生成候选')
+    const next = { ...current, scenes: JSON.stringify(candidateScenes(pid, id, scenes)), rev: current.rev + 1, updated: now() }
+    run('UPDATE screenplay_episodes SET scenes=?,rev=?,updated=? WHERE id=?', next.scenes, next.rev, next.updated, id)
+    checkpoint(next)
+    return episodeView(pid, next)
   }
 
   function changeEpisode(pid, id, value, operation) {
@@ -222,7 +243,7 @@ export function screenplayStore({ get, all, run, tx, hash, now }) {
       const receipt = get('SELECT fingerprint,rev FROM screenplay_receipts WHERE episode_id=? AND mutation=?', id, mutation)
       if (receipt) {
         if (receipt.fingerprint !== fingerprint) throw new ApiError(409, '该保存请求编号已被使用')
-        const saved = get('SELECT rev,title,scenes,status,updated FROM screenplay_history WHERE episode_id=? AND rev=?', id, receipt.rev)
+        const saved = get('SELECT rev,title,scenes,status,updated,synopsis FROM screenplay_history WHERE episode_id=? AND rev=?', id, receipt.rev)
         return episodeView(pid, { ...current, ...saved })
       }
       if (current.rev !== baseRev) throw new ApiError(409, 'NAS 上已有新的剧本版本', episodeView(pid, current))
@@ -234,20 +255,22 @@ export function screenplayStore({ get, all, run, tx, hash, now }) {
         if (current.status !== 'draft') throw new ApiError(409, '请先重开已确认的剧本', episodeView(pid, current))
         if (operation === 'save') {
           next.title = string(value.title, 160, true).trim()
+          next.synopsis = string(value.synopsis ?? current.synopsis, 3000).trim()
           next.scenes = parseScenes(pid, value.scenes, JSON.parse(current.sources))
         } else if (operation === 'confirm') {
           checkConfirmation(current.scenes)
           next.status = 'confirmed'
         } else if (operation === 'restore') {
-          const old = get('SELECT title,scenes FROM screenplay_history WHERE episode_id=? AND rev=?', id, revision(value.rev))
+          const old = get('SELECT title,scenes,synopsis FROM screenplay_history WHERE episode_id=? AND rev=?', id, revision(value.rev))
           if (!old) throw new ApiError(404, '剧本历史版本不存在')
           Object.assign(next, old)
         } else throw new ApiError(400, '剧本操作无效')
       }
-      if (next.title !== current.title || next.scenes !== current.scenes || next.status !== current.status) {
+      if (next.title !== current.title || next.scenes !== current.scenes || next.status !== current.status || next.synopsis !== current.synopsis) {
         next.rev++
         next.updated = now()
-        run('UPDATE screenplay_episodes SET title=?,scenes=?,status=?,rev=?,updated=? WHERE id=?', next.title, next.scenes, next.status, next.rev, next.updated, id)
+        run('UPDATE screenplay_episodes SET title=?,scenes=?,status=?,rev=?,updated=?,synopsis=? WHERE id=?',
+          next.title, next.scenes, next.status, next.rev, next.updated, next.synopsis, id)
         checkpoint(next)
       }
       run('INSERT INTO screenplay_receipts VALUES (?,?,?,?)', id, mutation, fingerprint, next.rev)
@@ -261,6 +284,7 @@ export function screenplayStore({ get, all, run, tx, hash, now }) {
     const text = [`# ${data.title}`, `第 ${data.season} 季 · 第 ${data.number} 集 · ${formats[info.format]} · ${info.aspect} · ${info.seconds} 秒`,
       `${data.status === 'confirmed' ? '已确认' : '草稿'} · v${data.rev}`,
       '小说来源：' + data.sources.map(entry => `第 ${entry.number} 章 ${entry.title} v${entry.rev}`).join('、')]
+    if (data.synopsis) text.push('## 分集提纲', data.synopsis)
     data.scenes.forEach((scene, i) => {
       text.push(`## ${i + 1}. ${scene.title || '未命名场次'}`, [interiors[scene.interior], scene.location, scene.time].filter(Boolean).join(' · '))
       for (const item of scene.elements) text.push(item.type === 'dialogue' ? `**${item.speaker || '未填说话人'}**\n\n${item.text}`
@@ -269,15 +293,15 @@ export function screenplayStore({ get, all, run, tx, hash, now }) {
     return text.join('\n\n') + '\n'
   }
 
-  function backup(pid) {
+  function backup(pid, storyboard) {
     return list(pid).map(({ id, title, format, aspect, seconds }) => ({ title, format, aspect, seconds,
-      episodes: all(`SELECT id,season,number,sources,title,scenes,rev,status,updated FROM screenplay_episodes
+      episodes: all(`SELECT id,season,number,sources,title,scenes,synopsis,rev,status,updated FROM screenplay_episodes
         WHERE adaptation_id=? ORDER BY season,number`, id).map(({ id, ...row }) => ({ ...row, sources: JSON.parse(row.sources),
-        scenes: JSON.parse(row.scenes), history: all(`SELECT rev,title,scenes,status,updated FROM screenplay_history
+        scenes: JSON.parse(row.scenes), storyboard: storyboard.backup(id), history: all(`SELECT rev,title,scenes,status,updated,synopsis FROM screenplay_history
           WHERE episode_id=? ORDER BY rev DESC`, id).map(snapshot => ({ ...snapshot, scenes: JSON.parse(snapshot.scenes) })) })) }))
   }
 
-  function importBackup(pid, value, mapping) {
+  function importBackup(pid, value, mapping, storyboard) {
     if (!Array.isArray(value) || value.length > 40) throw new ApiError(400, '备份中的改编项目列表无效')
     const remap = id => {
       if (!mapping.has(id)) throw new ApiError(400, '备份中的改编来源或人物卡不存在')
@@ -306,6 +330,7 @@ export function screenplayStore({ get, all, run, tx, hash, now }) {
           }), sources)
           if (row.status === 'confirmed') checkConfirmation(scenes)
           return { id, rev: revision(row.rev), title: string(row.title, 160, true).trim(), status: row.status, scenes,
+            synopsis: string(row.synopsis ?? '', 3000),
             updated: string(row.updated, 50, true) }
         }
         const current = snapshot(original)
@@ -320,9 +345,11 @@ export function screenplayStore({ get, all, run, tx, hash, now }) {
           checkpoint(row)
         }
         if (!seen.has(current.rev)) throw new ApiError(400, '剧本备份缺少当前版本')
+        if (original.storyboard !== undefined) storyboard.importBackup(pid, id, original.storyboard, mapping)
       }
     }
   }
 
-  return { list, details, create, eligible, createEpisode, episode, episodeSource, changeEpisode, history, version, exportEpisode, backup, importBackup }
+  return { list, details, create, eligible, source, parseSources, createEpisode, insertDraft, episode, episodeSource,
+    changeEpisode, candidateScenes, adoptScenes, history, version, exportEpisode, backup, importBackup }
 }

@@ -27,6 +27,7 @@ The `codex/web-novel-fnos` branch of this fork adds a [self-hosted Web workspace
 | Novel writing | Project goals, four structured architecture modules with revision confirmation, character continuity, chapter progress, blueprints, prose and story-thread quotations |
 | Editing and sync | CodeMirror, English and Simplified Chinese interfaces, autosave, offline drafts, conflict comparison, final chapters and version history |
 | AI workflow | Model presets and connection tests, story and character planning, blueprint batches, short outlines, drafting, selected-passage editing, review, revision and evidence-backed character state suggestions |
+| Screenplay and storyboard | Generate episode plans and screenplay candidates from final chapters, edit and confirm shots by scene, and export Markdown or JSON |
 | References and files | Queued whole-book reference analysis and style Skills, keyword and semantic search, TXT/Markdown/EPUB manuscript imports, exports, desktop `.ainovel` import with character history |
 | NAS operation | Docker Compose on `linux/amd64`, live SQLite backups, scheduled WebDAV backups and restore to a separate volume |
 
@@ -40,7 +41,7 @@ docker compose up -d --build
 
 The service binds to the host loopback address on port 3100 by default. Configure HTTPS or a trusted LAN address for other devices. Writing works without a model. AI drafting and semantic search each use their own model configuration. [Setup and upgrades](web-novel/README.md)
 
-The published `v0.2.0-rc.1` offline image for Linux amd64 on fnOS uses Web SQLite schema 11 and includes the novel and manual screenplay workspaces. Builds from this branch report `0.2.0-dev.11` and migrate the database to schema 21 on startup. Back up the data volume before upgrading. [Setup and upgrade](web-novel/README.md#fnos-部署) · [Novel-stage checklist](docs/research/nas-web/08-novel-completion-checklist.md) · [Novel-to-film design](docs/research/nas-web/06-novel-to-film.md)
+The published `v0.2.0-rc.1` offline image for Linux amd64 on fnOS uses Web SQLite schema 11 and includes the novel and manual screenplay workspaces. Builds from this branch report `0.2.0-dev.12` and migrate the database to schema 22 on startup. Back up the data volume before upgrading. [Setup and upgrade](web-novel/README.md#fnos-部署) · [Screenplay and storyboard checklist](docs/research/nas-web/09-screenplay-storyboard-checklist.md) · [Novel-to-film design](docs/research/nas-web/06-novel-to-film.md)
 
 ## Upstream desktop edition
 

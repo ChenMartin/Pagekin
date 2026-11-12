@@ -64,18 +64,38 @@ def smoke(directory: Path, compose: str, previous_image: str | None = None) -> N
         result = stack("", "exec", "-T", "pagekin", "node", "maintenance.mjs", "verify", "/data/novels.sqlite", previous=previous)
         return json.loads(result)["schema"]
 
+    def confirmed_episode(project_path, chapter_path, chapter, title):
+        final = request(chapter_path + "/status", {"action": "finalize", "baseRev": chapter["rev"]})
+        adaptation = request(project_path + "/adaptations", {"mutationId": str(uuid4()), "title": title,
+            "format": "short", "aspect": "9:16", "seconds": 90})
+        episode = request(project_path + f"/adaptations/{adaptation['id']}/episodes", {"mutationId": str(uuid4()),
+            "title": "试片", "season": 1, "number": 1, "sources": [{"id": chapter["id"], "rev": final["rev"]}]})
+        episode_path = project_path + f"/episodes/{episode['id']}"
+        scene = {"id": str(uuid4()), "title": "启航", "interior": "exterior", "location": "码头", "time": "夜",
+            "sourceIds": [chapter["id"]], "elements": [{"id": str(uuid4()), "type": "action", "text": "渔船靠岸。"}]}
+        saved = request(episode_path, {"mutationId": str(uuid4()), "baseRev": episode["rev"], "title": episode["title"],
+            "scenes": [scene]}, "PUT")
+        confirmed = request(episode_path + "/status", {"mutationId": str(uuid4()), "action": "confirm", "baseRev": saved["rev"]})
+        assert confirmed["status"] == "confirmed"
+        return episode_path, confirmed, scene, saved, final
+
     try:
         stack("", "config", "--quiet")
         stack("", "up", "-d", "--no-build", "--pull", "never", previous=bool(previous_image))
         version = ready()
         request("/api/session", {"password": password})
         project = request("/api/projects", {"title": "发布测试"})
-        route = f"/api/projects/{project['id']}/documents"
+        project_path = f"/api/projects/{project['id']}"
+        route = project_path + "/documents"
         chapter = request(route, {"kind": "chapter", "title": "第一章", "number": 1, "body": "容器持久化"})
         path = route + "/" + chapter["id"]
+        legacy_episode = None
         if previous_image:
             old_version = version
             old_schema = schema(previous=True)
+            if old_schema >= 11:
+                original = request(route, {"kind": "chapter", "title": "旧剧本来源", "number": 2, "body": "升级前的小说定稿"})
+                legacy_episode, _, legacy_scene, _, _ = confirmed_episode(project_path, route + "/" + original["id"], original, "升级前剧本")
             stack("", "up", "-d", "--force-recreate", "--no-build", "--pull", "never")
             version = ready()
             upgraded_schema = schema()
@@ -83,23 +103,13 @@ def smoke(directory: Path, compose: str, previous_image: str | None = None) -> N
             assert upgraded_schema > old_schema
             assert request(path)["body"] == "容器持久化"
             assert request(path + "/history")[0]["body"] == "容器持久化"
+            if legacy_episode:
+                assert request(legacy_episode)["scenes"] == [legacy_scene]
             print(f"Compose upgrade v{old_version} -> v{version}, schema {old_schema} -> {upgraded_schema}: manuscript and history preserved")
         episode_path = None
         current_schema = schema()
         if current_schema >= 11:
-            project_path = f"/api/projects/{project['id']}"
-            final = request(path + "/status", {"action": "finalize", "baseRev": chapter["rev"]})
-            adaptation = request(project_path + "/adaptations", {"mutationId": str(uuid4()), "title": "发布剧本",
-                "format": "short", "aspect": "9:16", "seconds": 90})
-            episode = request(project_path + f"/adaptations/{adaptation['id']}/episodes", {"mutationId": str(uuid4()),
-                "title": "试片", "season": 1, "number": 1, "sources": [{"id": chapter["id"], "rev": final["rev"]}]})
-            episode_path = project_path + f"/episodes/{episode['id']}"
-            scene = {"id": str(uuid4()), "title": "启航", "interior": "exterior", "location": "码头", "time": "夜",
-                "sourceIds": [chapter["id"]], "elements": [{"id": str(uuid4()), "type": "action", "text": "渔船靠岸。"}]}
-            saved = request(episode_path, {"mutationId": str(uuid4()), "baseRev": episode["rev"], "title": episode["title"],
-                "scenes": [scene]}, "PUT")
-            confirmed = request(episode_path + "/status", {"mutationId": str(uuid4()), "action": "confirm", "baseRev": saved["rev"]})
-            assert confirmed["status"] == "confirmed"
+            episode_path, confirmed, scene, saved, final = confirmed_episode(project_path, path, chapter, "发布剧本")
         if current_schema >= 21:
             architecture_path = project_path + "/architecture"
             architecture = request(architecture_path + "/world", {"action": "bind"}, "PUT")
@@ -115,6 +125,14 @@ def smoke(directory: Path, compose: str, previous_image: str | None = None) -> N
             assert request(evidence_path, {"phase": "planted", "baseRev": thread["rev"],
                 "documentId": chapter["id"], "sourceRev": final["rev"], "start": 0, "quote": "容器持久化"}, "PUT")["current"]
             assert not request("/api/webdav-backup")["enabled"]
+        if current_schema >= 22:
+            board_path = episode_path + "/storyboard"
+            shot = {"id": str(uuid4()), "sceneId": scene["id"], "size": "wide", "durationMs": 3500, "visual": "渔船靠岸全景"}
+            board = request(board_path, {"action": "save", "baseRev": 0, "scriptRev": confirmed["rev"],
+                "shots": [shot], "mutationId": str(uuid4())}, "PUT")
+            confirmed_board = request(board_path, {"action": "confirm", "baseRev": board["rev"],
+                "scriptRev": confirmed["rev"], "mutationId": str(uuid4())}, "PUT")
+            assert confirmed_board["status"] == "confirmed"
         backup_path = "/data/backups/compose-test.sqlite"
         backup = stack("", "exec", "-T", "pagekin", "node", "maintenance.mjs", "backup", backup_path)
         assert json.loads(backup)["projects"] == 1
@@ -145,6 +163,10 @@ def smoke(directory: Path, compose: str, previous_image: str | None = None) -> N
             assert request(architecture_path)[0]["status"] == "confirmed"
             assert request(evidence_path + "?phase=planted")["evidence"]["quote"] == "容器持久化"
             print("Confirmed architecture and final-chapter evidence survived backup and restore")
+        if current_schema >= 22:
+            assert request(board_path) == confirmed_board
+            assert request(episode_path + "/storyboard-history?rev=1")["shots"][0]["visual"] == shot["visual"]
+            print("Storyboard, source screenplay revision and shot history survived backup and restore")
         if episode_path:
             restored = request(episode_path)
             assert restored["status"] == "confirmed"

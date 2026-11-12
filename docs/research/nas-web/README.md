@@ -20,7 +20,7 @@
 
 候选版之后的开发分支已接入 CodeMirror 6。从源码构建的容器会打包增强编辑器及其许可证，也可通过 `APP_EDITOR=plain` 使用普通编辑器。增强和普通模式均通过 Edge 回归，增强模式覆盖合成中文输入。已发布的 v0.1.0-rc.1 离线镜像仍使用普通编辑器。[小说工作区使用说明](../../../web-novel/README.md)
 
-当前开发分支为 `0.2.0-dev.11`，采用 Web SQLite schema 21。小说工作区提供结构化架构、定稿引文、双语界面、模型预设和 WebDAV 定时备份。 [使用与升级说明](../../../web-novel/README.md)
+当前开发分支为 `0.2.0-dev.12`，采用 Web SQLite schema 22。小说工作区可从定稿继续生成分集提案和剧本候选，再按场次编辑、确认和导出分镜。 [使用与升级说明](../../../web-novel/README.md)
 
 1. [源码调研与证据](01-source-audit.md)：已确认事实、修正前次结论、改造入口。
 2. [系统设计](02-system-design.md)：后端、数据、任务、安全、NAS 部署。
@@ -31,6 +31,7 @@
 6. [小说到成片全流程](06-novel-to-film.md)：统一数据模型、剧本分镜、素材任务、剪辑渲染、3D 与执行节点。
 7. [实施进度与实机验收](07-implementation-progress.md)：已实现能力、当前边界、测试入口及剩余任务。
 8. [Web 小说阶段任务清单](08-novel-completion-checklist.md)。
+9. [剧本与分镜阶段开发清单](09-screenplay-storyboard-checklist.md)。
 
 ## 核心决策
 

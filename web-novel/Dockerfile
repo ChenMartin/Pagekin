@@ -14,6 +14,7 @@ COPY --chown=node:node server.mjs store.mjs input.mjs screenplay-store.mjs deskt
 COPY --chown=node:node manuscript-export.mjs reference-novels.mjs character-continuity.mjs continuity-report.mjs ./
 COPY --chown=node:node desktop-character-import.mjs desktop-continuity.mjs novel-progress.mjs model-profiles.mjs webdav-backup.mjs ./
 COPY --chown=node:node architecture-store.mjs thread-evidence.mjs ./
+COPY --chown=node:node storyboard.mjs production-runs.mjs ./
 COPY --chown=node:node epub-extraction.ts epub-preview-worker.mjs ./
 COPY --chown=node:node public ./public
 COPY --from=editor-build --chown=node:node /build/node_modules ./node_modules

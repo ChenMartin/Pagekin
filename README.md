@@ -27,6 +27,7 @@
 | 长篇写作 | 作品目标、四项架构字段及版本确认、人物连载、章节进度、蓝图、正文及跨章线索引文 |
 | 编辑与同步 | CodeMirror、简体中文与英文界面、自动保存、断网草稿、多设备冲突对比、定稿与历史 |
 | AI 辅助 | 模型预设与诊断、设定与人物规划、批量蓝图、写前细纲、单章与批量写稿、选段改写、审稿修稿及定稿人物变化候选 |
+| 剧本与分镜 | 从小说定稿生成分集提案和剧本候选，逐场编辑及确认镜头，导出 Markdown 和 JSON |
 | 资料与文件 | 参考小说整书排队拆解、关键词与语义检索、TXT／Markdown／EPUB 整稿、桌面 `.ainovel` 与人物历史导入、正文导出 |
 | NAS 运维 | `linux/amd64` Docker Compose、整库在线备份、WebDAV 定时备份、恢复到独立数据卷 |
 
@@ -42,7 +43,7 @@ docker compose up -d --build
 
 默认端口为 3100，默认绑定 NAS 宿主机的回环地址。配置 HTTPS 或局域网联调参数后再从其他设备访问。手写可直接使用，AI 和语义检索分别配置自己的模型服务。 [部署、使用与升级](web-novel/README.md)
 
-GitHub 已发布的 `v0.2.0-rc.1` 离线镜像使用 Web SQLite schema 11，包含小说与手工剧本改编。当前分支源码构建为 `0.2.0-dev.11`，首次启动升级至 schema 21。升级前请备份数据卷。 [部署与升级](web-novel/README.md#fnos-部署) · [小说阶段任务清单](docs/research/nas-web/08-novel-completion-checklist.md) · [小说到成片设计](docs/research/nas-web/06-novel-to-film.md)
+GitHub 已发布的 `v0.2.0-rc.1` 离线镜像使用 Web SQLite schema 11，包含小说与手工剧本改编。当前分支源码构建为 `0.2.0-dev.12`，首次启动升级至 schema 22。升级前请备份数据卷。 [部署与升级](web-novel/README.md#fnos-部署) · [剧本与分镜任务清单](docs/research/nas-web/09-screenplay-storyboard-checklist.md) · [小说到成片设计](docs/research/nas-web/06-novel-to-film.md)
 
 ## 上游桌面版
 

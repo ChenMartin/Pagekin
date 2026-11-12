@@ -17,6 +17,8 @@ def package(output: Path) -> Path:
         ".dockerignore", ".env.example", "Dockerfile", "compose.yaml", "README.md", "RELEASE.md",
         "server.mjs", "store.mjs", "writing-context.mjs", "review-report.mjs", "desktop-archive.mjs", "desktop-copy.mjs",
         "revision-merge.mjs", "continuation.mjs", "manuscript-export.mjs", "input.mjs", "screenplay-store.mjs", "public/screenplay-ui.mjs",
+        "storyboard.mjs", "production-runs.mjs",
+        "public/storyboard-ui.mjs", "public/production-ui.mjs",
         "version.mjs", "maintenance.mjs", "webdav-backup.mjs", "semantic.mjs", "reference-novels.mjs", "public/index.html", "public/app.mjs",
         "public/manuscript.mjs", "public/novel-goals.mjs", "public/architecture.mjs", "public/reference-novel-ui.mjs", "public/style.css",
         "public/locale.mjs", "public/locale-en.mjs",

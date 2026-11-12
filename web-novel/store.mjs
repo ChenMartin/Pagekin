@@ -21,6 +21,8 @@ import { mergeRevision, revisionChanges } from './revision-merge.mjs'
 import { continuationPrefix } from './continuation.mjs'
 import { ApiError, object, string, revision } from './input.mjs'
 import { screenplayStore } from './screenplay-store.mjs'
+import { openStoryboard, storyboardSchema } from './storyboard.mjs'
+import { openProduction, productionSchema } from './production-runs.mjs'
 
 export { ApiError, object, string } from './input.mjs'
 
@@ -319,10 +321,20 @@ export function openStore(directory) {
       COMMIT;
     `)
   }
+  if (version < 22) {
+    db.exec(`
+      BEGIN IMMEDIATE;
+      ${productionSchema}
+      ${storyboardSchema}
+      PRAGMA user_version=22;
+      COMMIT;
+    `)
+  }
   db.prepare("UPDATE runs SET status='interrupted',error='服务重启，已保留收到的内容' WHERE status='running'").run()
   db.prepare("UPDATE writing_batches SET status='paused',error='服务重启，待手动继续' WHERE status='running'").run()
   db.prepare("UPDATE reference_analyses SET status='interrupted',error='服务重启，已保留收到的内容' WHERE status='running'").run()
   db.prepare("UPDATE reference_batches SET status='paused',error='服务重启，待手动继续' WHERE status='running'").run()
+  db.prepare("UPDATE production_runs SET status='interrupted',error='服务重启，已保留收到的内容' WHERE status='running'").run()
   const get = (sql, ...args) => db.prepare(sql).get(...args)
   const all = (sql, ...args) => db.prepare(sql).all(...args)
   const run = (sql, ...args) => db.prepare(sql).run(...args)
@@ -340,6 +352,8 @@ export function openStore(directory) {
   }
 
   const screenplay = screenplayStore({ get, all, run, tx, hash, now })
+  const storyboard = openStoryboard({ get, all, run, tx, hash, now, screenplay })
+  const production = openProduction({ get, all, run, tx, hash, now, screenplay, storyboard, writingAvailable })
   const referenceNovels = openReferenceNovels({ get, all, run, tx, hash, now, writingAvailable })
   const desktopHistory = desktopContinuity({ get, all, run, document })
   const continuity = characterContinuity({ get, all, run, tx, now, document, candidateEvidence, desktopHistory })
@@ -815,7 +829,8 @@ export function openStore(directory) {
 
   function writingAvailable() {
     if (get("SELECT id FROM runs WHERE status='running'") || get("SELECT id FROM writing_batches WHERE status='running'") ||
-        get("SELECT id FROM reference_analyses WHERE status='running'") || get("SELECT id FROM reference_batches WHERE status='running'")) {
+        get("SELECT id FROM reference_analyses WHERE status='running'") || get("SELECT id FROM reference_batches WHERE status='running'") ||
+        get("SELECT id FROM production_runs WHERE status='running'")) {
       throw new ApiError(409, '已有生成任务正在运行')
     }
   }
@@ -1290,7 +1305,7 @@ export function openStore(directory) {
         title, body, kind, status, planted, due, resolved, evidence: threadEvidence.records(id),
       })),
       writingSkills: { library: all('SELECT id,title,body FROM writing_skills WHERE project_id=? ORDER BY created,id', pid), bindings: skillProfile(pid).bindings },
-      adaptations: screenplay.backup(pid),
+      adaptations: screenplay.backup(pid, storyboard),
       runs: all('SELECT r.* FROM runs r JOIN documents d ON r.document_id=d.id WHERE d.project_id=?', pid)
         .map(({ request_data, ...job }) => job.kind === 'continuity' && request_data
           ? { ...job, continuityCharacterId: JSON.parse(request_data).request.continuityCharacterId } : job),
@@ -1404,7 +1419,7 @@ export function openStore(directory) {
           run('UPDATE runs SET continued_from=? WHERE id=?', predecessor.id, draft.id)
         }
       }
-      if (data.adaptations !== undefined) screenplay.importBackup(p.id, data.adaptations, mapping)
+      if (data.adaptations !== undefined) screenplay.importBackup(p.id, data.adaptations, mapping, storyboard)
       return p
     })
   }
@@ -1412,7 +1427,8 @@ export function openStore(directory) {
   const architecture = openArchitecture({ all, get, run, tx, document, addDocument })
   const threadEvidence = openThreadEvidence({ all, get, run, tx, thread, now,
     finalized: (pid, number) => get(finalizedSelect + ' AND d.number=?', pid, number) })
-  return { db, get, all, run, tx, project, document, createProject, renameProject, addDocument, importChapters, eventHead, projectEvents, pruneEvents, screenplay, architecture,
+  return { db, get, all, run, tx, project, document, createProject, renameProject, addDocument, importChapters, eventHead, projectEvents, pruneEvents,
+    screenplay, storyboard, production, architecture,
     projectGoals, saveProjectGoals, referenceNovels, continuity, continuityRuns, desktopHistory,
     save, chapters, search, addReference, reference, threads, thread, saveThread, threadEvidence, progress,
     transition, history, restore, getRun, runDetail, startRun, previewRun, continueRun, applyRun, previewPassage, previewRevision, applyRevision, backup, importBackup,
