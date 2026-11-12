@@ -1,4 +1,5 @@
 import { ui } from './locale.mjs'
+import { mediaWorkspace } from './media-ui.mjs'
 
 const sizes = { wide: '全景', full: '全身', medium: '中景', close: '近景', detail: '特写' }
 const seconds = ms => ms / 1000
@@ -16,6 +17,7 @@ function node(tag, text = '') {
 }
 
 export function storyboardWorkspace({ api, dialog, actionButton, localTransaction, uuid, isCurrent, production }) {
+  const media = mediaWorkspace({ api, dialog, actionButton, localTransaction, uuid, isCurrent })
   let active
   const openDialog = () => document.getElementById('dialog')
   const visible = state => state?.panel?.isConnected && openDialog().open && isCurrent(state.pid)
@@ -240,6 +242,8 @@ export function storyboardWorkspace({ api, dialog, actionButton, localTransactio
       addAction('返回剧本集', async () => { if (await canLeave(state)) await state.back() })
       addAction('重新读取 NAS', async () => { if (await canLeave(state)) await open(state.pid, state.id, state.back, state.sceneId) })
       if (state.base.rev) addAction('分镜历史', () => history(state), true)
+      if (state.base.rev) addAction('剪辑与成片', () => media.open(state.pid, state.id,
+        () => open(state.pid, state.id, state.back, state.sceneId)), true)
       if (locked && state.base.rev) addAction('拆镜任务记录', () => production.records(state.pid, state.id, 'shots',
         () => open(state.pid, state.id, state.back, state.sceneId)), true)
       if (state.base.stale && state.base.currentScriptRev) addAction('复核剧本来源', () => confirmRebase(state), true)
@@ -334,5 +338,5 @@ export function storyboardWorkspace({ api, dialog, actionButton, localTransactio
     if (!locked) panel.append(state.form)
   }
 
-  return { open, canClose: () => visible(active) ? canLeave(active) : true }
+  return { open, canClose: () => visible(active) ? canLeave(active) : media.canClose() }
 }

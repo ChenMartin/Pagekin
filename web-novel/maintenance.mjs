@@ -5,6 +5,7 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { fileURLToPath } from 'node:url'
 import { schemaVersion } from './version.mjs'
+import { blobPath, fileDigest } from './media-files.mjs'
 
 export function verifyDatabase(path) {
   const db = new DatabaseSync(path, { readOnly: true, allowExtension: false })
@@ -20,6 +21,20 @@ export function verifyDatabase(path) {
     }
     return { schema: version, projects: db.prepare('SELECT count(*) n FROM projects').get().n }
   } finally { db.close() }
+}
+
+export async function verifyMedia(path, directory = dirname(path)) {
+  const db = new DatabaseSync(path, { readOnly: true, allowExtension: false })
+  let rows
+  try {
+    if (!db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='media_assets'").get()) return { mediaFiles: 0 }
+    rows = db.prepare('SELECT sha,bytes FROM media_assets UNION SELECT sha,bytes FROM media_renders WHERE sha IS NOT NULL').all()
+  } finally { db.close() }
+  for (const file of rows) {
+    const location = blobPath(directory, file.sha)
+    if (await fileDigest(location).catch(() => '') !== file.sha) throw new Error('媒体文件缺失或摘要不匹配：' + file.sha)
+  }
+  return { mediaFiles: rows.length }
 }
 
 async function stageFile(destination, action) {
@@ -75,8 +90,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   try {
     if (action === 'backup' && path) console.log(JSON.stringify(await backupDatabase(database, resolve(path))))
     else if (action === 'verify' && path) console.log(JSON.stringify(verifyDatabase(resolve(path))))
+    else if (action === 'verify-media' && path) console.log(JSON.stringify(await verifyMedia(resolve(path))))
     else if (action === 'restore' && !path) console.log(JSON.stringify(await restoreDatabase(process.stdin, database)))
-    else throw new Error('用法：node maintenance.mjs backup <目标文件> | verify <文件> | restore < 备份.sqlite')
+    else throw new Error('用法：node maintenance.mjs backup <目标文件> | verify <文件> | verify-media <快照文件> | restore < 备份.sqlite')
   } catch (error) {
     console.error(error.code === 'EEXIST' ? '目标文件已经存在' : error.message)
     process.exitCode = 1

@@ -1,6 +1,6 @@
 # 书童 Web 小说工作区
 
-把小说工作区部署在 NAS 后，可在电脑、iPad 和手机上打开同一个作品。当前源码版本为 `0.2.0-dev.12`，使用 Web SQLite schema 22。已发布的离线镜像 `v0.2.0-rc.1` 使用 schema 11。离线载入见 [v0.2.0-rc.1 发布说明](RELEASE.md)。
+把小说工作区部署在 NAS 后，可在电脑、iPad 和手机上打开同一个作品。当前源码版本为 `0.2.0-dev.13`，使用 Web SQLite schema 23。已发布的离线镜像 `v0.2.0-rc.1` 使用 schema 11。离线载入见 [v0.2.0-rc.1 发布说明](RELEASE.md)。
 
 | 能力 | 可用操作 |
 | --- | --- |
@@ -11,6 +11,7 @@
 | 迁移 | TXT／Markdown 单章，TXT／Markdown／EPUB 整稿，桌面 `.ainovel`，合并 TXT／Markdown，分章 Markdown ZIP，作品 JSON 备份 |
 | 运维 | Compose、在线整库快照、WebDAV 定时备份、新数据卷恢复 |
 | 剧本与分镜 | 从小说定稿生成分集提案和剧本候选，逐场建立镜头，确认、复核来源并导出 |
+| 剪辑与成片 | 素材库、画面片段与配音轨、镜头字幕、可取消的后台渲染、MP4 和 SRT |
 
 日常写作可直接使用。AI 和语义检索各自配置模型，互不依赖。 [部署与备份](#fnos-部署) · [编辑和写作流程](#保存与-ai) · [资料检索](#参考资料语义检索) · [桌面作品迁移](#从-pagekin-桌面版导入) · [实施进度](https://github.com/ChenMartin/Pagekin/blob/codex/web-novel-fnos/docs/research/nas-web/07-implementation-progress.md)
 
@@ -58,7 +59,7 @@ Compose 默认监听 NAS 宿主机的回环地址。用宿主机上的 HTTPS 反
 
 作品和登录会话存放在 `PAGEKIN_VOLUME` 指定的命名卷，默认名称为 `web-novel_novels`。升级时保留原卷名和 `.env`，避免换目录后连到空库。若已有测试部署，先确认旧容器的实际数据卷名称，再填入 `PAGEKIN_VOLUME`。应用内 JSON 备份适合单部作品，恢复上限为 24 MB。整库备份可在服务运行时生成。
 
-从 `v0.2.0-rc.1` 或较早的开发版升级前，先把当时的整库快照复制到容器外。从同一 Compose 目录重新构建后，服务启动时会自动升级到 schema 22。若需回退，将升级前的快照恢复到独立卷，再启动对应的旧镜像。
+从 `v0.2.0-rc.1` 或较早的开发版升级前，先把当时的整库快照复制到容器外。从同一 Compose 目录重新构建后，服务启动时会自动升级到 schema 23。若需回退，将升级前的快照恢复到独立卷，再启动对应的旧镜像。
 
 ## 整库备份和恢复
 
@@ -236,6 +237,33 @@ services:
 
 剧本重开或确认新版本时，旧分镜仍可查看和导出。选择“复核剧本来源”查看受影响的场次，采用当前已确认的剧本版本并重新核对镜头。已删除场次的镜头保留在旧分镜历史中，旧来源的本机草稿也可查看和复制。
 
+## 剪辑与成片
+
+在 fnOS 的 `.env` 设置 `PAGEKIN_MEDIA=1`，执行 `docker compose up -d --build`。首次构建会从 Debian 软件仓库安装 FFmpeg。服务默认逐个渲染，视频编码使用 CPU，输出 25 fps H.264 MP4，画幅对应 540×960、960×540 或 720×720。
+
+通过 HTTPS 反向代理访问时，上传受代理请求体和超时设置约束。遇到 `413` 时可检查代理的上传体积上限。
+
+1. 确认分镜后，打开“剪辑与成片”。在素材库上传 PNG、JPEG、H.264 MP4、WAV 或 MP3。每份最多 64 MiB，视频和音频最多 10 分钟，整个数据卷的已登记媒体上限为 2 GiB。
+2. 按镜头选择静帧或视频，调整片段顺序、视频素材起点和片段时长。可添加一条覆盖整段的配音轨并调整起点和音量。视频片段取画面，声音来自配音轨。填写镜头字幕，保存时间线到 NAS。
+3. 点“开始渲染”。每个任务最多 120 个片段和 180 秒，固定当时的时间线、分镜和素材摘要。完成后可预览，下载含可切换字幕轨的 MP4 和独立 SRT。取消或中断后的任务可使用原输入重试。
+
+编辑先暂存到本机。分镜更新后可查看旧时间线摘要并复核来源，新版本采用新分镜顺序，并保留仍对应镜头的素材和字幕。已经提交的任务可以继续查看原成片或按原版本重试。
+
+### 媒体文件备份与恢复
+
+整库 SQLite 快照保存素材登记、时间线、成片任务和摘要。制作文件存放于 `/data/media/blobs`，使用媒体后请与 SQLite 快照一同保存。作品 JSON 可迁移小说、剧本和分镜。WebDAV 定时备份上传 SQLite 快照，媒体目录通过 NAS 文件备份或下列命令另存。
+
+```sh
+docker compose exec -T pagekin tar -C /data -cf - media/blobs > pagekin-media.tar
+```
+
+先生成 SQLite 快照，再归档媒体。文件采用不可变摘要命名，归档时可继续创作。恢复时，按整库流程将快照恢复到新的数据卷，随后还原同一备份的媒体并校验，再启动服务。请将下面的卷名替换为实际恢复卷。
+
+```sh
+PAGEKIN_VOLUME=web-novel_novels_recovered docker compose run --rm --no-deps -T pagekin tar -C /data -xf - < pagekin-media.tar
+PAGEKIN_VOLUME=web-novel_novels_recovered docker compose run --rm --no-deps -T pagekin node maintenance.mjs verify-media /data/novels.sqlite
+```
+
 ## 从 Pagekin 桌面版导入
 
 用 Pagekin 桌面版导出作品备份，在 Web 书房点击“恢复备份”并选择 `.ainovel` 文件。支持 Pagekin 原始归档格式 v1 和桌面数据库 schema 7–9。单个归档上限为 48 MB，转换后的作品上限为 24 MB。通过 HTTPS 反向代理访问时，代理的上传限制也要允许对应大小。导入时会检查归档清单、各文件校验值和数据库版本，然后创建独立的 Web 作品。
@@ -268,7 +296,7 @@ EPUB 在 NAS 上解析，预览确认后才保存。提取范围为正文文字�
 
 ## 当前实现范围
 
-当前实现覆盖小说、剧本和分镜工作区。功能和实机验收进度见 [实施进度](https://github.com/ChenMartin/Pagekin/blob/codex/web-novel-fnos/docs/research/nas-web/07-implementation-progress.md)。素材、剪辑、成片和导演台见 [小说到成片设计](https://github.com/ChenMartin/Pagekin/blob/codex/web-novel-fnos/docs/research/nas-web/06-novel-to-film.md)。
+当前实现覆盖小说、剧本、分镜，以及上传素材到样片导出。功能和实机验收进度见 [实施进度](https://github.com/ChenMartin/Pagekin/blob/codex/web-novel-fnos/docs/research/nas-web/07-implementation-progress.md)。媒体生成、多轨效果和 3D 导演台见 [小说到成片设计](https://github.com/ChenMartin/Pagekin/blob/codex/web-novel-fnos/docs/research/nas-web/06-novel-to-film.md)。
 
 ## 开发与验证
 
@@ -277,5 +305,7 @@ EPUB 在 NAS 上解析，预览确认后才保存。提取范围为正文文字�
 ```sh
 node --test smoke.test.mjs
 ```
+
+安装 FFmpeg 和 ffprobe 后，在仓库的 `web-novel` 运行 `node --test media-smoke.mjs`。测试生成静帧、视频和配音音轨夹具，验证实际 MP4、中文字幕、取消、重试和备份恢复。
 
 可选浏览器回归检查。将 `BROWSER_EXE` 指向 Edge 或 Chromium 的可执行文件，再运行 `node browser-smoke.mjs`。可设置 `PAGEKIN_TEST_EDITOR=enhanced` 或 `plain` 强制检查对应模式。增强模式测试包括浏览器合成中文输入事件。测试使用独立的临时浏览器配置和 SQLite 数据库。

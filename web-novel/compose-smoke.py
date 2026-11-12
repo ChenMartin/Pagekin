@@ -26,6 +26,7 @@ def smoke(directory: Path, compose: str, previous_image: str | None = None) -> N
         **os.environ, "APP_PASSWORD": password, "APP_SECURE_COOKIE": "0", "APP_ORIGIN": app_url,
         "PAGEKIN_BIND": "127.0.0.1", "PAGEKIN_PORT": str(port), "LLM_MODEL": "", "LLM_API_KEY": "",
         "WEBDAV_BACKUP_URL": "",
+        "PAGEKIN_MEDIA": "0",
     }
     client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
     temporary = TemporaryDirectory(prefix="pagekin-compose-")
@@ -133,6 +134,14 @@ def smoke(directory: Path, compose: str, previous_image: str | None = None) -> N
             confirmed_board = request(board_path, {"action": "confirm", "baseRev": board["rev"],
                 "scriptRev": confirmed["rev"], "mutationId": str(uuid4())}, "PUT")
             assert confirmed_board["status"] == "confirmed"
+        if current_schema >= 23:
+            timeline_path = episode_path + "/timeline"
+            initial = request(timeline_path)
+            assert initial["boardRev"] == confirmed_board["rev"]
+            clips = [{**initial["clips"][0], "caption": "渔船靠岸。"}]
+            timeline = request(timeline_path, {"action": "save", "baseRev": 0, "boardRev": initial["boardRev"],
+                "clips": clips, "narration": None, "mutationId": str(uuid4())}, "PUT")
+            assert timeline["rev"] == 1
         backup_path = "/data/backups/compose-test.sqlite"
         backup = stack("", "exec", "-T", "pagekin", "node", "maintenance.mjs", "backup", backup_path)
         assert json.loads(backup)["projects"] == 1
@@ -167,6 +176,9 @@ def smoke(directory: Path, compose: str, previous_image: str | None = None) -> N
             assert request(board_path) == confirmed_board
             assert request(episode_path + "/storyboard-history?rev=1")["shots"][0]["visual"] == shot["visual"]
             print("Storyboard, source screenplay revision and shot history survived backup and restore")
+        if current_schema >= 23:
+            assert request(timeline_path) == timeline
+            print("Timeline and storyboard binding survived backup and restore")
         if episode_path:
             restored = request(episode_path)
             assert restored["status"] == "confirmed"

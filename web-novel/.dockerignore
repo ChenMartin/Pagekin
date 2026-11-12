@@ -5,6 +5,9 @@
 !screenplay-store.mjs
 !storyboard.mjs
 !production-runs.mjs
+!media-store.mjs
+!media-files.mjs
+!media-render.mjs
 !desktop-archive.mjs
 !desktop-copy.mjs
 !writing-context.mjs

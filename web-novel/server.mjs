@@ -17,6 +17,10 @@ import { continuationAddition } from './continuation.mjs'
 import { manuscriptExport } from './manuscript-export.mjs'
 import { fetchChat, openModelProfiles } from './model-profiles.mjs'
 import { openWebDavBackup } from './webdav-backup.mjs'
+import { mediaId } from './media-store.mjs'
+import { openMediaFiles, sendMedia } from './media-files.mjs'
+import { openRenderer, subtitles } from './media-render.mjs'
+import { string } from './input.mjs'
 
 const password = process.env.APP_PASSWORD_FILE
   ? readFileSync(process.env.APP_PASSWORD_FILE, 'utf8').replace(/\r?\n$/, '')
@@ -30,6 +34,11 @@ const storage = openStore(directory)
 const semantic = openSemantic(storage)
 const models = openModelProfiles(storage)
 const webdav = openWebDavBackup(storage, directory)
+const media = storage.media
+const mediaEnabled = process.env.PAGEKIN_MEDIA === '1'
+const mediaFiles = openMediaFiles(directory, mediaEnabled)
+const renderer = openRenderer(media, mediaFiles)
+let mediaUploads = 0
 const referenceGeneration = { prefix: 'reference:', update: storage.referenceNovels.update }
 const productionGeneration = { prefix: 'production:', update: storage.production.update }
 const sessionSeconds = 7 * 86400
@@ -54,6 +63,7 @@ const files = new Map([
   ['/screenplay-ui.mjs', ['screenplay-ui.mjs', 'text/javascript']],
   ['/production-ui.mjs', ['production-ui.mjs', 'text/javascript']],
   ['/storyboard-ui.mjs', ['storyboard-ui.mjs', 'text/javascript']],
+  ['/media-ui.mjs', ['media-ui.mjs', 'text/javascript']],
   ['/reference-novel-ui.mjs', ['reference-novel-ui.mjs', 'text/javascript']],
   ['/character-state.mjs', ['character-state.mjs', 'text/javascript']],
   ['/character-continuity-ui.mjs', ['character-continuity-ui.mjs', 'text/javascript']],
@@ -405,7 +415,7 @@ async function route(req, res) {
     res.writeHead(200, { 'Content-Type': `${file[1]}; charset=utf-8` })
     return res.end(bytes)
   }
-  if (method !== 'GET') verifyOrigin(req)
+  if (method !== 'GET' && method !== 'HEAD') verifyOrigin(req)
   if (method === 'POST' && path === '/api/session') return login(req, res, await body(req, 4096))
   const token = sessionKey(req)
   if (!storage.get('SELECT 1 FROM sessions WHERE token_hash=? AND expires>?', token, Date.now())) {
@@ -430,6 +440,7 @@ async function route(req, res) {
   }
   if (path === '/api/webdav-backup' && method === 'GET') return json(res, webdav.status())
   if (path === '/api/webdav-backup' && method === 'POST') return json(res, webdav.start(), 202)
+  if (method === 'GET' && path === '/api/media-capabilities') return json(res, { enabled: mediaEnabled, available: await mediaFiles.available() })
   if (path === '/api/projects' && method === 'GET') {
     return json(res, storage.all('SELECT * FROM projects ORDER BY created DESC'))
   }
@@ -451,6 +462,46 @@ async function route(req, res) {
     if (method === 'PUT') return json(res, storage.saveProjectGoals(pid, await body(req, 8192)))
   }
   const screenplay = storage.screenplay
+  if (resource === 'media-assets') {
+    if (method === 'GET' && id === undefined) return json(res, media.assets(pid))
+    if ((method === 'GET' || method === 'HEAD') && id && action === 'file') return sendMedia(req, res, directory, media.asset(pid, id))
+    if (method === 'PUT' && id && action === undefined) {
+      mediaId(id)
+      if (!await mediaFiles.available()) throw new ApiError(503, '请启用媒体运行环境')
+      if (mediaUploads >= 2) throw new ApiError(429, '正在接收其他素材，请稍后重试')
+      const name = string(url.searchParams.get('name'), 160, true).trim()
+      mediaUploads++
+      let stage
+      try {
+        stage = await mediaFiles.stage()
+        const path = join(stage, 'upload')
+        const file = await mediaFiles.receive(req, path)
+        const row = await mediaFiles.publish(path, file, media.checkQuota, () => media.registerAsset(pid, id, { ...file, name }))
+        return json(res, row, 201)
+      } finally {
+        mediaUploads--
+        if (stage) await rm(stage, { recursive: true, force: true }).catch(() => {})
+      }
+    }
+  }
+  if (resource === 'media-renders' && id) {
+    const job = media.render(pid, id)
+    if (method === 'GET' && action === undefined) return json(res, job)
+    if (method === 'POST' && action === 'cancel') {
+      const cancelled = media.cancel(pid, id)
+      renderer.cancel(id)
+      return json(res, cancelled, 202)
+    }
+    if ((method === 'GET' || method === 'HEAD') && action === 'film') {
+      if (job.status !== 'done') throw new ApiError(404, '成片尚不可播放')
+      return sendMedia(req, res, directory, { ...job, type: 'video/mp4' }, url.searchParams.get('download') === '1' ? 'pagekin-film.mp4' : undefined)
+    }
+    if (method === 'GET' && action === 'subtitles') {
+      const text = subtitles(media.manifest(pid, id).clips)
+      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Content-Disposition': 'attachment; filename="pagekin-film.srt"' })
+      return res.end(text)
+    }
+  }
   if (resource === 'production-runs') {
     const production = storage.production
     if (method === 'GET' && action === undefined) return json(res, id ? production.detail(pid, id)
@@ -484,6 +535,15 @@ async function route(req, res) {
     if (method === 'POST' && id && action === 'episodes') return json(res, screenplay.createEpisode(pid, id, await body(req, 8192)), 201)
   }
   if (resource === 'episodes' && id) {
+    if (method === 'GET' && action === 'timeline') return json(res, media.timeline(pid, id))
+    if (method === 'PUT' && action === 'timeline') return json(res, media.change(pid, id, await body(req)))
+    if (method === 'GET' && action === 'renders') return json(res, media.renders(pid, id))
+    if (method === 'POST' && action === 'renders') {
+      if (!await mediaFiles.available()) throw new ApiError(503, '请启用媒体运行环境')
+      const job = media.enqueue(pid, id, await body(req, 4096))
+      renderer.kick()
+      return json(res, job, 202)
+    }
     const storyboard = storage.storyboard
     if (method === 'GET' && action === 'storyboard') return json(res, storyboard.detail(pid, id))
     if (method === 'PUT' && action === 'storyboard') return json(res, storyboard.change(pid, id, await body(req)))
@@ -741,6 +801,7 @@ const server = createServer({ requestTimeout: 60_000 }, (req, res) => {
 server.listen(Number(process.env.PORT || '3100'), process.env.APP_HOST || '127.0.0.1',
   () => {
     webdav.schedule()
+    renderer.kick()
     console.log(`Pagekin Web listening on ${JSON.stringify(server.address())}`)
   })
 
@@ -750,13 +811,15 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
     semantic?.close()
     let backingUp = Boolean(webdav.status().running)
     Promise.resolve(webdav.close()).finally(() => { backingUp = false })
+    let rendering = true
+    Promise.resolve(renderer.stop()).finally(() => { rendering = false })
     clearInterval(eventTimer)
     for (const client of eventClients) client.res.end()
     for (const controller of active.values()) controller.abort('shutdown')
     server.close(() => {
       const deadline = Date.now() + 5000
       const wait = setInterval(() => {
-        if ((active.size || batchWorkers.size || backingUp) && Date.now() < deadline) return
+        if ((active.size || batchWorkers.size || backingUp || rendering) && Date.now() < deadline) return
         clearInterval(wait)
         storage.db.close()
       }, 50)

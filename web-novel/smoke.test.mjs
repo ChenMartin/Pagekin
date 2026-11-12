@@ -82,6 +82,7 @@ async function launch(directory, port) {
     env: {
       ...process.env, APP_PASSWORD: password, APP_PASSWORD_FILE: '', APP_SECURE_COOKIE: '0',
       WEBDAV_BACKUP_URL: '',
+      PAGEKIN_MEDIA: '0',
       APP_HOST: '127.0.0.1', APP_ORIGIN: '', APP_DATA_DIR: directory, PORT: '0', LLM_MODEL: 'test',
       LLM_BASE_URL: `http://127.0.0.1:${port}/v1`, LLM_API_KEY: '', LLM_CONTEXT_CHARS: '8000',
       LLM_PROFILES_FILE: '', LLM_PROFILES_JSON: JSON.stringify([
@@ -1594,6 +1595,7 @@ test('opening an existing Web database migrates v1 and keeps chapter data', asyn
     const p = store.createProject('旧版本作品')
     const doc = store.addDocument(p.id, { kind: 'chapter', number: 1, title: '原章', body: '原文' })
     store.db.exec(`
+      DROP TABLE media_renders; DROP TABLE media_timeline_receipts; DROP TABLE media_timelines; DROP TABLE media_assets;
       DROP TABLE production_runs; DROP TABLE storyboard_receipts; DROP TABLE storyboard_history;
       DROP TABLE thread_evidence;
       DROP TABLE architecture_sections;

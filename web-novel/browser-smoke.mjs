@@ -89,6 +89,7 @@ try {
   app = spawn(process.execPath, [entry], {
     env: { ...process.env, APP_PASSWORD: password, APP_PASSWORD_FILE: '', APP_SECURE_COOKIE: '0',
       WEBDAV_BACKUP_URL: '',
+      PAGEKIN_MEDIA: '0',
       APP_ORIGIN: '', APP_HOST: '127.0.0.1', PORT: '0', APP_DATA_DIR: join(root, 'data'),
       APP_EDITOR: process.env.PAGEKIN_TEST_EDITOR === 'plain' ? 'plain' : 'auto',
       EMBEDDING_BASE_URL: modelBase,
@@ -730,6 +731,15 @@ try {
   await dialogButton('拆镜任务记录')
   await dialogButton('已完成 · 已采用')
   await until(() => evaluate("document.querySelector('.production-proposal')?.textContent.includes('灯塔和守夜人的剪影')"), 'Applied shot task was unavailable from a confirmed storyboard')
+  await dialogButton('返回工作区')
+  await dialogButton('剪辑与成片')
+  await visible('#timeline-caption')
+  assert.equal(await evaluate("document.querySelector('#timeline-caption').value"), '信就在这里。')
+  await fill('#timeline-caption', '中文成片字幕。')
+  await until(() => evaluate("document.querySelector('#timeline-status').textContent.includes('本机草稿')"), 'Timeline draft was not stored locally')
+  await click('#dialog-submit')
+  await until(() => evaluate("document.querySelector('#timeline-status').textContent.includes('时间线 v1')"), 'Timeline was not saved')
+  assert.equal(await evaluate("document.querySelector('#timeline-caption').value"), '中文成片字幕。')
   await click('#close-dialog')
   const importedPeople = await evaluate(`(async () => {
     const sourceDoc = (id, kind, title, body, number = null, status = 'draft') =>
