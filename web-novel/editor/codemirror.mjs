@@ -4,7 +4,7 @@ import { defaultHighlightStyle, syntaxHighlighting } from '@codemirror/language'
 import { Compartment, EditorState } from '@codemirror/state'
 import { EditorView, keymap, placeholder } from '@codemirror/view'
 
-export function createEditor(host, { value, maxLength, nonce, onEdit, onComposition, onLimit, label, hint }) {
+export function createEditor(host, { value, maxLength, nonce, onEdit, onSelection, onComposition, onLimit, label, hint }) {
   const access = new Compartment()
   const editable = new Compartment()
   const attributes = new Compartment()
@@ -47,6 +47,7 @@ export function createEditor(host, { value, maxLength, nonce, onEdit, onComposit
         }),
         EditorView.updateListener.of(update => {
           if (update.docChanged && !replacing) onEdit()
+          if (update.selectionSet && !replacing) onSelection()
         }),
       ],
     })

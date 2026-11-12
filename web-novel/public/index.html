@@ -10,11 +10,12 @@
 </head>
 <body>
   <header class="masthead">
-    <div><strong>书童</strong> <span>小说工作区</span> <small id="release-version"></small></div>
+    <div class="workspace-brand"><span class="brand-mark" aria-hidden="true">书</span><div><strong>书童</strong><span>小说工作区</span></div></div>
     <div id="workspace-menu" class="tools" hidden>
       <button id="library-menu">书房</button>
       <button id="workspace-settings">设置</button>
       <button id="logout">退出登录</button>
+      <small id="release-version"></small>
     </div>
   </header>
   <main>
@@ -24,9 +25,10 @@
       <button class="primary">登录</button>
       <button id="login-language" type="button">English</button>
     </form>
-    <p id="notice" role="status" hidden></p>
+    <div id="notice-bar" hidden><p id="notice" role="status"></p><button id="notice-close" type="button" aria-label="关闭提示">×</button></div>
     <div id="workspace" hidden>
-      <aside aria-label="作品与文档">
+      <button id="catalog-toggle" type="button" aria-controls="workspace-catalog" aria-expanded="true">作品目录</button>
+      <aside id="workspace-catalog" aria-label="作品与文档">
         <label for="projects">作品</label>
         <select id="projects"></select>
         <div class="tools">
@@ -60,9 +62,16 @@
               </select>
             </label>
           </div>
-          <label for="documents" id="catalog-label">打开正文</label>
-          <select id="documents"></select>
-          <details class="workspace-tools" open>
+          <section class="catalog" aria-labelledby="catalog-label">
+            <h2 id="catalog-label">打开正文</h2>
+            <label class="sr" for="catalog-query">查找目录</label>
+            <input id="catalog-query" type="search" placeholder="查找标题或章号" maxlength="100" autocomplete="off">
+            <div id="catalog-rows" class="catalog-rows"></div>
+            <div id="catalog-pages" class="catalog-pages" hidden>
+              <button type="button" id="catalog-previous">上一页</button><output id="catalog-page" aria-live="polite"></output><button type="button" id="catalog-next">下一页</button>
+            </div>
+          </section>
+          <details class="workspace-tools">
             <summary>资料与工作流</summary>
             <div class="tools">
               <button id="narrative-threads">剧情线索与伏笔</button>
@@ -93,20 +102,24 @@
       <section id="empty">
         <h1 id="overview-title">书房</h1>
         <p id="overview-summary">选择一部作品，或新建作品开始写作。</p>
+        <div id="overview-progress" class="overview-progress" hidden></div>
         <div id="overview-documents" class="overview-documents"></div>
       </section>
       <section id="editor" aria-label="写作编辑器" hidden>
+        <div class="manuscript-pane" tabindex="-1">
         <div class="editor-head">
-          <p id="document-label"></p>
+          <div><p id="document-project"></p><p id="document-label"></p></div>
           <p id="save-state" role="status"></p>
         </div>
         <button id="reload-remote" hidden>NAS 上有更新，查看最新版本</button>
-        <div class="tools">
+        <div class="tools chapter-toolbar">
           <button id="open-find" type="button" aria-expanded="false" aria-controls="find-panel">查找／替换</button>
           <button id="previous-chapter" type="button" hidden>上一章</button>
           <button id="next-chapter" type="button" hidden>下一章</button>
           <button id="paired-document" type="button" hidden></button>
+          <button id="write-blueprint" type="button" class="primary" hidden></button>
           <button id="ai-passage" type="button" hidden>选段 AI</button>
+          <button id="assistant-toggle" type="button" aria-controls="ai" aria-expanded="false">AI 助手</button>
           <button id="focus-writing" type="button" aria-pressed="false">专注写作</button>
         </div>
         <section id="find-panel" class="find-panel" aria-label="文档内查找与替换" hidden>
@@ -127,12 +140,21 @@
           </div>
           <output id="find-result" role="status"></output>
         </section>
+        <div class="manuscript-paper">
         <label class="sr" for="title">文档标题</label>
         <input id="title" maxlength="160" placeholder="文档标题">
+        <div id="passage-tools" class="passage-tools" role="group" aria-label="选段工具" hidden>
+          <span id="passage-size"></span>
+          <button type="button" data-passage="continue">续写</button>
+          <button type="button" data-passage="polish">润色</button>
+          <button type="button" data-passage="expand">扩写</button>
+          <button type="button" data-passage="dialogue">改成对话</button>
+        </div>
         <label class="sr" for="body">正文</label>
         <textarea id="body" maxlength="180000" placeholder="开始写作…" spellcheck="false"></textarea>
         <div id="body-editor-host" hidden></div>
-        <div class="tools">
+        </div>
+        <div class="tools chapter-footer">
           <button id="save" class="primary">立即保存</button>
           <button id="history">历史版本</button>
           <button id="status">定稿</button>
@@ -142,8 +164,12 @@
           <span id="length"></span>
           <a id="editor-notices" href="/editor.notices.txt" target="_blank" rel="noopener" hidden>编辑器许可证</a>
         </div>
+        </div>
+        <div class="assistant-pane">
         <details id="ai" hidden>
-          <summary id="ai-heading">AI 细纲、写稿、审稿与修稿</summary>
+          <summary id="ai-heading">写作助手</summary>
+          <button id="assistant-back" type="button">返回稿纸</button>
+          <p id="chapter-next-action" class="chapter-next" hidden></p>
           <p id="model-status" hidden>写作模型待配置。可查看既有任务、候选和模型输入预览。</p>
           <div id="outline-controls">
             <p id="selected-outline">可先生成写前细纲，确认后用于写稿。</p>
@@ -187,6 +213,7 @@
             </div>
           </div>
         </details>
+        </div>
       </section>
     </div>
   </main>

@@ -84,8 +84,8 @@ export function openModelProfiles({ get, run }, env = process.env) {
     return list()
   }
 
-  function required() {
-    const profile = current()
+  function required(id) {
+    const profile = id == null ? current() : profiles.get(id)
     if (!profile) throw new ApiError(422, '请选择可用的写作模型预设')
     return profile
   }

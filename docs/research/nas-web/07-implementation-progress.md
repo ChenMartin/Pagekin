@@ -141,6 +141,8 @@ rc.2 的 Windows 和 `linux/amd64` 容器 HTTP 回归各通过 4 项。Edge 普�
 
 `0.2.0-dev.15` 的 Windows 与 Linux amd64 各通过 8 项 HTTP 回归。Edge 两种编辑模式验证刷新后恢复音乐、独立字幕和静帧运动，再保存到 NAS。WSL 与 Linux 媒体镜像使用真实 FFmpeg 验证混音时序、淡入淡出、中文烧录、内嵌字幕、SRT、四种静帧运动及旧版冻结任务。源码 ZIP 解包构建通过，Compose 隔离卷验证 schema 11 和 24 到 25 的升级及备份恢复。 [多轨剪辑开发清单](12-multitrack-editing-checklist.md)
 
+`0.2.0-dev.16` 重排小说工作区，增加章号目录、蓝图直达写稿、单次模型选择、选段对比和逐段手动合并。Edge 普通编辑器及 CodeMirror 验证窄屏目录、选段、跨页合并和重载后找回待处理修稿。Windows 和 Linux amd64 各通过 8 项 HTTP 回归，Compose 隔离卷验证从 `dev.14` 升级与备份恢复。 [小说工作区优化清单](13-novel-workspace-checklist.md)
+
 | 验收项 | 可复现的验证或下一步 |
 | --- | --- |
 | HTTP、迁移、模型与备份 | 在 `web-novel` 运行 `node --test smoke.test.mjs`。覆盖跨设备保存、整稿导入、语义索引、细纲与审稿、合并冲突、批次重启、Skill 恢复及重复续跑。 |

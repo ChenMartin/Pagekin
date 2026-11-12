@@ -10,15 +10,20 @@ const $ = id => document.getElementById(id)
 const names = { settings: ui("设定与架构"), character: ui("人物"), blueprint: ui("章节蓝图"), chapter: ui("正文"), reference: ui("参考资料") }
 const stages = ['settings', 'character', 'blueprint', 'chapter']
 const chapterRuns = { draft: ui("写稿"), outline: ui("写前细纲"), review: ui("审稿"), revise: ui("修稿") }
+const passageActions = { continue: '在选段后续写', polish: '润色', expand: '扩写', dialogue: '改成对话' }
 const runNames = { ...chapterRuns, plan: ui("AI 规划"), passage: ui("选段 AI"), continuity: ui("人物变化提取") }
 const runStates = { running: ui("生成中"), done: ui("已完成"), failed: ui("失败"), cancelled: ui("已取消"), interrupted: ui("已中断") }
 const batchStates = { running: ui("进行中"), paused: ui("已暂停"), done: ui("已结束"), cancelled: ui("已取消") }
 const threadKinds = { plot: ui("剧情线索"), foreshadow: ui("伏笔") }
 const threadStates = { planned: ui("计划埋设"), open: ui("待回收"), resolved: ui("已回收"), archived: ui("已归档") }
+const catalogPageSize = 30
+const narrowWorkspace = matchMedia('(max-width: 760px)')
+const stackedAssistant = matchMedia('(max-width: 1100px)')
 let project = ''
 let editor
 let documents = []
 let stage = 'chapter'
+let catalogPage = 0
 const stageDocuments = new Map()
 let model = false
 let modelLabels = new Map()
@@ -59,7 +64,7 @@ async function enableEnhancedEditor() {
     enhancedBody = createEditor(host, {
       value: fallback.value, maxLength: fallback.maxLength,
       nonce: document.querySelector('meta[name="editor-style-nonce"]').content,
-      onEdit: edit, onComposition: setComposing, onLimit: () => note(ui("正文超过长度限制")),
+      onEdit: edit, onSelection: paintPassage, onComposition: setComposing, onLimit: () => note(ui("正文超过长度限制")),
       label: ui('正文'), hint: ui('开始写作…'),
     })
     fallback.hidden = true
@@ -80,7 +85,7 @@ function uuid() {
 
 function note(message = '') {
   $('notice').textContent = message
-  $('notice').hidden = !message
+  $('notice-bar').hidden = !message
 }
 
 async function api(path, method = 'GET', data) {
@@ -154,6 +159,10 @@ function paint(state = editor) {
   const pairedKind = { chapter: 'blueprint', blueprint: 'chapter' }[state.doc.kind]
   $('paired-document').hidden = !pairedKind
   if (pairedKind) $('paired-document').textContent = ui("本章") + (pairedKind === 'blueprint' ? ui("蓝图") : ui("正文"))
+  const blueprint = state.doc.kind === 'blueprint'
+  const pairedChapter = blueprint && documents.find(row => row.kind === 'chapter' && row.number === state.doc.number)
+  $('write-blueprint').hidden = !blueprint || !model || Boolean(pairedChapter?.status === 'final' || pairedChapter?.has_body)
+  if (blueprint) $('write-blueprint').textContent = ui("写第 $1 章", state.doc.number)
   $('recover').hidden = !state.recovered.length
   $('conflict').hidden = !state.conflict
   $('reload-remote').hidden = state.remoteRev <= state.doc.rev || Boolean(state.conflict)
@@ -162,10 +171,17 @@ function paint(state = editor) {
   $('continuity-document').hidden = state.doc.kind !== 'character' && !(state.doc.kind === 'chapter' && locked)
   $('status').textContent = locked ? ui("重新打开定稿") : ui("定稿")
   const planning = state.doc.kind !== 'chapter'
+  const pendingMerge = state.job?.kind === 'revise' && state.job.status === 'done' && state.job.applied_rev == null && state.job.base_rev === state.doc.rev
+  const step = !state.body.trim() ? 'draft' : pendingMerge ? 'merge' : currentReview(state) ? 'revise' : 'review'
+  $('assistant-toggle').textContent = ui(pendingMerge ? '待合并修稿' : currentReview(state) ? '审稿意见' : 'AI 助手')
+  const next = $('chapter-next-action')
+  next.hidden = planning || locked || !model || state.job?.status === 'running'
+  if (!next.hidden) next.textContent = ui({ draft: '本章待写，可以先生成细纲或草稿。', merge: '修稿候选已就绪，请逐处比较并合并。',
+    review: '可审阅当前稿件，或在正文核对后定稿。', revise: '可勾选审稿意见并生成修稿候选。' }[step])
   $('ai-passage').hidden = planning || !model || locked
   $('ai-passage').disabled = state.job?.status === 'running'
   $('ai').hidden = false
-  $('ai-heading').textContent = planning ? 'AI ' + names[state.doc.kind] : ui("AI 细纲、写稿、审稿与修稿")
+  $('ai-heading').textContent = planning ? 'AI ' + names[state.doc.kind] : ui("写作助手")
   $('outline-controls').hidden = planning
   $('selected-outline').textContent = !state.outline ? ui("可先生成写前细纲，确认后用于写稿。")
     : state.outline.baseRev !== state.doc.rev ? ui("正文已更新，请重新生成细纲或取消引用。") : ui("已选细纲，下一次写稿将引用。")
@@ -178,15 +194,19 @@ function paint(state = editor) {
   for (const btn of document.querySelectorAll('[data-run]')) {
     btn.hidden = planning !== (btn.dataset.run === 'plan')
     btn.disabled = !model || locked || state.job?.status === 'running'
+    btn.classList.toggle('primary', planning ? btn.dataset.run === 'plan' : btn.dataset.run === step)
     if (btn.dataset.run === 'plan') btn.textContent = ui("生成") + names[state.doc.kind] + ui("候选")
   }
+  $('apply-run').classList.toggle('primary', pendingMerge)
   $('preview-context').disabled = locked
+  paintPassage()
   if (state.job?.reviewReport) {
     const current = currentReview(state)
     $('review-issues').disabled = !current
     $('review-stale').hidden = !state.job.reviewReport.issues.length || current
   }
   $('length').textContent = ui("$1 字符", state.body.length.toLocaleString())
+  $('document-project').textContent = $('projects').selectedOptions[0]?.textContent ?? ''
   $('document-label').textContent = [names[state.doc.kind], state.doc.number && ui("第 $1 章", state.doc.number),
     locked && ui("已定稿")].filter(Boolean).join(' · ')
   $('save-state').textContent = state.conflict ? ui("发现版本冲突，请核对两份内容")
@@ -380,8 +400,12 @@ async function flush(state, checkpoint = false) {
         }).catch(() => {})
       }
       if (editor === state) {
-        const itemOption = Array.from($('documents').options).find(option => option.value === state.doc.id)
-        if (itemOption) itemOption.textContent = numberedTitle({ ...state.doc, title: state.title })
+        const index = documents.findIndex(row => row.id === state.doc.id)
+        if (index >= 0) {
+          const { title, rev, status, updated, body } = state.doc
+          documents[index] = { ...documents[index], title, rev, status, updated, has_body: Boolean(body.trim()) }
+        }
+        renderCatalog()
       }
       return true
     } catch (error) {
@@ -419,10 +443,23 @@ function choices(element, rows, label, selected = '') {
   element.value = selected
 }
 
-function renderCatalog(selected = editor?.doc.id ?? '') {
+function setCatalogOpen(open) {
+  $('workspace').classList.toggle('catalog-collapsed', !open)
+  $('catalog-toggle').setAttribute('aria-expanded', String(open))
+}
+
+function resetCatalog() {
+  $('catalog-query').value = ''
+  catalogPage = 0
+}
+
+function renderCatalog(selected = editor?.doc.id ?? '', reveal = false) {
   const chapterStatus = $('chapter-filter').value
+  const query = $('catalog-query').value.normalize('NFKC').trim().toLocaleLowerCase()
+  const number = /^(?:第\s*)?(\d+)(?:\s*章)?$/u.exec(query)?.[1]
   const filtered = documents.filter(row => row.kind === stage &&
-    (stage !== 'chapter' || !chapterStatus || row.status === chapterStatus))
+    (stage !== 'chapter' || !chapterStatus || row.status === chapterStatus) &&
+    (!query || row.title.normalize('NFKC').toLocaleLowerCase().includes(query) || (number !== undefined && row.number === Number(number))))
   for (const button of $('stage-nav').querySelectorAll('[data-stage]')) {
     button.setAttribute('aria-pressed', String(button.dataset.stage === stage))
   }
@@ -431,20 +468,71 @@ function renderCatalog(selected = editor?.doc.id ?? '') {
   $('batch-blueprints').hidden = stage !== 'blueprint' || !model
   $('catalog-label').textContent = ui("打开") + names[stage]
   $('chapter-filter-label').hidden = stage !== 'chapter'
-  choices($('documents'), filtered.map(row => [row.id, numberedTitle(row)]), ui("选择文档"), selected)
+  if (reveal) {
+    const index = filtered.findIndex(row => row.id === selected)
+    if (index >= 0) catalogPage = Math.floor(index / catalogPageSize)
+  }
+  const pages = Math.max(1, Math.ceil(filtered.length / catalogPageSize))
+  catalogPage = Math.min(catalogPage, pages - 1)
+  const listing = $('catalog-rows')
+  const start = catalogPage * catalogPageSize
+  listing.replaceChildren(...filtered.slice(start, start + catalogPageSize).map(row => {
+    const button = actionButton('', async () => {
+      if (editor?.doc.id !== row.id) await openDocument(row.id)
+      if (editor?.doc.id !== row.id) return
+      if (narrowWorkspace.matches) setCatalogOpen(false)
+      document.querySelector('.manuscript-pane').focus({ preventScroll: true })
+      if (narrowWorkspace.matches) $('editor').scrollIntoView({ block: 'start' })
+    })
+    button.className = 'catalog-row'
+    button.dataset.document = row.id
+    if (row.id === selected) button.setAttribute('aria-current', 'true')
+    const title = document.createElement('span')
+    title.className = 'catalog-title'
+    title.textContent = row.title
+    if (row.number != null) {
+      const index = document.createElement('span')
+      index.className = 'catalog-number'
+      index.textContent = ui("第 $1 章", row.number)
+      button.append(index)
+    }
+    button.append(title)
+    if (stage === 'chapter') {
+      const status = document.createElement('span')
+      status.className = 'catalog-status'
+      status.dataset.status = row.status
+      status.textContent = row.status === 'final' ? ui("已定稿") : row.has_body ? ui("草稿") : ui("待写")
+      button.append(status)
+    }
+    return button
+  }))
+  if (!filtered.length) listing.append(document.createTextNode(ui("此阶段没有符合条件的文档。")))
+  $('catalog-pages').hidden = pages === 1
+  $('catalog-page').textContent = ui("$1 / $2", catalogPage + 1, pages)
+  $('catalog-previous').disabled = catalogPage === 0
+  $('catalog-next').disabled = catalogPage + 1 >= pages
 
   if ($('empty').hidden) return
   $('overview-title').textContent = project ? $('projects').selectedOptions[0]?.textContent || ui("作品概览") : ui("书房")
   const counts = stages.map(kind => documents.filter(row => row.kind === kind).length)
   const finalized = documents.filter(row => row.kind === 'chapter' && row.status === 'final').length
-  $('overview-summary').textContent = project
-    ? ui("设定与架构 $1 份 · 人物 $2 人 · 蓝图 $3 章 · 正文 $4 章（$5 章已定稿）", counts[0], counts[1], counts[2], counts[3], finalized)
-    : ui("选择一部作品，或新建作品开始写作。")
+  $('overview-summary').hidden = Boolean(project)
+  const progress = $('overview-progress')
+  progress.hidden = !project
+  progress.replaceChildren(...stages.map((kind, index) => {
+    const item = actionButton('', () => showOverview(kind))
+    const number = document.createElement('strong')
+    number.textContent = counts[index].toLocaleString()
+    const title = document.createElement('span')
+    title.textContent = kind === 'chapter' ? ui("正文 · $1 章已定稿", finalized) : names[kind]
+    item.append(number, title)
+    return item
+  }))
   const list = $('overview-documents')
   list.replaceChildren()
   if (!project) return
   const title = document.createElement('h2')
-  title.textContent = names[stage]
+  title.textContent = ui("最近编辑 · $1", names[stage])
   list.append(title)
   if (!filtered.length) list.append(document.createTextNode(ui("此阶段没有符合条件的文档。")))
   const latest = filtered.slice().sort((a, b) => b.updated.localeCompare(a.updated)).slice(0, 8)
@@ -495,6 +583,7 @@ function showEditor(doc) {
   $('find-query').value = ''
   $('replace-query').value = ''
   $('find-result').textContent = ''
+  if (stage !== doc.kind) resetCatalog()
   stage = doc.kind
   stageDocuments.set(stage, doc.id)
   if (stage === 'chapter' && $('chapter-filter').value && $('chapter-filter').value !== doc.status) $('chapter-filter').value = ''
@@ -506,13 +595,14 @@ function showEditor(doc) {
   composing = false
   $('empty').hidden = true
   $('editor').hidden = false
+  setCatalogOpen(false)
   $('title').value = doc.title
   resetBody(doc.body)
   $('guidance').value = ''
   $('reference-query').value = ''
-  $('ai').open = false
+  assistant(!stackedAssistant.matches)
   renderJob(editor)
-  renderCatalog(doc.id)
+  renderCatalog(doc.id, true)
   paint()
   remember()
   return editor
@@ -525,6 +615,7 @@ function clearEditor() {
   composing = false
   $('editor').hidden = true
   $('empty').hidden = false
+  setCatalogOpen(true)
   setFocusWriting(false)
   renderCatalog()
   remember()
@@ -572,6 +663,7 @@ async function selectProject(id, selected, initialStage = 'chapter', savedStages
   $('projects').value = id
   $('project-tools').hidden = !id
   $('chapter-filter').value = ''
+  resetCatalog()
   $('backup').href = `/api/projects/${id}/backup`
   const doc = rows.find(row => row.id === selected)
   stage = doc?.kind ?? initialStage
@@ -1309,19 +1401,30 @@ function renderJob(state) {
   paint(state)
 }
 
-async function viewRun(state, id) {
+function assistant(open, scroll = false) {
+  if (open && scroll) setFocusWriting(false)
+  $('ai').open = open
+  $('assistant-toggle').setAttribute('aria-expanded', String(open))
+  if (open && scroll && stackedAssistant.matches) $('ai').scrollIntoView({ block: 'start' })
+}
+
+async function viewRun(state, id, show = true) {
   const request = state.jobView = (state.jobView ?? 0) + 1
   const job = await api(`/projects/${state.doc.project_id}/runs/${id}`)
   if (editor !== state || state.jobView !== request) return
   state.job = job
-  $('ai').open = true
+  if (show) assistant(true)
   renderJob(state)
 }
 
 async function findActive(state) {
   const runs = await api(docPath(state) + '/runs')
+  if (editor !== state || state.jobView) return
   const active = runs.find(run => run.status === 'running')
-  if (active && editor === state) await viewRun(state, active.id)
+  const current = runs.filter(run => run.base_rev === state.doc.rev && run.applied_rev == null && run.status === 'done')
+  const pending = state.doc.kind === 'chapter' && state.doc.status !== 'final' &&
+    (current.find(run => run.kind === 'revise') ?? current.find(run => run.kind === 'review' || run.kind === 'draft'))
+  if (active || pending) await viewRun(state, (active ?? pending).id)
 }
 
 function writingRequest(state, kind, extra) {
@@ -1347,6 +1450,7 @@ async function startRun(kind, extra) {
     state.jobView = (state.jobView ?? 0) + 1
     state.job = await api(docPath(state) + '/runs', 'POST', state.jobRequest)
     state.jobRequest = null
+    if (state === editor) assistant(true, stackedAssistant.matches && !$('dialog').open)
     renderJob(state)
   } catch (error) {
     if (error.status && error.status < 500) state.jobRequest = null
@@ -1385,6 +1489,46 @@ function previewContext() {
   dialog(ui("预览模型输入"), [label, result], () => showContext(state, result, picker.value), ui("生成预览"))
 }
 
+async function writeBlueprintChapter() {
+  const source = editor
+  if (!source || source.doc.kind !== 'blueprint' || !model) return
+  await clean(source)
+  const { activeId, profiles } = await api('/model-profiles')
+  if (editor !== source) return
+  const chapterNumber = source.doc.number
+  const [modelField, profile] = selectField(ui("本次写作模型"), Object.fromEntries(profiles.map(row => [row.id, row.label])), activeId)
+  const [guidanceField, guidance] = field(ui("本次要求（可选）"), { maxLength: 6000, required: false })
+  const feedback = document.createElement('p')
+  feedback.setAttribute('role', 'status')
+  const pid = source.doc.project_id
+  let target
+  dialog(ui("写第 $1 章", chapterNumber), [modelField, guidanceField, feedback], async () => {
+    if (editor !== (target ?? source)) return
+    try {
+      if (!target) {
+        await clean(source)
+        const route = '/projects/' + pid + '/documents'
+        const matchingChapter = async () => (await api(route)).find(row => row.kind === 'chapter' && row.number === chapterNumber)
+        let chapter = await matchingChapter()
+        if (!chapter) {
+          try { chapter = await api(route, 'POST', { kind: 'chapter', number: chapterNumber, title: source.title, body: '' }) }
+          catch (error) { if (error.status !== 409 || !(chapter = await matchingChapter())) throw error }
+        }
+        if (editor !== source || !feedback.isConnected) return
+        await refreshDocuments(chapter.id)
+        await openDocument(chapter.id)
+        if (editor?.doc.id !== chapter.id) return
+        target = editor
+      }
+      if (target.doc.status !== 'draft' || target.body.trim() || target.recovered.length || target.job?.status === 'running') {
+        throw new Error(ui("本章已有正文、草稿或正在生成，请在正文中继续。"))
+      }
+      await startRun('draft', { guidance: guidance.value, modelProfileId: profile.value })
+      if (editor === target && feedback.isConnected) { $('dialog').close(); assistant(true, true) }
+    } catch (error) { feedback.textContent = error.message }
+  }, ui("生成章节草稿"))
+}
+
 async function planArchitecture() {
   const state = editor
   const sections = Object.entries(architectureSections)
@@ -1411,7 +1555,17 @@ async function planArchitecture() {
   }, ui("生成候选"))
 }
 
-function editPassage() {
+function paintPassage() {
+  const state = editor
+  const input = bodyControl()
+  const size = input.selectionEnd - input.selectionStart
+  const visible = state?.doc.kind === 'chapter' && state.doc.status !== 'final' && model && !composing && !state.mutating &&
+    !state.conflict && state.job?.status !== 'running' && size > 0 && size <= 6000 && input.value.slice(input.selectionStart, input.selectionEnd).trim()
+  $('passage-tools').hidden = !visible
+  if (visible) $('passage-size').textContent = ui("已选 $1 字符", size.toLocaleString())
+}
+
+function editPassage(defaultMode = 'continue') {
   const state = editor
   const input = bodyControl()
   const start = input.selectionStart
@@ -1420,8 +1574,8 @@ function editPassage() {
   if (!quote.trim() || quote.length > 6000) throw new Error(ui("请先选中 1–6000 字符的正文"))
   const label = document.createElement('label')
   const mode = document.createElement('select')
-  mode.append(new Option(ui("在选段后续写"), 'continue'), new Option(ui("润色"), 'polish'),
-    new Option(ui("扩写"), 'expand'), new Option(ui("改成对话"), 'dialogue'))
+  mode.append(...Object.entries(passageActions).map(([id, text]) => new Option(ui(text), id)))
+  mode.value = defaultMode
   label.append(ui("选段操作"), mode)
   const excerpt = document.createElement('pre')
   excerpt.textContent = quote
@@ -1438,8 +1592,8 @@ function editPassage() {
     try {
       await startRun('passage', options())
       if (editor === state && result.isConnected) {
-        $('ai').open = true
         $('dialog').close()
+        assistant(true, true)
       }
     } catch (error) { result.textContent = error.message }
   }, ui("生成选段候选"))
@@ -1471,6 +1625,7 @@ async function showOverview(next = stage) {
   const request = ++navigation
   await leave()
   if (request !== navigation) return
+  if (next !== stage) resetCatalog()
   stage = next
   clearEditor()
 }
@@ -1709,7 +1864,8 @@ function showSettings() {
   const [languageLabel, language] = preference(ui("界面语言"), { 'zh-CN': '简体中文', 'en-US': 'English' }, locale)
   const services = document.createElement('p')
   const serviceStatus = enabled => ui(enabled ? '已配置' : '待配置')
-  services.textContent = ui("写作模型$1 · 语义检索$2 · $3", serviceStatus(model), serviceStatus(semanticEnabled), enhancedBody ? 'CodeMirror' : ui('普通编辑器'))
+  services.textContent = [ui("写作模型$1 · 语义检索$2 · $3", serviceStatus(model), serviceStatus(semanticEnabled),
+    enhancedBody ? 'CodeMirror' : ui('普通编辑器')), $('release-version').textContent].filter(Boolean).join(' · ')
   const guide = document.createElement('p')
   guide.textContent = ui("外观、字号和界面语言保存在当前浏览器。")
   dialog(ui("设置"), [themeLabel, sizeLabel, languageLabel, services, actionButton(ui("模型预设与诊断"), showModelSettings),
@@ -2097,6 +2253,7 @@ $('login').addEventListener('submit', event => {
 })
 click('logout', async () => { await leave(); await api('/session', 'DELETE'); location.reload() })
 click('library-menu', showLibrary)
+click('notice-close', () => note())
 click('workspace-settings', showSettings)
 click('workbench-overview', () => showOverview())
 click('project-progress', () => showProgress())
@@ -2240,14 +2397,12 @@ $('projects').addEventListener('change', event => {
   event.target.value = project
   runAction(() => selectProject(id))
 })
-$('documents').addEventListener('change', event => {
-  const id = event.target.value
-  runAction(async () => {
-    try { await openDocument(id) }
-    catch (error) { event.target.value = editor?.doc.id ?? ''; throw error }
-  })
-})
-$('chapter-filter').addEventListener('change', () => renderCatalog())
+for (const [id, event] of [['chapter-filter', 'change'], ['catalog-query', 'input']]) {
+  $(id).addEventListener(event, () => { catalogPage = 0; renderCatalog() })
+}
+click('catalog-toggle', () => setCatalogOpen($('catalog-toggle').getAttribute('aria-expanded') !== 'true'))
+click('catalog-previous', () => { catalogPage--; renderCatalog() })
+click('catalog-next', () => { catalogPage++; renderCatalog() })
 for (const element of [$('title'), $('body')]) {
   element.addEventListener('input', edit)
   element.addEventListener('compositionstart', () => setComposing(true))
@@ -2299,6 +2454,18 @@ for (const button of document.querySelectorAll('[data-run]')) {
 click('runs', listRuns)
 click('preview-context', previewContext)
 click('ai-passage', editPassage)
+click('assistant-toggle', () => assistant(!$('ai').open, true))
+click('assistant-back', () => {
+  document.querySelector('.manuscript-pane').focus({ preventScroll: true })
+  $('editor').scrollIntoView({ block: 'start' })
+})
+$('ai').addEventListener('toggle', () => $('assistant-toggle').setAttribute('aria-expanded', String($('ai').open)))
+document.addEventListener('selectionchange', () => { if (!enhancedBody) paintPassage() })
+$('body').addEventListener('select', paintPassage)
+for (const button of $('passage-tools').querySelectorAll('[data-passage]')) {
+  button.addEventListener('pointerdown', event => event.preventDefault())
+  button.addEventListener('click', () => runAction(() => editPassage(button.dataset.passage)))
+}
 click('use-outline', () => {
   const state = editor
   const job = state?.job
@@ -2384,6 +2551,7 @@ function chooseRevision(state, job, path, { plan, changes }) {
     return dialog(ui("比较修稿候选"), [message])
   }
   const selected = new Set()
+  const edits = new Map()
   const pageSize = 12
   let page = 0
   const pageCount = Math.ceil(changes.length / pageSize)
@@ -2398,8 +2566,8 @@ function chooseRevision(state, job, path, { plan, changes }) {
   const previous = actionButton(ui("上一页"), () => { page--; renderPage() })
   const next = actionButton(ui("下一页"), () => { page++; renderPage() })
   previous.hidden = next.hidden = pageCount === 1
-  const selectAll = actionButton(ui("全选改动"), () => { changes.forEach((_, i) => selected.add(i)); renderPage() })
-  const clear = actionButton(ui("清空选择"), () => { selected.clear(); renderPage() })
+  const selectAll = actionButton(ui("全部用修稿"), () => { edits.clear(); changes.forEach((_, i) => selected.add(i)); renderPage() })
+  const clear = actionButton(ui("全部保留原稿"), () => { edits.clear(); selected.clear(); renderPage() })
   controls.append(previous, next, selectAll, clear)
 
   function summarize() {
@@ -2413,24 +2581,50 @@ function chooseRevision(state, job, path, { plan, changes }) {
     list.replaceChildren(...changes.slice(start, start + pageSize).map(({ line, before, after }, offset) => {
       const i = start + offset
       const item = document.createElement('article')
+      const heading = document.createElement('h3')
       const label = document.createElement('label')
       const check = document.createElement('input')
       check.type = 'checkbox'
-      check.checked = selected.has(i)
-      check.addEventListener('change', () => {
-        if (check.checked) selected.add(i)
-        else selected.delete(i)
-        summarize()
-      })
       const kind = !before ? ui("插入") : !after ? ui("删除") : ui("替换")
-      label.append(check, ui("采纳改动 $1 · 第 $2 行 · $3", i + 1, line, kind))
+      heading.textContent = ui("改动 $1 · 第 $2 行 · $3", i + 1, line, kind)
+      label.append(check, ui("用修稿"))
       const lineEndingOnly = before.replace(/\r?\n$|\r$/, '') === after.replace(/\r?\n$|\r$/, '')
       const display = text => {
         if (!text) return ui("（无）")
         if (lineEndingOnly) return text + (/[\r\n]$/.test(text) ? ui("（末尾有换行）") : ui("\n（末尾无换行）"))
         return text.trim() ? text : ui("（空行或空白）")
       }
-      item.append(label, compare(ui("原稿"), display(before), ui("修稿"), display(after)))
+      const choice = document.createElement('div')
+      choice.className = 'tools revision-choice'
+      const custom = document.createElement('label')
+      custom.className = 'revision-editor'
+      const text = document.createElement('textarea')
+      Object.assign(text, { rows: 4, maxLength: 180_000, value: edits.get(i) ?? after })
+      custom.append(ui("合并后的文字"), text)
+      const original = actionButton(ui("保留原稿"), () => choose('original'))
+      const manual = actionButton(ui("手动编辑"), () => { choose('manual'); text.focus() })
+      check.addEventListener('change', () => choose(check.checked ? 'revision' : 'original'))
+      text.addEventListener('input', () => edits.set(i, text.value))
+      function reflect() {
+        check.checked = selected.has(i) && !edits.has(i)
+        custom.hidden = !edits.has(i)
+        original.setAttribute('aria-pressed', String(!selected.has(i)))
+        manual.setAttribute('aria-pressed', String(edits.has(i)))
+        item.dataset.choice = edits.has(i) ? 'manual' : selected.has(i) ? 'revision' : 'original'
+      }
+      function choose(mode) {
+        if (mode === 'original') selected.delete(i)
+        else selected.add(i)
+        if (mode === 'manual') {
+          if (!edits.has(i)) text.value = after || before
+          edits.set(i, text.value)
+        } else edits.delete(i)
+        reflect()
+        summarize()
+      }
+      reflect()
+      choice.append(original, label, manual)
+      item.append(heading, compare(ui("原稿"), display(before), ui("修稿"), display(after)), choice, custom)
       return item
     }))
     list.scrollTop = 0
@@ -2441,7 +2635,7 @@ function chooseRevision(state, job, path, { plan, changes }) {
   dialog(ui("选择要接受的修稿改动"), [status, controls, list, errorMessage], async () => {
     errorMessage.textContent = ''
     if (!selected.size) { errorMessage.textContent = ui("请至少勾选一处改动。"); return }
-    try { await applyCandidate(state, job, path, { plan, picks: [...selected] }) }
+    try { await applyCandidate(state, job, path, { plan, picks: [...selected], edits: [...edits].map(([index, text]) => ({ index, text })) }) }
     catch (error) { errorMessage.textContent = error.message }
   }, ui("应用选中的改动"))
 }
@@ -2452,9 +2646,16 @@ click('apply-run', async () => {
   const path = `/projects/${state.doc.project_id}/runs/${job.id}`
   if (job.kind === 'passage') {
     await clean(state)
-    const { current, candidate } = await api(path + '/candidate')
+    const { current, candidate, passage } = await api(path + '/candidate')
     if (editor === state && state.job?.id === job.id) {
-      dialog(ui("比较并确认选段候选"), [compare(ui("当前正文"), current, ui("应用后正文"), candidate)],
+      const full = document.createElement('details')
+      const summary = document.createElement('summary')
+      summary.textContent = ui("查看完整上下文")
+      full.append(summary)
+      full.addEventListener('toggle', () => {
+        if (full.open && full.children.length === 1) full.append(compare(ui("当前正文"), current, ui("应用后正文"), candidate))
+      })
+      dialog(ui("比较并确认选段候选"), [compare(ui("原选段"), passage.before, ui("应用后的选段"), passage.after), full],
         () => applyCandidate(state, job, path + '/apply'), ui("应用选段改动"))
     }
     return
@@ -2477,6 +2678,7 @@ click('paired-document', () => {
   const counterpart = documents.find(row => row.kind === kind && row.number === doc.number)
   return counterpart ? openDocument(counterpart.id) : newDocument('', title, kind, doc.number)
 })
+click('write-blueprint', writeBlueprintChapter)
 click('find-back', () => locate(-1))
 click('find-next', () => locate(1))
 click('replace-one', replaceOne)
@@ -2543,7 +2745,7 @@ let polling = false
 setInterval(async () => {
   if (polling || document.hidden || editor?.job?.status !== 'running') return
   polling = true
-  try { await viewRun(editor, editor.job.id) }
+  try { await viewRun(editor, editor.job.id, false) }
   catch { /* The job is stored server-side. Retry on the next interval. */ }
   finally { polling = false }
 }, 2000)

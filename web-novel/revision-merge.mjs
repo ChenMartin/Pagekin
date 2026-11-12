@@ -64,12 +64,12 @@ export function revisionChanges(original, revised) {
   return changes
 }
 
-export function mergeRevision(original, changes, picks) {
+export function mergeRevision(original, changes, picks, edits = new Map()) {
   const pieces = []
   let cursor = 0
   changes.forEach(({ start, end, after }, i) => {
     if (!picks.has(i)) return
-    pieces.push(original.slice(cursor, start), after)
+    pieces.push(original.slice(cursor, start), edits.get(i) ?? after)
     cursor = end
   })
   pieces.push(original.slice(cursor))

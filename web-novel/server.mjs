@@ -762,7 +762,8 @@ async function route(req, res) {
   }
   if (resource === 'documents') {
     if (method === 'GET' && id === undefined) return json(res, storage.all(`
-      SELECT id,kind,number,title,rev,status,updated FROM documents WHERE project_id=? ORDER BY kind,number,created`, pid))
+      SELECT id,kind,number,title,rev,status,updated,length(trim(body, char(9,10,13,32,12288))) > 0 AS has_body
+      FROM documents WHERE project_id=? ORDER BY kind,number,created`, pid))
     if (method === 'POST' && id === undefined) {
       const value = await body(req)
       return json(res, storage.tx(() => storage.addDocument(pid, value)), 201)
@@ -774,18 +775,18 @@ async function route(req, res) {
     if (id && action === 'history' && method === 'POST') return json(res, storage.restore(pid, id, await body(req)))
     if (id && action === 'runs' && method === 'GET') {
       storage.document(pid, id)
-      return json(res, storage.all('SELECT id,kind,status,created FROM runs WHERE document_id=? ORDER BY created DESC LIMIT 50', id))
+      return json(res, storage.all('SELECT id,kind,status,base_rev,applied_rev,created FROM runs WHERE document_id=? ORDER BY created DESC,rowid DESC LIMIT 50', id))
     }
     if (id && action === 'runs' && method === 'POST') {
       const value = await body(req)
-      const profile = models.required()
+      const profile = models.required(value?.modelProfileId)
       const { job, messages } = storage.startRun(pid, id, value, prepareMessages(profile.contextLimit), profile.ref)
       if (messages) void generate(profile, job, messages).catch(() => console.error('无法记录任务结果'))
       return json(res, storage.runDetail(pid, job.id), 202)
     }
     if (id && action === 'context' && method === 'POST') {
       const value = await body(req)
-      const limit = previewBudget()
+      const limit = value?.modelProfileId == null ? previewBudget() : models.required(value.modelProfileId).contextLimit
       const messages = storage.previewRun(pid, id, value, prepareMessages(limit))
       return json(res, { messages, limit })
     }

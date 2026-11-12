@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -140,6 +140,30 @@ try {
   }
   const visible = selector => until(() => evaluate(`Boolean(document.querySelector(${JSON.stringify(selector)})?.getClientRects().length)`), `Missing ${selector}`)
   const click = selector => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`)
+  async function revealCatalogTool(selector) {
+    await until(() => evaluate(`(() => {
+      if (document.querySelector('#workspace').hidden || document.querySelector('#project-tools').hidden) return false;
+      const toggle = document.querySelector('#catalog-toggle');
+      if (innerWidth <= 760 && toggle.getAttribute('aria-expanded') === 'false') toggle.click();
+      const item = document.querySelector(${JSON.stringify(selector)});
+      const group = item?.closest('details');
+      if (group) group.open = true;
+      return Boolean(item?.getClientRects().length);
+    })()`), `Missing ${selector}`)
+  }
+  async function screenshot(name, width, height, mobile) {
+    const folder = process.env.PAGEKIN_TEST_SCREENSHOT_DIR
+    if (!folder) return
+    await command('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile })
+    await until(() => evaluate(`innerWidth === ${width} && document.documentElement.scrollWidth <= innerWidth`), 'Writing workspace overflows its viewport')
+    const open = await evaluate("document.querySelector('#ai').open")
+    if (!mobile && !open) await click('#ai summary')
+    await evaluate('window.scrollTo(0, 0)')
+    const { data } = await command('Page.captureScreenshot', { format: 'png' })
+    await mkdir(folder, { recursive: true })
+    await writeFile(join(folder, name + '.png'), Buffer.from(data, 'base64'))
+    if (!mobile && !open) await click('#ai summary')
+  }
   const fill = (selector, value) => evaluate(`(() => {
     const el = document.querySelector(${JSON.stringify(selector)});
     el.value = ${JSON.stringify(value)};
@@ -351,27 +375,41 @@ try {
   await click('#dialog-submit')
   await until(() => evaluate("document.querySelector('#title').value === '靠岸'"), 'Selected chapter was not imported')
   assert.equal(await evaluate(bodyText), '码头上有人。')
-  assert.equal(await evaluate("document.querySelector('#documents').options.length"), 4)
+  assert.equal(await evaluate("document.querySelectorAll('#catalog-rows button').length"), 3)
+  assert.equal(await evaluate("document.querySelector('#catalog-toggle').getAttribute('aria-expanded')"), 'false')
+  await click('#catalog-toggle')
+  await visible('#catalog-query')
+  await fill('#catalog-query', '第 2 章')
+  assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('#catalog-rows .catalog-title'), row => row.textContent)"), ['第二章'])
+  await fill('#catalog-query', '')
+  await click('#catalog-toggle')
   await click('#previous-chapter')
   await until(() => evaluate("document.querySelector('#title').value === '第二章' && " + readOnly), 'Existing chapter changed after import')
   await click('#next-chapter')
   await until(() => evaluate("document.querySelector('#title').value === '靠岸'"), 'Imported draft did not reopen')
   await fillBody(revisionLines.join('\n\n'))
   await saved(2)
+  await click('#notice-close')
+  await screenshot('desktop', 1440, 960, false)
+  await screenshot('phone', 390, 844, true)
   await click('#ai summary')
   await click('[data-run=revise]')
   await visible('#apply-run')
+  await reload()
+  await visible('#apply-run')
+  assert.equal(await evaluate("document.querySelector('#assistant-toggle').textContent"), '待合并修稿')
   await click('#apply-run')
   await visible('.revision-list input')
   assert.equal(await evaluate("document.querySelectorAll('.revision-list input:checked').length"), 0)
   await click('.revision-list input')
   await evaluate("Array.from(document.querySelectorAll('#dialog-body button')).find(button => button.textContent === '下一页').click()")
-  await until(() => evaluate("document.querySelector('.revision-list').textContent.includes('采纳改动 14')"), 'Revision preview did not change pages')
-  await click('.revision-list article:last-child input')
+  await until(() => evaluate("document.querySelector('.revision-list').textContent.includes('改动 14')"), 'Revision preview did not change pages')
+  await click('.revision-list article:last-child .revision-choice button:last-child')
+  await fill('.revision-list article:last-child textarea', '作者手改第 14 段')
   assert.match(await evaluate("document.querySelector('#dialog-body [role=status]').textContent"), /已选 2 \/ 14/)
   await click('#dialog-submit')
   await saved(3)
-  const expected = revisionLines.map((line, index) => [0, 13].includes(index) ? line.replace('原稿', '修稿') : line).join('\n\n')
+  const expected = revisionLines.map((line, index) => index === 0 ? line.replace('原稿', '修稿') : index === 13 ? '作者手改第 14 段' : line).join('\n\n')
   assert.equal(await evaluate(bodyText), expected)
   for (const title of ['批次甲', '批次乙']) {
     await click('#new-document')
@@ -487,7 +525,7 @@ try {
   await click('[data-stage=chapter]')
   await until(() => evaluate("document.querySelector('#title').value === '测试章节'"), 'Chapter stage did not reopen its last document')
   await evaluate("const filter = document.querySelector('#chapter-filter'); filter.value = 'final'; filter.dispatchEvent(new Event('change'))")
-  assert.deepEqual(await evaluate("Array.from(document.querySelector('#documents').options).slice(1).map(option => option.textContent)"), ['第 2 章 第二章 （定稿）'])
+  assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('#catalog-rows .catalog-title'), row => row.textContent)"), ['第二章'])
   await click('#paired-document')
   await visible('#dialog-body input[type=number]')
   assert.equal(await evaluate("document.querySelector('#dialog-body input[type=number]').value"), '1')
@@ -511,12 +549,15 @@ try {
   await click('#open-find')
   await fill('#find-query', '选中的旧文字。')
   await click('#find-next')
-  await click('#ai-passage')
+  await visible('#passage-tools [data-passage=polish]')
+  await click('#passage-tools [data-passage=polish]')
   await visible('#dialog-body select')
-  await evaluate("document.querySelector('#dialog-body select').value = 'polish'")
+  assert.equal(await evaluate("document.querySelector('#dialog-body select').value"), 'polish')
   await click('#dialog-submit')
   await visible('#apply-run')
   await click('#apply-run')
+  await until(() => evaluate("document.querySelector('#dialog-body').textContent.includes('原选段') && document.querySelector('#dialog-body').textContent.includes('新的选段。')"), 'Passage comparison did not show the exact replacement')
+  await click('#dialog-body details summary')
   await until(() => evaluate("document.querySelector('#dialog-body').textContent.includes('前文。新的选段。后文。')"), 'Passage preview did not preserve surrounding prose')
   await click('#dialog-submit')
   await until(() => evaluate(bodyText + " === '前文。新的选段。后文。'"), 'Selected passage did not apply')
@@ -586,6 +627,7 @@ try {
   await until(() => evaluate("document.documentElement.lang === 'zh-CN' && document.querySelector('#title').value === '世界观'"), 'Chinese UI did not reopen the same document')
   await click('[data-stage=chapter]')
   await until(() => evaluate("document.querySelector('#title').value === '测试章节'"), 'Chapter did not reopen after architecture planning')
+  await revealCatalogTool('#projects')
   await click('#focus-writing')
   assert.equal(await evaluate("document.querySelector('#workspace aside').getClientRects().length"), 0)
   await click('#focus-writing')
@@ -660,7 +702,7 @@ try {
   await fill('.script-line textarea', '渔船靠岸。')
   await until(() => evaluate("document.querySelector('#script-save-status').textContent.includes('本机草稿已保存')"), 'Screenplay edit did not persist locally')
   await reload()
-  await visible('#screenplay-workspace')
+  await revealCatalogTool('#screenplay-workspace')
   assert.equal(await evaluate("document.documentElement.dataset.theme"), 'dark')
   await click('#screenplay-workspace')
   await dialogButton('夜航短剧')
@@ -709,7 +751,7 @@ try {
   await fill('#shot-visual', '本机先记一个近景。')
   await until(() => evaluate("document.querySelector('#storyboard-status')?.textContent.includes('本机草稿')"), 'Storyboard draft was not persisted locally')
   await reload()
-  await visible('#screenplay-workspace')
+  await revealCatalogTool('#screenplay-workspace')
   await click('#screenplay-workspace')
   await dialogButton('夜航短剧')
   await dialogButton('第 1 季 · 第 2 集')
@@ -838,7 +880,7 @@ try {
   await fill('#timeline-subtitle-0', '独立字幕在本机恢复。')
   await until(() => evaluate("document.querySelector('#timeline-status')?.textContent.includes('本机草稿')"), 'Multitrack draft was not stored locally')
   await reload()
-  await visible('#screenplay-workspace')
+  await revealCatalogTool('#screenplay-workspace')
   await click('#screenplay-workspace')
   await dialogButton('夜航短剧')
   await dialogButton('第 1 季 · 第 2 集')
@@ -875,12 +917,12 @@ try {
     return (await response.json()).id;
   })()`)
   await reload()
-  await visible('#projects')
+  await revealCatalogTool('#projects')
   await until(() => evaluate(`Array.from(document.querySelector('#projects').options).some(row => row.value === ${JSON.stringify(importedPeople)})`), 'Imported novel did not appear')
   await fill('#projects', importedPeople)
   await evaluate("document.querySelector('#projects').dispatchEvent(new Event('change'))")
   await until(() => evaluate("document.querySelector('#overview-title').textContent === '桌面人物迁移浏览器样稿'"), 'Imported novel did not open')
-  await visible('#character-continuity')
+  await revealCatalogTool('#character-continuity')
   await click('#character-continuity')
   await dialogButton('查看桌面人物历史')
   await visible('#dialog-body .batch-list summary')
@@ -941,6 +983,30 @@ try {
   await until(() => evaluate("document.querySelector('#dialog-body').textContent.includes('已完成 · 已拆解 3 / 3 节')"), 'Reference queue status did not persist')
   await dialogButton('整书归纳')
   await until(() => evaluate("document.querySelector('#dialog-title').textContent === '整书归纳'"), 'Reference queue did not lead to synthesis')
+  await click('#close-dialog')
+  const quick = await evaluate(`(async () => {
+    const [pid] = JSON.parse(sessionStorage.getItem('pagekin-location'));
+    const response = await fetch('/api/projects/' + pid + '/documents', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'blueprint', number: 99, title: '启航蓝图', body: '主角发现甲板上的新线索。' }) });
+    if (!response.ok) throw new Error(await response.text());
+    return (await response.json()).id;
+  })()`)
+  await click('[data-stage=blueprint]')
+  await until(() => evaluate("document.querySelector('[data-stage=blueprint]').getAttribute('aria-pressed') === 'true'"), 'Blueprint stage did not open')
+  const quickRow = `[data-document="${quick}"]`
+  if (await evaluate("document.querySelector('#catalog-toggle').getAttribute('aria-expanded') === 'false'")) await click('#catalog-toggle')
+  await fill('#catalog-query', '第99章')
+  await visible(quickRow)
+  await click(quickRow)
+  await visible('#write-blueprint')
+  await click('#write-blueprint')
+  await visible('#dialog-body select')
+  const defaultModel = await evaluate("document.querySelector('#dialog-body select').value")
+  await evaluate("document.querySelector('#dialog-body select').value = 'browser-alt'")
+  await fill('#dialog-body input', '开场写人物登船')
+  await click('#dialog-submit')
+  await until(() => evaluate("!document.querySelector('#dialog').open && document.querySelector('#document-label').textContent.includes('第 99 章') && document.querySelector('#run-status').textContent.includes('浏览器备选模型') && !document.querySelector('#apply-run').hidden"), 'Writing from the blueprint did not use the selected model')
+  assert.equal(await evaluate("fetch('/api/model-profiles').then(r => r.json()).then(r => r.activeId)"), defaultModel)
   console.log('Browser workflow passed (' + (enhanced ? 'CodeMirror' : 'plain') + '): novel, screenplay, storyboard, media generation, multitrack editing and reference batch')
 } finally {
   socket?.close()

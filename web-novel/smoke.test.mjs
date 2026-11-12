@@ -505,12 +505,13 @@ test('novel workflow through HTTP across devices, generation, export and restart
     const selection = { plan: previewMerge.plan, picks: [1] }
     await request(merge, { method: 'POST', value: { ...selection, plan: 'wrong' }, status: 409 })
     await request(merge, { method: 'POST', value: { ...selection, picks: [1, 1] }, status: 400 })
+    await request(merge, { method: 'POST', value: { ...selection, edits: [{ index: 0, text: '未选改动' }] }, status: 400 })
     assert.equal((await request(nextDoc)).result.body, original)
-    const applyOptions = { method: 'POST', value: selection }
+    const applyOptions = { method: 'POST', value: { ...selection, edits: [{ index: 1, text: '作者补了一行。\n' }] } }
     const [merged, replay] = await Promise.all([request(merge, applyOptions), request(merge, { ...applyOptions, cookie: b })])
     assert.deepEqual(merged.result, replay.result)
     assert.equal(merged.result.rev, 4)
-    assert.equal(merged.result.body, original.replace('灯塔', '雾从海面升起。\n灯塔'))
+    assert.equal(merged.result.body, original.replace('灯塔', '作者补了一行。\n灯塔'))
     await request(merge, { method: 'POST', value: { ...selection, picks: [0] }, status: 409 })
     const revisions = (await request(nextDoc + '/history')).result
     assert.equal(revisions.find(item => item.rev === 3).body, original)
@@ -835,7 +836,8 @@ test('novel workflow through HTTP across devices, generation, export and restart
     const passageSelection = { start: 5, end: 9, quote: '同一句。' }
     const edited = await startFor(prose, { kind: 'passage', passage: { ...passageSelection, mode: 'polish' } })
     const editedText = '同一句。\r\n替换选中的文字。\r\n结尾。'
-    assert.deepEqual((await request(edited.jobPath + '/candidate')).result, { current: prose.body, candidate: editedText })
+    assert.deepEqual((await request(edited.jobPath + '/candidate')).result, { current: prose.body, candidate: editedText,
+      passage: { before: '同一句。', after: '替换选中的文字。' } })
     const newProse = (await request(edited.jobPath + '/apply', { method: 'POST' })).result
     assert.equal(newProse.body, editedText)
     const insertion = await startFor(newProse, { kind: 'passage', passage: { mode: 'continue', start: 0, end: 4, quote: '同一句。' } })
@@ -1212,6 +1214,16 @@ test('novel workflow through HTTP across devices, generation, export and restart
     await awaitRun(progressPath + '/runs/' + alternateRun.id, row => row.status === 'done')
     assert.match(alternateRun.model_ref, /^alternate:/)
     assert.equal(lastModel, 'alternate-test')
+    const oneOffPath = progressPath + '/documents/' + singleTarget.id
+    const oneOff = { mutationId: randomUUID(), kind: 'draft', baseRev: 1, modelProfileId: 'environment' }
+    assert.equal((await request(oneOffPath + '/context', { method: 'POST', value: oneOff })).result.limit, 8000)
+    const oneOffRun = (await request(oneOffPath + '/runs', { method: 'POST', status: 202, value: oneOff })).result
+    await awaitRun(progressPath + '/runs/' + oneOffRun.id, row => row.status === 'done')
+    assert.match(oneOffRun.model_ref, /^environment:/)
+    assert.equal(lastModel, 'test')
+    assert.equal((await request('/api/model-profiles')).result.activeId, 'alternate')
+    assert.equal((await request(oneOffPath + '/runs', { method: 'POST', status: 202, value: oneOff })).result.id, oneOffRun.id)
+    await request(oneOffPath + '/runs', { method: 'POST', status: 409, value: { ...oneOff, modelProfileId: 'alternate' } })
   } finally {
     await stop(server)
     upstream.closeAllConnections()

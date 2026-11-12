@@ -647,6 +647,8 @@ export function openStore(directory) {
     if (!runKinds.includes(kind)) throw new ApiError(400, 'AI 操作无效')
     const guidance = string(value.guidance ?? '', 6000)
     const baseRev = revision(value.baseRev)
+    const modelProfileId = value.modelProfileId == null ? undefined : string(value.modelProfileId, 80, true)
+    if (modelProfileId && kind !== 'draft') throw new ApiError(400, '单次模型选择仅用于写稿')
     const refs = value.referenceIds ?? []
     if (!Array.isArray(refs) || refs.length > 5 || new Set(refs).size !== refs.length ||
         refs.some(ref => typeof ref !== 'string' || !/^[a-f0-9-]{36}$/i.test(ref))) {
@@ -683,10 +685,10 @@ export function openStore(directory) {
       }
     }
     return { kind, guidance, baseRev, refs, referenceQuery, outlineId, spans: spans.map(({ id, start, end }) => ({ id, start, end })),
-      passage, planSection, continuityCharacterId }
+      passage, planSection, continuityCharacterId, modelProfileId }
   }
 
-  function requestFingerprint(id, { kind, baseRev, guidance, refs, referenceQuery, spans, outlineId, passage, planSection, continuityCharacterId }) {
+  function requestFingerprint(id, { kind, baseRev, guidance, refs, referenceQuery, spans, outlineId, passage, planSection, continuityCharacterId, modelProfileId }) {
     const fingerprint = [id, baseRev, kind, guidance]
     if (refs.length || referenceQuery) fingerprint.push(refs)
     if (referenceQuery) fingerprint.push(referenceQuery)
@@ -695,6 +697,7 @@ export function openStore(directory) {
     if (passage) fingerprint.push({ passage })
     if (planSection) fingerprint.push({ planSection })
     if (continuityCharacterId) fingerprint.push({ continuityCharacterId })
+    if (modelProfileId) fingerprint.push({ modelProfileId })
     return hash(JSON.stringify(fingerprint))
   }
 
@@ -839,7 +842,7 @@ export function openStore(directory) {
       structuredArchitecture: Boolean(boundSection) }
     if (!request.outlineId) return context
     const outline = completedOutline(doc, request.outlineId)
-    const expected = requestFingerprint(doc.id, { ...request, kind: 'outline', outlineId: null })
+    const expected = requestFingerprint(doc.id, { ...request, kind: 'outline', outlineId: null, modelProfileId: undefined })
     if (outline.source_hash !== skillSource(source.sourceHash, stageSkill(doc.project_id, 'outline')) || outline.request_hash !== expected) {
       throw new ApiError(409, '细纲与当前资料或作者要求不一致，请重新生成或取消引用')
     }
@@ -1239,7 +1242,7 @@ export function openStore(directory) {
           (['plan', 'passage'].includes(job.kind) && job.status !== 'done')) {
         throw new ApiError(422, '此任务没有可应用的候选内容')
       }
-      if (job.kind === 'passage') return saveCandidate(doc, job, passageCandidate(doc, job))
+      if (job.kind === 'passage') return saveCandidate(doc, job, passageCandidate(doc, job).candidate)
       checkCandidate(doc, job)
       return saveCandidate(doc, job, job.output)
     })
@@ -1254,7 +1257,7 @@ export function openStore(directory) {
     const next = passage.mode === 'continue'
       ? doc.body.slice(0, end) + '\n\n' + output + (tail && !/^\s*\n/.test(tail) ? '\n\n' : '') + tail
       : doc.body.slice(0, start) + output + tail
-    return string(next, 180_000, true)
+    return { candidate: string(next, 180_000, true), passage: { before: doc.body.slice(start, end), after: next.slice(start, next.length - tail.length) } }
   }
 
   function previewPassage(pid, id) {
@@ -1263,7 +1266,7 @@ export function openStore(directory) {
       throw new ApiError(422, '此任务没有可预览的片段候选')
     }
     const doc = document(pid, job.document_id)
-    return { current: doc.body, candidate: passageCandidate(doc, job) }
+    return { current: doc.body, ...passageCandidate(doc, job) }
   }
 
   function completedRevision(pid, id) {
@@ -1302,7 +1305,16 @@ export function openStore(directory) {
       const picks = value.picks
       if (!Array.isArray(picks) || !picks.length || picks.length > changes.length || new Set(picks).size !== picks.length ||
           picks.some(i => !Number.isSafeInteger(i) || i < 0 || i >= changes.length)) throw new ApiError(400, '请选择有效的修稿改动')
-      const merged = mergeRevision(original.body, changes, new Set(picks))
+      const selected = new Set(picks)
+      const overrides = value.edits ?? []
+      if (!Array.isArray(overrides) || overrides.length > selected.size) throw new ApiError(400, '手动编辑的修稿改动无效')
+      const edits = new Map()
+      for (const edit of overrides) {
+        const { index, text } = object(edit)
+        if (!selected.has(index) || edits.has(index)) throw new ApiError(400, '手动编辑的修稿改动无效')
+        edits.set(index, string(text, 180_000))
+      }
+      const merged = mergeRevision(original.body, changes, selected, edits)
       if (!merged.trim() || merged === original.body) throw new ApiError(422, '选中的改动未形成可保存的新正文')
       string(merged, 180_000)
       if (!applied) return saveCandidate(doc, job, merged)
