@@ -20,7 +20,7 @@ def package(output: Path) -> Path:
         "version.mjs", "maintenance.mjs", "semantic.mjs", "reference-novels.mjs", "public/index.html", "public/app.mjs",
         "public/manuscript.mjs", "public/novel-goals.mjs", "public/architecture.mjs", "public/reference-novel-ui.mjs", "public/style.css",
         "character-continuity.mjs", "continuity-report.mjs", "public/character-state.mjs", "public/character-continuity-ui.mjs",
-        "desktop-character-import.mjs", "desktop-continuity.mjs", "novel-progress.mjs",
+        "desktop-character-import.mjs", "desktop-continuity.mjs", "novel-progress.mjs", "model-profiles.mjs",
         "epub-extraction.ts", "epub-preview-worker.mjs",
         "package.json", "package-lock.json", "build-editor.mjs", "editor/codemirror.mjs",
     ]

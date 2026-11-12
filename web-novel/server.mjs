@@ -15,6 +15,7 @@ import { releaseVersion } from './version.mjs'
 import { openSemantic } from './semantic.mjs'
 import { continuationAddition } from './continuation.mjs'
 import { manuscriptExport } from './manuscript-export.mjs'
+import { fetchChat, openModelProfiles } from './model-profiles.mjs'
 
 const password = process.env.APP_PASSWORD_FILE
   ? readFileSync(process.env.APP_PASSWORD_FILE, 'utf8').replace(/\r?\n$/, '')
@@ -25,6 +26,7 @@ const safeCookie = process.env.APP_SECURE_COOKIE !== '0'
 const origin = process.env.APP_ORIGIN ? new URL(process.env.APP_ORIGIN).origin : ''
 const storage = openStore(process.env.APP_DATA_DIR || fileURLToPath(new URL('./data', import.meta.url)))
 const semantic = openSemantic(storage)
+const models = openModelProfiles(storage)
 const sessionSeconds = 7 * 86400
 const attempts = new Map()
 const active = new Map()
@@ -32,19 +34,9 @@ const batchWorkers = new Set()
 const eventClients = new Set()
 let archiveImporting = false
 let stopping = false
-const model = process.env.LLM_MODEL || ''
-const contextLimit = Number(process.env.LLM_CONTEXT_CHARS || '64000')
-if (!Number.isInteger(contextLimit) || contextLimit < 4000 || contextLimit > 250000) {
-  throw new Error('LLM_CONTEXT_CHARS 应为 4000–250000 的整数')
-}
-const prepareMessages = (kind, context) => kind === 'continuity'
+const prepareMessages = contextLimit => (kind, context) => kind === 'continuity'
   ? continuityMessages(context, contextLimit) : writingMessages(kind, context, contextLimit)
-const key = process.env.LLM_API_KEY || ''
-const endpoint = model ? new URL((process.env.LLM_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, '') + '/chat/completions') : null
-if (endpoint && (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password ||
-    endpoint.search || endpoint.hash || (key && endpoint.protocol !== 'https:'))) {
-  throw new Error('模型地址无效。配置 API Key 时请使用 HTTPS')
-}
+const previewBudget = () => models.current()?.contextLimit ?? models.defaultBudget
 
 const files = new Map([
   ['/', ['index.html', 'text/html']],
@@ -261,7 +253,7 @@ function providerError(status) {
   return `模型服务返回 HTTP ${status}，请检查模型配置、额度与上下文长度`
 }
 
-async function generate(job, messages, prefix = '', reference = false) {
+async function generate(profile, job, messages, prefix = '', reference = false) {
   const controller = new AbortController()
   const activeKey = reference ? 'reference:' + job.id : job.id
   active.set(activeKey, controller)
@@ -278,11 +270,7 @@ async function generate(job, messages, prefix = '', reference = false) {
   }
   const timeout = setTimeout(() => controller.abort('timeout'), 8 * 60_000)
   try {
-    const response = await fetch(endpoint, {
-      method: 'POST', redirect: 'error', signal: controller.signal,
-      headers: { 'Content-Type': 'application/json', ...(key ? { Authorization: `Bearer ${key}` } : {}) },
-      body: JSON.stringify({ model, messages, stream: true }),
-    })
+    const response = await fetchChat(profile, messages, controller.signal)
     if (!response.ok) {
       error = providerError(response.status)
       await response.body?.cancel()
@@ -347,14 +335,14 @@ async function generate(job, messages, prefix = '', reference = false) {
   return status
 }
 
-function runBatch(id) {
+function runBatch(id, profile) {
   if (batchWorkers.has(id) || stopping) return
   batchWorkers.add(id)
   const work = async () => {
     while (!stopping) {
-      const next = storage.nextBatchRun(id, prepareMessages)
+      const next = storage.nextBatchRun(id, prepareMessages(profile.contextLimit))
       if (!next) return
-      const status = await generate(next.job, next.messages, next.prefix)
+      const status = await generate(profile, next.job, next.messages, next.prefix)
       if (status !== 'done') {
         storage.pauseBatch(id, stopping ? '服务停止，待手动继续' : '当前章节未完成，可以继续重试')
         return
@@ -368,16 +356,16 @@ function runBatch(id) {
   }).finally(() => batchWorkers.delete(id))
 }
 
-function runReferenceBatch(pid, id) {
+function runReferenceBatch(pid, id, profile) {
   const key = 'reference:' + id
   if (batchWorkers.has(key) || stopping) return
   batchWorkers.add(key)
   const references = storage.referenceNovels
   const work = async () => {
     while (!stopping) {
-      const next = references.nextBatch(id, contextLimit)
+      const next = references.nextBatch(id, profile.contextLimit)
       if (!next) return
-      if (await generate(next.job, next.messages, '', true) !== 'done') {
+      if (await generate(profile, next.job, next.messages, '', true) !== 'done') {
         const { error } = references.analysis(pid, next.job.id)
         references.pauseBatch(id, error || '本区间未完成，可继续重试')
         return
@@ -421,8 +409,16 @@ async function route(req, res) {
     return json(res, { ok: true })
   }
   if (method === 'GET' && path === '/api/session') return json(res, {
-    model: !!model, version: releaseVersion, enhancedEditor, semanticSearch: !!semantic,
+    model: !!models.current(), version: releaseVersion, enhancedEditor, semanticSearch: !!semantic,
+    modelProfiles: models.list().profiles.map(({ id, label }) => ({ id, label })),
   })
+  if (path === '/api/model-profiles' && method === 'GET') return json(res, { ...models.list(), semantic: !!semantic })
+  if (path === '/api/model-profiles' && method === 'PUT') return json(res, models.select(await body(req, 4096)))
+  if (path === '/api/model-profiles/diagnose' && method === 'POST') return json(res, await models.diagnose(await body(req, 4096)))
+  if (path === '/api/model-profiles/diagnose-semantic' && method === 'POST') {
+    if (!semantic) throw new ApiError(422, '尚未配置语义模型')
+    return json(res, await semantic.diagnose())
+  }
   if (path === '/api/projects' && method === 'GET') {
     return json(res, storage.all('SELECT * FROM projects ORDER BY created DESC'))
   }
@@ -482,15 +478,17 @@ async function route(req, res) {
     if (method === 'GET' && id === 'eligible' && action === undefined) return json(res, storage.batchChapters(pid))
     if (method === 'GET' && action === undefined) return json(res, id ? storage.getBatch(pid, id) : storage.listBatches(pid))
     if (method === 'POST' && id === undefined) {
-      if (!endpoint) throw new ApiError(422, '管理员尚未配置模型')
-      const batch = storage.createBatch(pid, await body(req, 32_000))
-      if (batch.status === 'running') runBatch(batch.id)
+      const value = await body(req, 32_000)
+      const profile = models.required()
+      const batch = storage.createBatch(pid, value, profile.ref)
+      if (batch.status === 'running') runBatch(batch.id, models.pinned(batch.model_ref))
       return json(res, storage.getBatch(pid, batch.id), 202)
     }
     if (method === 'POST' && id && ['pause', 'resume', 'cancel'].includes(action)) {
-      if (action === 'resume' && !endpoint) throw new ApiError(422, '管理员尚未配置模型')
-      const batch = storage.changeBatch(pid, id, action)
-      if (batch.status === 'running') runBatch(id)
+      const current = storage.getBatch(pid, id)
+      const profile = action === 'resume' && ['paused', 'running'].includes(current.status) ? models.pinned(current.model_ref) : null
+      const batch = storage.changeBatch(pid, id, action, profile?.ref)
+      if (batch.status === 'running' && profile) runBatch(id, profile)
       if (['pause', 'cancel'].includes(action)) {
         for (const item of batch.items.filter(item => item.status === 'running')) {
           active.get(item.run_id)?.abort(action === 'pause' ? 'paused' : 'cancelled')
@@ -558,28 +556,33 @@ async function route(req, res) {
       return json(res, references.readChapter(pid, id, Number(url.searchParams.get('position'))))
     }
     if (id && method === 'POST' && action === 'context') {
-      const { messages } = references.prepare(pid, id, await body(req, 16_384), contextLimit)
-      return json(res, { messages, limit: contextLimit })
+      const value = await body(req, 16_384)
+      const limit = previewBudget()
+      const { messages } = references.prepare(pid, id, value, limit)
+      return json(res, { messages, limit })
     }
     if (id && method === 'POST' && action === 'analyze') {
-      if (!endpoint) throw new ApiError(422, '管理员尚未配置模型')
-      const { job, messages } = references.start(pid, id, await body(req, 16_384), contextLimit)
-      if (messages) void generate(job, messages, '', true).catch(() => console.error('无法记录参考小说拆解结果'))
+      const value = await body(req, 16_384)
+      const profile = models.required()
+      const { job, messages } = references.start(pid, id, value, profile.contextLimit, profile.ref)
+      if (messages) void generate(profile, job, messages, '', true).catch(() => console.error('无法记录参考小说拆解结果'))
       return json(res, job, 202)
     }
     if (id && method === 'POST' && action === 'batch') {
-      if (!endpoint) throw new ApiError(422, '管理员尚未配置模型')
-      const batch = references.startBatch(pid, id, await body(req, 16_384))
-      if (batch.status === 'running') runReferenceBatch(pid, batch.id)
+      const value = await body(req, 16_384)
+      const profile = models.required()
+      const batch = references.startBatch(pid, id, value, profile.ref)
+      if (batch.status === 'running') runReferenceBatch(pid, batch.id, models.pinned(batch.model_ref))
       return json(res, references.batch(pid, batch.id), 202)
     }
   }
   if (resource === 'reference-batches' && id) {
     if (method === 'GET' && action === undefined) return json(res, references.batch(pid, id))
     if (method === 'POST' && ['pause', 'resume', 'cancel'].includes(action)) {
-      if (action === 'resume' && !endpoint) throw new ApiError(422, '管理员尚未配置模型')
-      const batch = references.changeBatch(pid, id, action)
-      if (action === 'resume' && batch.status === 'running') runReferenceBatch(pid, id)
+      const current = references.batch(pid, id)
+      const profile = action === 'resume' && ['paused', 'running'].includes(current.status) ? models.pinned(current.model_ref) : null
+      const batch = references.changeBatch(pid, id, action, profile?.ref)
+      if (batch.status === 'running' && profile) runReferenceBatch(pid, id, profile)
       if (['pause', 'cancel'].includes(action) && batch.job?.status === 'running') {
         active.get('reference:' + batch.job.id)?.abort(action === 'pause' ? 'paused' : 'cancelled')
       }
@@ -611,15 +614,17 @@ async function route(req, res) {
       return json(res, storage.all('SELECT id,kind,status,created FROM runs WHERE document_id=? ORDER BY created DESC LIMIT 50', id))
     }
     if (id && action === 'runs' && method === 'POST') {
-      if (!endpoint) throw new ApiError(422, '管理员尚未配置模型')
       const value = await body(req)
-      const { job, messages } = storage.startRun(pid, id, value, prepareMessages)
-      if (messages) void generate(job, messages).catch(() => console.error('无法记录任务结果'))
+      const profile = models.required()
+      const { job, messages } = storage.startRun(pid, id, value, prepareMessages(profile.contextLimit), profile.ref)
+      if (messages) void generate(profile, job, messages).catch(() => console.error('无法记录任务结果'))
       return json(res, storage.runDetail(pid, job.id), 202)
     }
     if (id && action === 'context' && method === 'POST') {
-      const messages = storage.previewRun(pid, id, await body(req), prepareMessages)
-      return json(res, { messages, limit: contextLimit })
+      const value = await body(req)
+      const limit = previewBudget()
+      const messages = storage.previewRun(pid, id, value, prepareMessages(limit))
+      return json(res, { messages, limit })
     }
   }
   if (resource === 'runs' && method === 'GET' && id === undefined) {
@@ -636,9 +641,10 @@ async function route(req, res) {
     if (method === 'GET' && action === undefined) return json(res, storage.runDetail(pid, id))
     if (method === 'GET' && action === 'candidate') return json(res, storage.previewPassage(pid, id))
     if (method === 'POST' && action === 'continue') {
-      if (!endpoint) throw new ApiError(422, '管理员尚未配置模型')
-      const { job, messages, prefix } = storage.continueRun(pid, id, await body(req, 4096), prepareMessages)
-      if (messages) void generate(job, messages, prefix).catch(() => console.error('无法记录续写结果'))
+      const value = await body(req, 4096)
+      const profile = models.pinned(storage.getRun(pid, id).model_ref)
+      const { job, messages, prefix } = storage.continueRun(pid, id, value, prepareMessages(profile.contextLimit), profile.ref)
+      if (messages) void generate(profile, job, messages, prefix).catch(() => console.error('无法记录续写结果'))
       return json(res, storage.runDetail(pid, job.id), 202)
     }
     if (method === 'POST' && action === 'cancel') {

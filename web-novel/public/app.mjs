@@ -20,6 +20,12 @@ let documents = []
 let stage = 'chapter'
 const stageDocuments = new Map()
 let model = false
+let modelLabels = new Map()
+function modelName(ref) {
+  if (!ref) return ''
+  const id = ref.split(':', 1)[0]
+  return '模型预设 ' + (modelLabels.get(id) ?? id)
+}
 let semanticEnabled = false
 let navigation = 0
 let dialogAction
@@ -81,7 +87,7 @@ async function api(path, method = 'GET', data) {
     method, headers: data === undefined ? {} : { 'Content-Type': upload ? 'application/epub+zip' : 'application/json' },
     body: upload ? data : data === undefined ? undefined : JSON.stringify(data),
     signal: AbortSignal.timeout(path === '/import' || path.endsWith('/chapter-imports') || upload ? 60_000
-      : path.endsWith('/semantic/search') ? 25_000 : 15_000),
+      : path.endsWith('/semantic/search') || path.endsWith('/diagnose-semantic') ? 25_000 : 15_000),
   })
   const result = await response.json()
   if (!response.ok) throw Object.assign(new Error(result.error || '请求失败'), { status: response.status, current: result.current })
@@ -1158,9 +1164,9 @@ function renderJob(state) {
   $('run-output').hidden = Boolean(job?.reviewReport)
   renderReview(state)
   $('run-status').textContent = job ? [runNames[job.kind], runStates[job.status],
-    job.continued_from && '分段续跑', job.applied_rev !== null && '已应用', job.error].filter(Boolean).join(' · ') : ''
+    job.continued_from && '分段续跑', job.applied_rev !== null && '已应用', job.error, modelName(job.model_ref)].filter(Boolean).join(' · ') : ''
   $('cancel-run').hidden = job?.status !== 'running'
-  $('continue-run').hidden = !model || !job?.canContinue
+  $('continue-run').hidden = !job?.canContinue
   $('apply-run').hidden = !job || !['draft', 'revise', 'plan', 'passage'].includes(job.kind) ||
     job.status === 'running' || (['plan', 'passage'].includes(job.kind) && job.status !== 'done') || !job.source_hash ||
     !job.output?.trim() || job.applied_rev !== null
@@ -1564,14 +1570,81 @@ function showSettings() {
   const services = document.createElement('p')
   services.textContent = `写作模型${model ? '已配置' : '待配置'} · 语义检索${semanticEnabled ? '已配置' : '待配置'} · ${enhancedBody ? 'CodeMirror' : '普通编辑器'}`
   const guide = document.createElement('p')
-  guide.textContent = '模型连接由 NAS 的 Compose 环境变量配置。外观和字号保存在当前浏览器。'
-  dialog('设置', [themeLabel, sizeLabel, services, guide], () => {
+  guide.textContent = '外观和字号保存在当前浏览器。'
+  dialog('设置', [themeLabel, sizeLabel, services, actionButton('模型预设与诊断', showModelSettings), guide], () => {
     root.dataset.theme = theme.value
     root.dataset.textSize = size.value
     try { localStorage.setItem('pagekin-appearance', JSON.stringify({ theme: theme.value, textSize: size.value })) }
     catch { note('浏览器无法保留外观设置，当前页面已应用。') }
     $('dialog').close()
   }, '保存外观')
+}
+
+async function showModelSettings() {
+  const data = await api('/model-profiles')
+  modelLabels = new Map(data.profiles.map(row => [row.id, row.label]))
+  const select = document.createElement('select')
+  select.required = data.profiles.length > 0
+  select.append(new Option('选择预设', ''), ...data.profiles.map(row => new Option(row.label + ' · ' + row.model, row.id)))
+  select.value = data.available ? data.activeId : ''
+  select.disabled = !data.profiles.length
+  const label = document.createElement('label')
+  label.append('写作模型预设', select)
+  const info = document.createElement('p')
+  const result = document.createElement('p')
+  result.setAttribute('role', 'status')
+  const actions = document.createElement('div')
+  actions.className = 'tools'
+  const test = actionButton('测试所选写作模型', () => diagnose('/diagnose', { id: select.value }))
+  const semantic = actionButton('测试语义模型', () => diagnose('/diagnose-semantic', {}))
+  actions.append(test, semantic, actionButton('返回设置', showSettings))
+  let busy = false
+  const showSelection = () => {
+    const row = data.profiles.find(item => item.id === select.value)
+    test.disabled = busy || !row
+    semantic.disabled = busy || !data.semantic
+    info.textContent = row ? '上下文字符预算 ' + row.contextLimit.toLocaleString()
+      : data.activeId ? '原预设已移除，请重新选择。' : '在 NAS 配置写作模型后，此处可选择预设。'
+  }
+  select.addEventListener('change', () => {
+    result.textContent = ''
+    showSelection()
+  })
+  showSelection()
+  const guide = document.createElement('p')
+  guide.textContent = '预设由 NAS 管理。保存后适用于此工作区的新任务。测试会发送固定的测试文本。'
+  dialog('模型预设与诊断', [label, info, guide, actions, result], data.profiles.length ? async () => {
+    if (busy) return
+    try {
+      const saved = await api('/model-profiles', 'PUT', { id: select.value, baseRev: data.rev })
+      model = saved.available
+      $('model-status').hidden = model
+      renderCatalog()
+      paint()
+      if (result.isConnected) await showModelSettings()
+    } catch (error) {
+      result.textContent = error.message
+      if (error.status === 409) result.append(actionButton('重新读取预设', showModelSettings))
+    }
+  } : undefined, '保存预设')
+
+  async function diagnose(action, value) {
+    if (busy) return
+    busy = true
+    showSelection()
+    select.disabled = true
+    result.textContent = '正在测试连接…'
+    try {
+      const response = await api('/model-profiles' + action, 'POST', value)
+      result.textContent = '连接成功 · ' + response.elapsedMs + ' 毫秒' +
+        (response.dimensions ? ' · 向量维度 ' + response.dimensions : '')
+    } catch (error) { result.textContent = error.message }
+    finally {
+      select.disabled = !data.profiles.length
+      busy = false
+      showSelection()
+    }
+  }
 }
 
 function setFocusWriting(enabled) {
@@ -1713,12 +1786,13 @@ function showBatch(pid, first) {
       batch = next
       const active = batch.items.some(item => item.status === 'running')
       const complete = batch.items.filter(item => item.status === 'done').length
-      status.textContent = [`${batchStates[batch.status]} · 已生成 ${complete} / ${batch.items.length} 章`, batch.error].filter(Boolean).join(' · ')
+      status.textContent = [`${batchStates[batch.status]} · 已生成 ${complete} / ${batch.items.length} 章`, batch.error,
+        modelName(batch.model_ref)].filter(Boolean).join(' · ')
       controls.replaceChildren(actionButton('返回批次列表', () => listBatches(pid)))
       if (batch.status === 'running') controls.append(actionButton('暂停批次', () => change('pause')))
       if (batch.status === 'paused') {
         const resume = actionButton('继续批次', () => change('resume'))
-        resume.disabled = active || !model
+        resume.disabled = active
         controls.append(resume)
       }
       if (['running', 'paused'].includes(batch.status)) controls.append(actionButton('取消批次', () => change('cancel')))
@@ -1903,7 +1977,7 @@ click('search-project', searchProject)
 click('narrative-threads', threadList)
 click('reference-library', referenceLibrary)
 const referenceNovels = referenceNovelWorkspace({ api, dialog, field, actionButton, uuid,
-  isCurrent: pid => pid === project, modelEnabled: () => model, installSkill: newWritingSkill })
+  isCurrent: pid => pid === project, modelEnabled: () => model, modelName, installSkill: newWritingSkill })
 click('reference-novel-library', () => referenceNovels.list(project))
 const continuity = continuityWorkspace({ api, dialog, actionButton, uuid, isCurrent: pid => pid === project, modelEnabled: () => model })
 click('character-continuity', () => continuity.list(project))
@@ -2297,6 +2371,7 @@ async function boot() {
   try {
     const session = await api('/session')
     model = session.model
+    modelLabels = new Map((session.modelProfiles ?? []).map(row => [row.id, row.label]))
     $('model-status').hidden = model
     semanticEnabled = session.semanticSearch
     $('semantic-search').hidden = !semanticEnabled

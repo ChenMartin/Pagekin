@@ -86,7 +86,10 @@ try {
       APP_EDITOR: process.env.PAGEKIN_TEST_EDITOR === 'plain' ? 'plain' : 'auto',
       EMBEDDING_BASE_URL: modelBase,
       EMBEDDING_MODEL: 'preview-embedding', EMBEDDING_API_KEY: '',
-      LLM_MODEL: 'writing-mock', LLM_BASE_URL: modelBase, LLM_API_KEY: '', LLM_CONTEXT_CHARS: '8000' },
+      LLM_MODEL: 'writing-mock', LLM_BASE_URL: modelBase, LLM_API_KEY: '', LLM_CONTEXT_CHARS: '8000',
+      LLM_PROFILES_FILE: '', LLM_PROFILES_JSON: JSON.stringify([
+        { id: 'browser-alt', label: '浏览器备选模型', baseUrl: modelBase, model: 'writing-alternate', contextChars: 12000 },
+      ]) },
     stdio: ['ignore', 'pipe', 'inherit'],
   })
   const [chunk] = await Promise.race([once(app.stdout, 'data'), delay(5000).then(() => { throw new Error('App failed to start') })])
@@ -557,6 +560,20 @@ try {
     await until(() => evaluate(`Boolean(${expression})`), `Missing ${prefix}`)
     await evaluate(`(${expression}).click()`)
   }
+  await click('#workspace-settings')
+  await dialogButton('模型预设与诊断')
+  await until(() => evaluate("document.querySelector('#dialog-title').textContent === '模型预设与诊断'"), 'Writing profile settings did not load')
+  await fill('#dialog-body select', 'browser-alt')
+  await evaluate("document.querySelector('#dialog-body select').dispatchEvent(new Event('change'))")
+  await dialogButton('测试所选写作模型')
+  await until(() => evaluate("document.querySelector('#dialog-body [role=status]').textContent.includes('连接成功')"), 'Writing profile diagnosis did not pass')
+  await click('#dialog-submit')
+  await until(() => evaluate("!document.querySelector('#dialog-submit').disabled"), 'Writing profile submission did not complete')
+  await click('#close-dialog')
+  await click('#workspace-settings')
+  await dialogButton('模型预设与诊断')
+  await until(() => evaluate("document.querySelector('#dialog-title').textContent === '模型预设与诊断' && document.querySelector('#dialog-body select').value === 'browser-alt'"), 'Writing profile selection did not persist')
+  await click('#close-dialog')
   await click('#reference-novel-library')
   await dialogButton('导入参考小说')
   await visible('#dialog-body input[type=file]')

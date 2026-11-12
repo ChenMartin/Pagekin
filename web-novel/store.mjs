@@ -7,6 +7,7 @@ import { schemaVersion } from './version.mjs'
 import { novelGoals } from './public/novel-goals.mjs'
 import { architectureSections } from './public/architecture.mjs'
 import { openReferenceNovels, referenceBatchSchema, referenceNovelSchema } from './reference-novels.mjs'
+import { importedModelRef, modelProfileSchema } from './model-profiles.mjs'
 import { characterContinuity, continuitySchema } from './character-continuity.mjs'
 import { desktopContinuity, desktopContinuitySchema } from './desktop-continuity.mjs'
 import { novelProgress } from './novel-progress.mjs'
@@ -280,6 +281,14 @@ export function openStore(directory) {
       BEGIN IMMEDIATE;
       ${referenceBatchSchema}
       PRAGMA user_version=17;
+      COMMIT;
+    `)
+  }
+  if (version < 18) {
+    db.exec(`
+      BEGIN IMMEDIATE;
+      ${modelProfileSchema}
+      PRAGMA user_version=18;
       COMMIT;
     `)
   }
@@ -781,7 +790,7 @@ export function openStore(directory) {
     }
   }
 
-  function insertRun(doc, request, jobId, prepare, { previousCandidate, batch = null, from = null, prefix = '' } = {}) {
+  function insertRun(doc, request, jobId, prepare, { previousCandidate, batch = null, from = null, prefix = '', modelRef = null } = {}) {
     const { kind, refs, outlineId } = request
     const context = runContext(doc, request, batch)
     const sourceHash = previousCandidate ? batchBinding(context.sourceHash, previousCandidate) : context.sourceHash
@@ -789,13 +798,13 @@ export function openStore(directory) {
     const messages = prepare(kind, { ...context, previousCandidate, continuation: prefix })
     if (kind === 'review') checkpoint(doc, 'before-review')
     const requestHash = from ? 'continue:' + hash(from.id) : requestFingerprint(doc.id, request)
-    run(`INSERT INTO runs (id,document_id,base_rev,kind,status,output,created,request_hash,source_hash,reference_ids,outline_id,request_data,continued_from)
-      VALUES (?,?,?,?,'running',?,?,?,?,?,?,?,?)`, jobId, doc.id, context.doc.rev, kind, prefix, now(), requestHash, sourceHash,
-    JSON.stringify(refs), outlineId, JSON.stringify({ request, batch }), from?.id ?? null)
+    run(`INSERT INTO runs (id,document_id,base_rev,kind,status,output,created,request_hash,source_hash,reference_ids,outline_id,request_data,continued_from,model_ref)
+      VALUES (?,?,?,?,'running',?,?,?,?,?,?,?,?,?)`, jobId, doc.id, context.doc.rev, kind, prefix, now(), requestHash, sourceHash,
+    JSON.stringify(refs), outlineId, JSON.stringify({ request, batch }), from?.id ?? null, modelRef)
     return { job: getRun(doc.project_id, jobId), messages, prefix }
   }
 
-  function continueRun(pid, id, value, prepare) {
+  function continueRun(pid, id, value, prepare, modelRef = null) {
     object(value)
     const jobId = string(value.mutationId, 80, true)
     if (!/^[a-f0-9-]{36}$/i.test(jobId)) throw new ApiError(400, '任务编号无效')
@@ -809,11 +818,11 @@ export function openStore(directory) {
       const resume = resumable(from)
       if (!resume) throw new ApiError(422, '此任务没有可继续的完整句段')
       writingAvailable()
-      return insertRun(document(pid, from.document_id), resume.request, jobId, prepare, { from, prefix: resume.prefix })
+      return insertRun(document(pid, from.document_id), resume.request, jobId, prepare, { from, prefix: resume.prefix, modelRef })
     })
   }
 
-  function startRun(pid, id, value, prepare) {
+  function startRun(pid, id, value, prepare, modelRef = null) {
     const request = parseRun(value)
     const requestHash = requestFingerprint(id, request)
     return tx(() => {
@@ -828,7 +837,7 @@ export function openStore(directory) {
         return { job: runDetail(pid, jobId) }
       }
       writingAvailable()
-      return insertRun(doc, request, jobId, prepare)
+      return insertRun(doc, request, jobId, prepare, { modelRef })
     })
   }
 
@@ -845,7 +854,7 @@ export function openStore(directory) {
   }
 
   function getBatch(pid, id) {
-    const batch = get('SELECT id,status,created,error,operation FROM writing_batches WHERE project_id=? AND id=?', pid, id)
+    const batch = get('SELECT id,status,created,error,operation,model_ref FROM writing_batches WHERE project_id=? AND id=?', pid, id)
     if (!batch) throw new ApiError(404, '批量写作任务不存在')
     const items = all(`SELECT d.id,d.number,d.title,i.run_id,CASE WHEN i.skipped<>'' THEN 'skipped' ELSE COALESCE(r.status,'queued') END status,
         CASE WHEN i.skipped<>'' THEN i.skipped ELSE COALESCE(r.error,'') END error
@@ -866,7 +875,7 @@ export function openStore(directory) {
     '\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff')
   }
 
-  function createBatch(pid, value) {
+  function createBatch(pid, value, modelRef = null) {
     object(value)
     const id = string(value.mutationId, 80, true)
     const guidance = string(value.guidance ?? '', 6000)
@@ -908,21 +917,21 @@ export function openStore(directory) {
           if (doc.kind !== 'chapter' || doc.status !== 'draft' || doc.body.trim()) throw new ApiError(422, '批量写作只接收空白且未定稿的章节')
         }
       }
-      run("INSERT INTO writing_batches (id,project_id,status,guidance,fingerprint,created,draft_skill,operation) VALUES (?,?,'running',?,?,?,?,?)",
-        id, pid, guidance, fingerprint, now(), requestSkill(pid, operation)?.id ?? null, operation)
+      run("INSERT INTO writing_batches (id,project_id,status,guidance,fingerprint,created,draft_skill,operation,model_ref) VALUES (?,?,'running',?,?,?,?,?,?)",
+        id, pid, guidance, fingerprint, now(), requestSkill(pid, operation)?.id ?? null, operation, modelRef)
       for (const [docId, baseRev] of chapters) run('INSERT INTO writing_batch_items (batch_id,document_id,base_rev) VALUES (?,?,?)', id, docId, baseRev)
       return getBatch(pid, id)
     })
   }
 
-  function changeBatch(pid, id, action) {
+  function changeBatch(pid, id, action, modelRef = null) {
     return tx(() => {
       const batch = getBatch(pid, id)
       if (action === 'resume' && batch.status === 'paused') {
         writingAvailable()
         const { draft_skill: skill } = get('SELECT draft_skill FROM writing_batches WHERE id=?', id)
         if ((requestSkill(pid, batch.operation)?.id ?? null) !== skill) throw new ApiError(409, '写作 Skill 绑定已变化，请恢复原绑定或新建批次')
-        run("UPDATE writing_batches SET status='running',error='' WHERE id=?", id)
+        run("UPDATE writing_batches SET status='running',error='',model_ref=coalesce(model_ref,?) WHERE id=?", modelRef, id)
       }
       if (action === 'pause' && batch.status === 'running') run("UPDATE writing_batches SET status='paused',error='' WHERE id=?", id)
       if (action === 'cancel' && ['running', 'paused'].includes(batch.status)) {
@@ -952,7 +961,7 @@ export function openStore(directory) {
         }
         const request = parseRun({ kind: batch.operation, baseRev: item.base_rev, guidance: batch.guidance })
         const jobId = randomUUID()
-        const options = { batch: id, previousCandidate: batchPredecessor(id, doc) }
+        const options = { batch: id, previousCandidate: batchPredecessor(id, doc), modelRef: batch.model_ref }
         const from = item.run_id ? getRun(batch.project_id, item.run_id) : null
         const resume = from && resumable(from, id)
         let result
@@ -1335,10 +1344,10 @@ export function openStore(directory) {
           continuity.character(p.id, characterId)
           requestData = JSON.stringify({ request: { continuityCharacterId: characterId } })
         }
-        run(`INSERT INTO runs (id,document_id,base_rev,kind,status,output,error,created,applied_rev,request_hash,source_hash,request_data)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, runId, id, revision(source.base_rev),
+        run(`INSERT INTO runs (id,document_id,base_rev,kind,status,output,error,created,applied_rev,request_hash,source_hash,request_data,model_ref)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, runId, id, revision(source.base_rev),
           source.kind, status, string(source.output, 180_000), string(source.error, 500),
-          string(source.created, 50), source.applied_rev === null ? null : revision(source.applied_rev), '', '', requestData)
+          string(source.created, 50), source.applied_rev === null ? null : revision(source.applied_rev), '', '', requestData, importedModelRef(source.model_ref))
       }
       for (const source of data.runs ?? []) {
         const draft = importedRuns.get(source.id)

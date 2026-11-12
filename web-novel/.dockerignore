@@ -16,6 +16,7 @@
 !desktop-character-import.mjs
 !desktop-continuity.mjs
 !novel-progress.mjs
+!model-profiles.mjs
 !epub-extraction.ts
 !epub-preview-worker.mjs
 !version.mjs

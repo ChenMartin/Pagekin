@@ -18,7 +18,7 @@ const status = () => {
   return element
 }
 
-export function referenceNovelWorkspace({ api, dialog, field, actionButton, uuid, isCurrent, modelEnabled, installSkill }) {
+export function referenceNovelWorkspace({ api, dialog, field, actionButton, uuid, isCurrent, modelEnabled, modelName, installSkill }) {
   const root = pid => '/projects/' + pid + '/reference-novels'
   const jobPath = (pid, id) => '/projects/' + pid + '/reference-analysis/' + id
   const batchPath = (pid, id) => '/projects/' + pid + '/reference-batches/' + id
@@ -184,10 +184,10 @@ export function referenceNovelWorkspace({ api, dialog, field, actionButton, uuid
 
     function render(current) {
       feedback.textContent = batchStates[current.status] + ' · 已拆解 ' + current.completed + ' / ' + current.chapter_count + ' 节'
-      summary.textContent = current.next ? '下一未拆解位置 ' + current.next : ''
+      summary.textContent = [current.next && '下一未拆解位置 ' + current.next, modelName(current.model_ref)].filter(Boolean).join(' · ')
       warning.textContent = current.error || ''
       pause.hidden = current.status !== 'running'
-      resume.hidden = current.status !== 'paused' || !modelEnabled()
+      resume.hidden = current.status !== 'paused'
       resume.disabled = current.job?.status === 'running'
       cancel.hidden = !['running', 'paused'].includes(current.status)
       synthesize.hidden = current.status !== 'done' || !modelEnabled()
@@ -287,7 +287,7 @@ export function referenceNovelWorkspace({ api, dialog, field, actionButton, uuid
 
     function render(current) {
       const running = current.status === 'running'
-      feedback.textContent = states[current.status] + (current.error ? ' · ' + current.error : '')
+      feedback.textContent = [states[current.status], current.error, modelName(current.model_ref)].filter(Boolean).join(' · ')
       cancel.hidden = !running
       if (current.report) {
         const { structure, style, constraints, chapters } = current.report

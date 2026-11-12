@@ -2,7 +2,7 @@ name: web-novel
 services:
   pagekin:
     build: .
-    image: pagekin-web-novel:0.2.0-dev.9
+    image: pagekin-web-novel:0.2.0-dev.10
     platform: linux/amd64
     init: true
     restart: unless-stopped
@@ -18,6 +18,8 @@ services:
       LLM_MODEL: "${LLM_MODEL:-}"
       LLM_API_KEY: "${LLM_API_KEY:-}"
       LLM_CONTEXT_CHARS: "${LLM_CONTEXT_CHARS:-64000}"
+      LLM_PROFILES_JSON: "${LLM_PROFILES_JSON:-}"
+      LLM_PROFILES_FILE: "${LLM_PROFILES_FILE:-}"
       EMBEDDING_BASE_URL: "${EMBEDDING_BASE_URL:-}"
       EMBEDDING_MODEL: "${EMBEDDING_MODEL:-}"
       EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"

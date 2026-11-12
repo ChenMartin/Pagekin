@@ -196,5 +196,15 @@ export function openSemantic(storage, env = process.env) {
     } finally { searching = false }
   }
 
-  return { status, start, search, close: () => lifetime.abort() }
+  let diagnosing = false
+  async function diagnose() {
+    if (diagnosing) throw new ApiError(409, '已有语义模型连接测试进行中')
+    diagnosing = true
+    const started = Date.now()
+    try {
+      const [vector] = await embed(['Pagekin connection test.'])
+      return { ok: true, elapsedMs: Date.now() - started, dimensions: vector.length }
+    } finally { diagnosing = false }
+  }
+  return { status, start, search, diagnose, close: () => lifetime.abort() }
 }

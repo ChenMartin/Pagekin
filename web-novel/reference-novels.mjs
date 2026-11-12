@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { ApiError, object, string } from './input.mjs'
+import { importedModelRef } from './model-profiles.mjs'
 import { manuscriptBytes, manuscriptChapterLimit, splitManuscript } from './public/manuscript.mjs'
 
 export const referenceNovelSchema = `
@@ -97,7 +98,7 @@ function parseReport(output, first, last, mode) {
 export function openReferenceNovels({ get, all, run, tx, hash, now, writingAvailable }) {
   const chapterRows = id => all('SELECT position,number,title,body FROM reference_novel_chapters WHERE novel_id=? ORDER BY position', id)
   const bookRows = pid => all('SELECT id,title,chapter_count,created FROM reference_novels WHERE project_id=? ORDER BY created DESC,id', pid)
-  const jobList = id => all('SELECT id,first,last,status,error,created,mode FROM reference_analyses WHERE novel_id=? ORDER BY rowid DESC', id)
+  const jobList = id => all('SELECT id,first,last,status,error,created,mode,model_ref FROM reference_analyses WHERE novel_id=? ORDER BY rowid DESC', id)
   const latestBatch = id => get('SELECT * FROM reference_batches WHERE novel_id=? ORDER BY rowid DESC LIMIT 1', id)
 
   function book(pid, id) {
@@ -243,16 +244,16 @@ export function openReferenceNovels({ get, all, run, tx, hash, now, writingAvail
     return buildInput(source, inputFor(source, value), limit)
   }
 
-  function insertAnalysis(id, jobId, input, prepared) {
+  function insertAnalysis(id, jobId, input, prepared, modelRef) {
     if (get('SELECT count(*) n FROM reference_analyses WHERE novel_id=?', id).n >= maxAnalyses) {
       throw new ApiError(422, '此参考小说的拆解记录已达上限')
     }
     const { first, last, mode, guidance } = input
-    run("INSERT INTO reference_analyses (id,novel_id,first,last,guidance,created,status,mode,sources) VALUES (?,?,?,?,?,?,'running',?,?)",
-      jobId, id, first, last, guidance, now(), mode, JSON.stringify(prepared.sources))
+    run("INSERT INTO reference_analyses (id,novel_id,first,last,guidance,created,status,mode,sources,model_ref) VALUES (?,?,?,?,?,?,'running',?,?,?)",
+      jobId, id, first, last, guidance, now(), mode, JSON.stringify(prepared.sources), modelRef)
   }
 
-  function start(pid, id, value, limit) {
+  function start(pid, id, value, limit, modelRef = null) {
     const jobId = identifier(object(value).mutationId)
     return tx(() => {
       const source = book(pid, id)
@@ -267,7 +268,7 @@ export function openReferenceNovels({ get, all, run, tx, hash, now, writingAvail
       }
       writingAvailable()
       const prepared = buildInput(source, input, limit)
-      insertAnalysis(id, jobId, input, prepared)
+      insertAnalysis(id, jobId, input, prepared, modelRef)
       return { job: analysis(pid, jobId), messages: prepared.messages }
     })
   }
@@ -300,7 +301,7 @@ export function openReferenceNovels({ get, all, run, tx, hash, now, writingAvail
       job: jobs.find(job => job.id === row.job_id) ?? null }
   }
 
-  function startBatch(pid, id, value) {
+  function startBatch(pid, id, value, modelRef = null) {
     const batchId = identifier(object(value).mutationId)
     const { chunkSize, guidance } = batchOptions(value)
     return tx(() => {
@@ -317,18 +318,18 @@ export function openReferenceNovels({ get, all, run, tx, hash, now, writingAvail
       }
       if (sourcesFor(jobList(id), source.chapter_count).every(Boolean)) throw new ApiError(422, '全部位置已有拆解报告')
       writingAvailable()
-      run("INSERT INTO reference_batches (id,novel_id,chunk_size,guidance,created,status) VALUES (?,?,?,?,?,'running')",
-        batchId, id, chunkSize, guidance, now())
+      run("INSERT INTO reference_batches (id,novel_id,chunk_size,guidance,created,status,model_ref) VALUES (?,?,?,?,?,'running',?)",
+        batchId, id, chunkSize, guidance, now(), modelRef)
       return batch(pid, batchId)
     })
   }
 
-  function changeBatch(pid, id, action) {
+  function changeBatch(pid, id, action, modelRef = null) {
     return tx(() => {
       const current = batch(pid, id)
       if (action === 'resume' && current.status === 'paused') {
         writingAvailable()
-        run("UPDATE reference_batches SET status='running',error='' WHERE id=?", id)
+        run("UPDATE reference_batches SET status='running',error='',model_ref=coalesce(model_ref,?) WHERE id=?", modelRef, id)
       }
       if (action === 'pause' && current.status === 'running') pauseBatch(id)
       if (action === 'cancel' && ['running', 'paused'].includes(current.status)) {
@@ -366,7 +367,7 @@ export function openReferenceNovels({ get, all, run, tx, hash, now, writingAvail
           }
         }
         const jobId = randomUUID()
-        insertAnalysis(source.id, jobId, input, prepared)
+        insertAnalysis(source.id, jobId, input, prepared, row.model_ref)
         run('UPDATE reference_batches SET job_id=? WHERE id=?', jobId, id)
         return { job: analysis(source.project_id, jobId), messages: prepared.messages }
       } catch (error) {
@@ -382,10 +383,10 @@ export function openReferenceNovels({ get, all, run, tx, hash, now, writingAvail
       const batch = latestBatch(row.id)
       return {
         title: row.title, chapters: chapterRows(row.id),
-        analyses: all('SELECT id,first,last,guidance,status,output,error,created,mode,sources FROM reference_analyses WHERE novel_id=? ORDER BY rowid', row.id)
+        analyses: all('SELECT id,first,last,guidance,status,output,error,created,mode,sources,model_ref FROM reference_analyses WHERE novel_id=? ORDER BY rowid', row.id)
           .map(item => ({ ...item, sources: JSON.parse(item.sources) })),
         ...(batch ? { batch: { chunkSize: batch.chunk_size, guidance: batch.guidance, created: batch.created,
-          status: batch.status, jobId: batch.job_id, error: batch.error } } : {}),
+          status: batch.status, jobId: batch.job_id, error: batch.error, modelRef: batch.model_ref } } : {}),
       }
     })
   }
@@ -414,9 +415,9 @@ export function openReferenceNovels({ get, all, run, tx, hash, now, writingAvail
         }
         const status = item.status === 'running' ? 'interrupted' : item.status
         const nextId = randomUUID()
-        run('INSERT INTO reference_analyses VALUES (?,?,?,?,?,?,?,?,?,?,?)', nextId, id, first, last,
+        run('INSERT INTO reference_analyses (id,novel_id,first,last,guidance,created,status,output,error,mode,sources,model_ref) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)', nextId, id, first, last,
           string(item.guidance, 2000), string(item.created, 50, true), status, output, string(item.error, 500), mode,
-          JSON.stringify(sources.map(entry => entry.id)))
+          JSON.stringify(sources.map(entry => entry.id)), importedModelRef(item.model_ref))
         restored.set(previousId, { id: nextId, mode, first, last, status })
       }
       if (source.batch !== undefined) {
@@ -429,8 +430,8 @@ export function openReferenceNovels({ get, all, run, tx, hash, now, writingAvail
         }
         const status = batch.status === 'running' ? 'paused' : batch.status
         const error = batch.status === 'running' ? '备份已恢复，待手动继续' : string(batch.error, 500)
-        run('INSERT INTO reference_batches (id,novel_id,chunk_size,guidance,created,status,job_id,error) VALUES (?,?,?,?,?,?,?,?)',
-          randomUUID(), id, chunkSize, guidance, string(batch.created, 50, true), status, job?.id ?? null, error)
+        run('INSERT INTO reference_batches (id,novel_id,chunk_size,guidance,created,status,job_id,error,model_ref) VALUES (?,?,?,?,?,?,?,?,?)',
+          randomUUID(), id, chunkSize, guidance, string(batch.created, 50, true), status, job?.id ?? null, error, importedModelRef(batch.modelRef))
       }
     }
   }

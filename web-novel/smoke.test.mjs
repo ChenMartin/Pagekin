@@ -18,6 +18,7 @@ import { splitManuscript } from './public/manuscript.mjs'
 import { backupDatabase, restoreDatabase, verifyDatabase } from './maintenance.mjs'
 import { releaseVersion, schemaVersion } from './version.mjs'
 import { sampleEpub } from './epub-test-fixture.mjs'
+import { openModelProfiles } from './model-profiles.mjs'
 
 const password = 'test-password-local-only'
 
@@ -80,6 +81,11 @@ async function launch(directory, port) {
       ...process.env, APP_PASSWORD: password, APP_PASSWORD_FILE: '', APP_SECURE_COOKIE: '0',
       APP_HOST: '127.0.0.1', APP_ORIGIN: '', APP_DATA_DIR: directory, PORT: '0', LLM_MODEL: 'test',
       LLM_BASE_URL: `http://127.0.0.1:${port}/v1`, LLM_API_KEY: '', LLM_CONTEXT_CHARS: '8000',
+      LLM_PROFILES_FILE: '', LLM_PROFILES_JSON: JSON.stringify([
+        { id: 'alternate', label: '另一个模型', baseUrl: `http://127.0.0.1:${port}/v1`, model: 'alternate-test', contextChars: 12000 },
+        { id: 'denied', label: '诊断失败演练', baseUrl: `http://127.0.0.1:${port}/denied`, model: 'denied-test' },
+        { id: 'with-key', label: '保密字段演练', baseUrl: 'https://example.invalid/v1', model: 'private-test', apiKey: 'test-private-key-value' },
+      ]),
       EMBEDDING_BASE_URL: `http://127.0.0.1:${port}/v1`, EMBEDDING_MODEL: 'embedding-test', EMBEDDING_API_KEY: '',
     },
     stdio: ['ignore', 'pipe', 'inherit'],
@@ -124,6 +130,9 @@ test('novel workflow through HTTP across devices, generation, export and restart
   let embeddingCalls = 0
   let lastPrompt = ''
   const referenceRanges = []
+  const referenceModels = []
+  const writingModels = []
+  let lastModel
   const batchPrompts = []
   const revisedProse = '保留开场\n船已离港。\n\n雾从海面升起。\n灯塔整夜发亮。\n'
   const reviewIssue = { title: '补足场景动作', severity: 'major', quote: '电脑上的稿', reason: '场景过于简略', suggestion: '补写登船动作' }
@@ -131,6 +140,10 @@ test('novel workflow through HTTP across devices, generation, export and restart
     const chunks = []
     for await (const part of req) chunks.push(part)
     const input = JSON.parse(Buffer.concat(chunks))
+    if (req.url === '/denied/chat/completions') {
+      res.writeHead(401).end('upstream-private-error')
+      return
+    }
     if (req.url === '/v1/embeddings') {
       embeddingCalls++
       assert.equal(input.model, 'embedding-test')
@@ -147,7 +160,10 @@ test('novel workflow through HTTP across devices, generation, export and restart
       return
     }
     upstreamCalls++
+    lastModel = input.model
     lastPrompt = input.messages.at(-1).content
+    const testWritingBatch = lastPrompt.includes('模型绑定批次')
+    if (testWritingBatch) writingModels.push(input.model)
     const batchTitle = ['排队首章', '暂停演练', '被别处编辑', '失败演练', '最后一章', '取消演练']
       .find(title => lastPrompt.split('\n', 1)[0].endsWith('章：' + title))
     if (batchTitle) {
@@ -184,6 +200,7 @@ test('novel workflow through HTTP across devices, generation, export and restart
       if (lastPrompt.includes('整书队列回归')) {
         const positions = chapters.map(row => row.position)
         referenceRanges.push(positions)
+        referenceModels.push(input.model)
         const attempts = referenceRanges.filter(row => row[0] === 3).length
         if (positions[0] === 3 && attempts === 1) output = '{}'
         holdReference = positions[0] === 3 && [2, 3].includes(attempts)
@@ -209,7 +226,7 @@ test('novel workflow through HTTP across devices, generation, export and restart
       ] }) + '\n```'
     }
     res.write('data: ' + JSON.stringify({ choices: [{ delta: { content: output } }] }) + '\n\n')
-    if (lastPrompt.includes('hold') || holdReference) return
+    if (lastPrompt.includes('hold') || holdReference || (testWritingBatch && writingModels.length === 1)) return
     res.end('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n')
   })
   upstream.listen(0, '127.0.0.1')
@@ -935,8 +952,15 @@ test('novel workflow through HTTP across devices, generation, export and restart
     assert.equal(copiedBatch.status, 'paused')
     assert.equal(copiedBatch.job.status, 'interrupted')
     assert.equal(copiedBatch.next, 3)
+    const initialProfiles = (await request('/api/model-profiles')).result
+    assert.equal(initialProfiles.activeId, 'environment')
+    assert.doesNotMatch(JSON.stringify(initialProfiles), /test-private-key-value|apiKey|example\.invalid/)
+    await request('/api/model-profiles', { cookie: '', status: 401 })
+    const switchedProfile = (await request('/api/model-profiles', { method: 'PUT', value: { id: 'alternate', baseRev: initialProfiles.rev } })).result
+    await request('/api/model-profiles', { method: 'PUT', cookie: b, status: 409, value: { id: 'environment', baseRev: initialProfiles.rev } })
     await stop(server)
     server = await launch(restoreDir, upstream.address().port)
+    assert.equal((await request('/api/model-profiles')).result.activeId, 'alternate')
     const restartedQueue = (await request(autoPath)).result
     assert.equal(restartedQueue.status, 'paused')
     assert.equal(restartedQueue.job.status, 'interrupted')
@@ -945,7 +969,11 @@ test('novel workflow through HTTP across devices, generation, export and restart
     assert.equal(finishedQueue.completed, 6)
     assert.equal(finishedQueue.next, null)
     assert.deepEqual(referenceRanges, [[1], [3, 4], [3, 4], [3, 4], [3, 4], [6]])
-    assert.ok((await request(queuePath + '/context', { method: 'POST', value: { mode: 'synthesis' } })).result.messages.length)
+    assert.ok(referenceModels.every(model => model === 'test'))
+    assert.match(finishedQueue.model_ref, /^environment:/)
+    const alternatePreview = (await request(queuePath + '/context', { method: 'POST', value: { mode: 'synthesis' } })).result
+    assert.equal(alternatePreview.limit, 12000)
+    assert.ok(alternatePreview.messages.length)
     await request(queuePath + '/batch', { method: 'POST', value: { ...queueInput, mutationId: randomUUID() }, status: 422 })
     const copiedAutoPath = copiedQueuePath + '/reference-batches/' + copiedBatch.id
     assert.equal((await request(copiedAutoPath + '/cancel', { method: 'POST' })).result.status, 'cancelled')
@@ -957,6 +985,20 @@ test('novel workflow through HTTP across devices, generation, export and restart
     await request(cancelQueuePath + '/cancel', { method: 'POST' })
     const cancelledQueue = await awaitRun(cancelQueuePath, row => row.status === 'cancelled' && row.job?.status === 'cancelled')
     assert.equal(cancelledQueue.completed, 3)
+    assert.match(cancelledQueue.model_ref, /^alternate:/)
+    assert.equal(lastModel, 'alternate-test')
+    const testConnection = (await request('/api/model-profiles/diagnose', { method: 'POST', value: { id: 'alternate' } })).result
+    assert.equal(testConnection.ok, true)
+    assert.equal(lastModel, 'alternate-test')
+    assert.equal(lastPrompt, 'Reply with OK.')
+    const diagnosticFailure = (await request('/api/model-profiles/diagnose', { method: 'POST', status: 502, value: { id: 'denied' } })).result
+    assert.match(diagnosticFailure.error, /HTTP 401/)
+    assert.doesNotMatch(diagnosticFailure.error, /upstream-private-error/)
+    await request('/api/model-profiles/diagnose', { method: 'POST', status: 404, value: { id: 'unknown', baseUrl: 'http://127.0.0.1' } })
+    const embeddingProbe = (await request('/api/model-profiles/diagnose-semantic', { method: 'POST' })).result
+    assert.equal(embeddingProbe.dimensions, 3)
+    const resetProfile = (await request('/api/model-profiles', { method: 'PUT', value: { id: 'environment', baseRev: switchedProfile.rev } })).result
+    assert.equal(resetProfile.activeId, 'environment')
 
     const continuityPath = projectPath + '/continuity/' + person.id
     const partner = await createPlanDoc({ kind: 'character', title: '领航员', body: '人物关系测试对象' })
@@ -1133,6 +1175,38 @@ test('novel workflow through HTTP across devices, generation, export and restart
       method: 'POST', status: 201, value: { mutationId: randomUUID(), chapters: epub.chapters.map((row, index) => ({ ...row, number: index + 66 })) },
     })
     assert.deepEqual(importedProse.result.chapters.map(row => row.number), [66, 67, 68])
+    const singleTarget = await progressDoc({ kind: 'chapter', number: 69, title: '验证续跑模型', body: '' })
+    const single = (await request(progressPath + '/documents/' + singleTarget.id + '/runs', { method: 'POST', status: 202, value: {
+      mutationId: randomUUID(), kind: 'draft', baseRev: 1, guidance: '分段续跑试验',
+    } })).result
+    await awaitRun(progressPath + '/runs/' + single.id, row => row.status === 'failed')
+    const modelBatchDocs = []
+    for (const number of [70, 71]) modelBatchDocs.push(await progressDoc({ kind: 'chapter', number, title: '验证模型 ' + number, body: '' }))
+    const boundBatch = (await request(progressPath + '/batches', { method: 'POST', status: 202, value: {
+      mutationId: randomUUID(), guidance: '模型绑定批次', chapters: modelBatchDocs.map(doc => ({ id: doc.id, baseRev: doc.rev })),
+    } })).result
+    const boundBatchPath = progressPath + '/batches/' + boundBatch.id
+    const activeBoundBatch = await awaitBatch(boundBatchPath, row => row.items[0].status === 'running')
+    await awaitRun(progressPath + '/runs/' + activeBoundBatch.items[0].run_id, row => Boolean(row.output))
+    await request('/api/model-profiles', { method: 'PUT', value: { id: 'alternate', baseRev: resetProfile.rev } })
+    await request(boundBatchPath + '/pause', { method: 'POST' })
+    await awaitBatch(boundBatchPath, row => row.status === 'paused' && row.items[0].status === 'interrupted')
+    await request(boundBatchPath + '/resume', { method: 'POST' })
+    const completedBoundBatch = await awaitBatch(boundBatchPath, row => row.status === 'done')
+    assert.equal(completedBoundBatch.items.filter(row => row.status === 'done').length, 2)
+    assert.deepEqual(writingModels, ['test', 'test', 'test'])
+    const continuedSingle = (await request(progressPath + '/runs/' + single.id + '/continue', { method: 'POST', status: 202, value: {
+      mutationId: randomUUID(),
+    } })).result
+    await awaitRun(progressPath + '/runs/' + continuedSingle.id, row => row.status !== 'running')
+    assert.equal(continuedSingle.model_ref, single.model_ref)
+    assert.equal(lastModel, 'test')
+    const alternateRun = (await request(progressPath + '/documents/' + singleTarget.id + '/runs', { method: 'POST', status: 202, value: {
+      mutationId: randomUUID(), kind: 'draft', baseRev: 1,
+    } })).result
+    await awaitRun(progressPath + '/runs/' + alternateRun.id, row => row.status === 'done')
+    assert.match(alternateRun.model_ref, /^alternate:/)
+    assert.equal(lastModel, 'alternate-test')
   } finally {
     await stop(server)
     upstream.closeAllConnections()
@@ -1149,6 +1223,8 @@ test('opening an existing Web database migrates v1 and keeps chapter data', asyn
     const p = store.createProject('旧版本作品')
     const doc = store.addDocument(p.id, { kind: 'chapter', number: 1, title: '原章', body: '原文' })
     store.db.exec(`
+      DROP TABLE model_preference;
+      ALTER TABLE runs DROP COLUMN model_ref;
       DROP TABLE desktop_character_events;
       DROP TABLE character_continuity;
       DROP TABLE reference_batches; DROP TABLE reference_analyses; DROP TABLE reference_novel_chapters; DROP TABLE reference_novels;
@@ -1167,6 +1243,14 @@ test('opening an existing Web database migrates v1 and keeps chapter data', asyn
     store = openStore(directory)
     assert.equal(store.document(p.id, doc.id).body, '原文')
     assert.equal(store.get('PRAGMA user_version').user_version, schemaVersion)
+    const preset = { id: 'local', label: '本地模型', baseUrl: 'http://model.local/v1', model: 'writing', contextChars: 8000 }
+    const profiles = openModelProfiles(store, { LLM_PROFILES_JSON: JSON.stringify([preset]) })
+    const originalRef = profiles.required().ref
+    const renamed = openModelProfiles(store, { LLM_PROFILES_JSON: JSON.stringify([{ ...preset, label: '更名' }]) })
+    assert.equal(renamed.pinned(originalRef).label, '更名')
+    const changed = openModelProfiles(store, { LLM_PROFILES_JSON: JSON.stringify([{ ...preset, contextChars: 9000 }]) })
+    assert.throws(() => changed.pinned(originalRef), { status: 409 })
+    assert.throws(() => openModelProfiles(store, { LLM_PROFILES_JSON: JSON.stringify([{ ...preset, apiKey: 'test' }]) }), /HTTPS/)
     assert.equal(store.addReference(p.id, { title: '资料', body: '参考文字' }).body, '参考文字')
   } finally { store?.db.close(); await rm(directory, { recursive: true, force: true }) }
 })
