@@ -1,6 +1,7 @@
 import { manuscriptRequestBytes, readManuscript } from './manuscript.mjs'
 
 const states = { running: '拆解中', done: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断' }
+const batchStates = { running: '正在排队拆解', paused: '已暂停', done: '已完成', cancelled: '已取消' }
 const node = (tag, text) => {
   const element = document.createElement(tag)
   if (text !== undefined) element.textContent = text
@@ -20,6 +21,7 @@ const status = () => {
 export function referenceNovelWorkspace({ api, dialog, field, actionButton, uuid, isCurrent, modelEnabled, installSkill }) {
   const root = pid => '/projects/' + pid + '/reference-novels'
   const jobPath = (pid, id) => '/projects/' + pid + '/reference-analysis/' + id
+  const batchPath = (pid, id) => '/projects/' + pid + '/reference-batches/' + id
   const open = element => element.isConnected && element.closest('dialog')?.open
   const back = (pid, book) => actionButton('返回参考小说', () => book ? showBook(pid, book.id) : list(pid))
   const positions = (first, last) => first === last ? '位置 ' + first : '位置 ' + first + '–' + last
@@ -111,10 +113,14 @@ export function referenceNovelWorkspace({ api, dialog, field, actionButton, uuid
     const controls = node('div')
     controls.className = 'tools'
     controls.append(back(pid))
+    if (book.batch) controls.append(actionButton('查看整书拆解', () => showBatch(pid, book, book.batch.id)))
     if (modelEnabled()) {
       const synthesize = actionButton('整书归纳', () => plan(pid, book, 1, 'synthesis'))
       synthesize.disabled = book.coverage.next !== null
       controls.append(actionButton('选择范围拆解', () => plan(pid, book, Number(chapter.value))), synthesize)
+      if (book.coverage.next !== null && !['running', 'paused'].includes(book.batch?.status)) {
+        controls.append(actionButton('整书自动拆解', () => planBatch(pid, book)))
+      }
     }
     const progress = node('p', '已拆解 ' + book.coverage.completed + ' / ' + book.chapter_count + ' 节' +
       (book.coverage.next === null ? '' : ' · 下一未拆解位置 ' + book.coverage.next))
@@ -125,6 +131,92 @@ export function referenceNovelWorkspace({ api, dialog, field, actionButton, uuid
       () => showJob(pid, book, job.id))))
     if (!book.jobs.length) history.append(node('p', '尚无拆解记录。'))
     dialog(book.title, [controls, progress, chapterControls, node('h3', '拆解记录'), history])
+  }
+
+  function planBatch(pid, book) {
+    const [chunkLabel, chunk] = field('每次模型请求最多处理几节', { type: 'number', min: 1, max: 20, value: 5 })
+    const guidance = node('textarea')
+    guidance.rows = 3
+    guidance.maxLength = 2000
+    const feedback = status()
+    let pending
+    dialog('整书自动拆解', [
+      node('p', '还剩 ' + (book.chapter_count - book.coverage.completed) + ' 节未拆解。启动后会将未拆解章节的节选依次发送给当前模型。'),
+      chunkLabel, label('本次研究重点', guidance), feedback, back(pid, book),
+    ], async () => {
+      if (!isCurrent(pid)) return
+      const input = { chunkSize: chunk.valueAsNumber, guidance: guidance.value.trim() }
+      const signature = JSON.stringify(input)
+      if (pending && pending.signature !== signature) {
+        feedback.textContent = '上次提交结果待核对，请按原设置重试或返回书架查看。'
+        return
+      }
+      pending ??= { signature, id: uuid() }
+      try {
+        const batch = await api(root(pid) + '/' + book.id + '/batch', 'POST', { ...input, mutationId: pending.id })
+        if (open(feedback)) await showBatch(pid, book, batch.id, batch)
+      } catch (error) {
+        if (error.status && error.status < 500) pending = undefined
+        feedback.textContent = error.message
+      }
+    }, '开始整书拆解')
+  }
+
+  async function showBatch(pid, book, id, loaded) {
+    const path = batchPath(pid, id)
+    const batch = loaded ?? await api(path)
+    if (!isCurrent(pid)) return
+    const feedback = status()
+    const warning = status()
+    const summary = node('p')
+    const report = node('div')
+    const controls = node('div')
+    controls.className = 'tools'
+    const pause = actionButton('暂停整书拆解', () => change('pause'))
+    const resume = actionButton('继续整书拆解', () => change('resume'))
+    const cancel = actionButton('取消整书拆解', () => change('cancel'))
+    const synthesize = actionButton('整书归纳', () => plan(pid, book, 1, 'synthesis'))
+    controls.append(pause, resume, cancel, synthesize, back(pid, book))
+    let sequence = 0
+    let timer
+    dialog(book.title + ' · 整书拆解', [feedback, summary, warning, report, controls])
+    render(batch)
+
+    function render(current) {
+      feedback.textContent = batchStates[current.status] + ' · 已拆解 ' + current.completed + ' / ' + current.chapter_count + ' 节'
+      summary.textContent = current.next ? '下一未拆解位置 ' + current.next : ''
+      warning.textContent = current.error || ''
+      pause.hidden = current.status !== 'running'
+      resume.hidden = current.status !== 'paused' || !modelEnabled()
+      resume.disabled = current.job?.status === 'running'
+      cancel.hidden = !['running', 'paused'].includes(current.status)
+      synthesize.hidden = current.status !== 'done' || !modelEnabled()
+      report.replaceChildren()
+      if (current.job) report.append(actionButton(jobLabel(current.job) + ' · ' + states[current.job.status],
+        () => showJob(pid, book, current.job.id, undefined, id)))
+      clearTimeout(timer)
+      if (current.status === 'running' || current.job?.status === 'running') timer = setTimeout(() => refresh(), 1000)
+    }
+
+    async function refresh(action) {
+      clearTimeout(timer)
+      const current = ++sequence
+      if (!open(feedback) || !isCurrent(pid)) return
+      try {
+        const updated = await api(action ? path + '/' + action : path, action ? 'POST' : 'GET')
+        if (current === sequence && open(feedback)) render(updated)
+      } catch (error) {
+        if (current !== sequence || !open(feedback)) return
+        warning.textContent = error.message
+        timer = setTimeout(() => refresh(), 3000)
+      }
+    }
+
+    async function change(action) {
+      pause.disabled = resume.disabled = cancel.disabled = true
+      await refresh(action)
+      pause.disabled = cancel.disabled = false
+    }
   }
 
   function plan(pid, book, firstPosition, mode = 'range') {
@@ -178,7 +270,7 @@ export function referenceNovelWorkspace({ api, dialog, field, actionButton, uuid
     }, mode === 'synthesis' ? '开始归纳' : '开始拆解')
   }
 
-  async function showJob(pid, book, id, loaded) {
+  async function showJob(pid, book, id, loaded, batchId) {
     const path = jobPath(pid, id)
     const job = loaded ?? await api(path)
     if (!isCurrent(pid)) return
@@ -189,7 +281,8 @@ export function referenceNovelWorkspace({ api, dialog, field, actionButton, uuid
       try { await api(path + '/cancel', 'POST') }
       catch (error) { feedback.textContent = error.message; cancel.disabled = false }
     })
-    dialog(book.title + ' · ' + jobLabel(job), [back(pid, book), feedback, cancel, result])
+    const returnButton = batchId ? actionButton('返回整书拆解', () => showBatch(pid, book, batchId)) : back(pid, book)
+    dialog(book.title + ' · ' + jobLabel(job), [returnButton, feedback, cancel, result])
     render(job)
 
     function render(current) {

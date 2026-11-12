@@ -6,7 +6,7 @@ import { manuscriptChapterLimit } from './public/manuscript.mjs'
 import { schemaVersion } from './version.mjs'
 import { novelGoals } from './public/novel-goals.mjs'
 import { architectureSections } from './public/architecture.mjs'
-import { openReferenceNovels, referenceNovelSchema } from './reference-novels.mjs'
+import { openReferenceNovels, referenceBatchSchema, referenceNovelSchema } from './reference-novels.mjs'
 import { characterContinuity, continuitySchema } from './character-continuity.mjs'
 import { desktopContinuity, desktopContinuitySchema } from './desktop-continuity.mjs'
 import { novelProgress } from './novel-progress.mjs'
@@ -275,9 +275,18 @@ export function openStore(directory) {
       COMMIT;
     `)
   }
+  if (version < 17) {
+    db.exec(`
+      BEGIN IMMEDIATE;
+      ${referenceBatchSchema}
+      PRAGMA user_version=17;
+      COMMIT;
+    `)
+  }
   db.prepare("UPDATE runs SET status='interrupted',error='服务重启，已保留收到的内容' WHERE status='running'").run()
   db.prepare("UPDATE writing_batches SET status='paused',error='服务重启，待手动继续' WHERE status='running'").run()
   db.prepare("UPDATE reference_analyses SET status='interrupted',error='服务重启，已保留收到的内容' WHERE status='running'").run()
+  db.prepare("UPDATE reference_batches SET status='paused',error='服务重启，待手动继续' WHERE status='running'").run()
   const get = (sql, ...args) => db.prepare(sql).get(...args)
   const all = (sql, ...args) => db.prepare(sql).all(...args)
   const run = (sql, ...args) => db.prepare(sql).run(...args)
@@ -767,7 +776,7 @@ export function openStore(directory) {
 
   function writingAvailable() {
     if (get("SELECT id FROM runs WHERE status='running'") || get("SELECT id FROM writing_batches WHERE status='running'") ||
-        get("SELECT id FROM reference_analyses WHERE status='running'")) {
+        get("SELECT id FROM reference_analyses WHERE status='running'") || get("SELECT id FROM reference_batches WHERE status='running'")) {
       throw new ApiError(409, '已有生成任务正在运行')
     }
   }

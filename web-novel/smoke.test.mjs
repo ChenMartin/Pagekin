@@ -123,6 +123,7 @@ test('novel workflow through HTTP across devices, generation, export and restart
   let upstreamCalls = 0
   let embeddingCalls = 0
   let lastPrompt = ''
+  const referenceRanges = []
   const batchPrompts = []
   const revisedProse = '保留开场\n船已离港。\n\n雾从海面升起。\n灯塔整夜发亮。\n'
   const reviewIssue = { title: '补足场景动作', severity: 'major', quote: '电脑上的稿', reason: '场景过于简略', suggestion: '补写登船动作' }
@@ -172,6 +173,7 @@ test('novel workflow through HTTP across devices, generation, export and restart
       return
     }
     let output = '候选正文'
+    let holdReference = false
     if (instruction.includes('你是小说研究助手')) {
       const chapters = [...lastPrompt.matchAll(/【位置 (\d+) · /g)].map(([, position]) => ({
         position: Number(position), summary: '人物遇到选择', blueprint: '用后果推动转折',
@@ -179,6 +181,13 @@ test('novel workflow through HTTP across devices, generation, export and restart
       output = JSON.stringify({ structure: '因果推进', style: '短句交替', constraints: '用具体动作表现犹豫。', chapters })
       if (lastPrompt.includes('缺章演练')) output = JSON.stringify({ structure: '缺章', style: '短句', constraints: '使用动作', chapters: [] })
       if (lastPrompt.includes('【整书归纳】')) output = JSON.stringify({ structure: '首尾呼应', style: '短句交替', constraints: '用场景后果驱动结构。' })
+      if (lastPrompt.includes('整书队列回归')) {
+        const positions = chapters.map(row => row.position)
+        referenceRanges.push(positions)
+        const attempts = referenceRanges.filter(row => row[0] === 3).length
+        if (positions[0] === 3 && attempts === 1) output = '{}'
+        holdReference = positions[0] === 3 && [2, 3].includes(attempts)
+      }
     }
     if (instruction.includes('生成小说设定与架构')) output = '## 架构候选\n海港与失踪水手'
     if (instruction.includes('生成当前人物卡')) output = '## 人物候选\n希望找到水手'
@@ -200,7 +209,7 @@ test('novel workflow through HTTP across devices, generation, export and restart
       ] }) + '\n```'
     }
     res.write('data: ' + JSON.stringify({ choices: [{ delta: { content: output } }] }) + '\n\n')
-    if (lastPrompt.includes('hold')) return
+    if (lastPrompt.includes('hold') || holdReference) return
     res.end('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n')
   })
   upstream.listen(0, '127.0.0.1')
@@ -888,6 +897,67 @@ test('novel workflow through HTTP across devices, generation, export and restart
     assert.deepEqual(restoredSynthesisJob.report, synthesisReport)
     assert.deepEqual(restoredSynthesisJob.sources, [restoredJob.id])
 
+    const queueBook = (await request(referencePath, { method: 'POST', status: 201, value: {
+      mutationId: randomUUID(), title: '六节参考书',
+      chapters: Array.from({ length: 6 }, (_, index) => ({ title: '样例 ' + (index + 1), body: '参考正文 ' + (index + 1) })),
+    } })).result
+    const queuePath = referencePath + '/' + queueBook.id
+    for (const position of [2, 5]) {
+      const job = (await request(queuePath + '/analyze', { method: 'POST', status: 202,
+        value: { first: position, last: position, mutationId: randomUUID() } })).result
+      await awaitRun(analysisPath + job.id, row => row.status === 'done')
+    }
+    const queueInput = { mutationId: randomUUID(), chunkSize: 3, guidance: '整书队列回归' }
+    const autoQueue = (await request(queuePath + '/batch', { method: 'POST', value: queueInput, status: 202 })).result
+    const autoPath = projectPath + '/reference-batches/' + autoQueue.id
+    assert.equal((await request(queuePath + '/batch', { method: 'POST', value: queueInput, status: 202 })).result.id, autoQueue.id)
+    await request(queuePath + '/batch', { method: 'POST', value: { ...queueInput, mutationId: randomUUID() }, status: 409 })
+    await request('/api/projects/' + second.id + '/reference-batches/' + autoQueue.id, { status: 404 })
+    const failedQueue = await awaitRun(autoPath, row => row.status === 'paused' && row.job?.status === 'failed')
+    assert.match(failedQueue.error, /缺少有效结构/)
+    assert.equal(failedQueue.completed, 3)
+    assert.equal(failedQueue.next, 3)
+    await request(autoPath + '/resume', { method: 'POST' })
+    const heldQueue = await awaitRun(autoPath, row => row.status === 'running' && row.job?.status === 'running')
+    await awaitRun(analysisPath + heldQueue.job.id, row => Boolean(row.output))
+    await request(queuePath + '/analyze', { method: 'POST', value: { first: 3, last: 3, mutationId: randomUUID() }, status: 409 })
+    await request(autoPath + '/pause', { method: 'POST', cookie: b })
+    await awaitRun(autoPath, row => row.status === 'paused' && row.job?.status === 'interrupted')
+    await request(autoPath + '/resume', { method: 'POST' })
+    const queueBeforeRestart = await awaitRun(autoPath, row => row.job?.status === 'running')
+    await awaitRun(analysisPath + queueBeforeRestart.job.id, row => Boolean(row.output))
+    const activeBackup = (await request(projectPath + '/backup')).result
+    const copiedQueueProject = (await request('/api/import', { method: 'POST', value: activeBackup, status: 201 })).result
+    const copiedQueuePath = '/api/projects/' + copiedQueueProject.id
+    const copiedQueueBook = (await request(copiedQueuePath + '/reference-novels')).result.find(row => row.title === queueBook.title)
+    const copiedQueueDetail = (await request(copiedQueuePath + '/reference-novels/' + copiedQueueBook.id)).result
+    const copiedBatch = (await request(copiedQueuePath + '/reference-batches/' + copiedQueueDetail.batch.id)).result
+    assert.equal(copiedBatch.status, 'paused')
+    assert.equal(copiedBatch.job.status, 'interrupted')
+    assert.equal(copiedBatch.next, 3)
+    await stop(server)
+    server = await launch(restoreDir, upstream.address().port)
+    const restartedQueue = (await request(autoPath)).result
+    assert.equal(restartedQueue.status, 'paused')
+    assert.equal(restartedQueue.job.status, 'interrupted')
+    await request(autoPath + '/resume', { method: 'POST' })
+    const finishedQueue = await awaitRun(autoPath, row => row.status === 'done')
+    assert.equal(finishedQueue.completed, 6)
+    assert.equal(finishedQueue.next, null)
+    assert.deepEqual(referenceRanges, [[1], [3, 4], [3, 4], [3, 4], [3, 4], [6]])
+    assert.ok((await request(queuePath + '/context', { method: 'POST', value: { mode: 'synthesis' } })).result.messages.length)
+    await request(queuePath + '/batch', { method: 'POST', value: { ...queueInput, mutationId: randomUUID() }, status: 422 })
+    const copiedAutoPath = copiedQueuePath + '/reference-batches/' + copiedBatch.id
+    assert.equal((await request(copiedAutoPath + '/cancel', { method: 'POST' })).result.status, 'cancelled')
+    const cancelQueue = (await request(copiedQueuePath + '/reference-novels/' + copiedQueueBook.id + '/batch', {
+      method: 'POST', status: 202, value: { mutationId: randomUUID(), chunkSize: 3, guidance: 'hold' },
+    })).result
+    const cancelQueuePath = copiedQueuePath + '/reference-batches/' + cancelQueue.id
+    await awaitRun(copiedQueuePath + '/reference-analysis/' + cancelQueue.job.id, row => Boolean(row.output))
+    await request(cancelQueuePath + '/cancel', { method: 'POST' })
+    const cancelledQueue = await awaitRun(cancelQueuePath, row => row.status === 'cancelled' && row.job?.status === 'cancelled')
+    assert.equal(cancelledQueue.completed, 3)
+
     const continuityPath = projectPath + '/continuity/' + person.id
     const partner = await createPlanDoc({ kind: 'character', title: '领航员', body: '人物关系测试对象' })
     const firstState = { chapter: 0, finalRev: 0, baseRev: 0, state: { location: '开篇在北岸' },
@@ -1081,7 +1151,7 @@ test('opening an existing Web database migrates v1 and keeps chapter data', asyn
     store.db.exec(`
       DROP TABLE desktop_character_events;
       DROP TABLE character_continuity;
-      DROP TABLE reference_analyses; DROP TABLE reference_novel_chapters; DROP TABLE reference_novels;
+      DROP TABLE reference_batches; DROP TABLE reference_analyses; DROP TABLE reference_novel_chapters; DROP TABLE reference_novels;
       DROP TABLE project_goals;
       DROP TABLE screenplay_receipts; DROP TABLE screenplay_history; DROP TABLE screenplay_episodes; DROP TABLE screenplay_adaptations;
       DROP TABLE writing_skill_profiles; DROP TABLE writing_skills;

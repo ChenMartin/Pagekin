@@ -22,6 +22,19 @@ export const referenceNovelSchema = `
   CREATE UNIQUE INDEX reference_analyses_active ON reference_analyses(status) WHERE status='running';
 `
 
+export const referenceBatchSchema = `
+  CREATE TABLE reference_batches (
+    id TEXT PRIMARY KEY, novel_id TEXT NOT NULL REFERENCES reference_novels(id),
+    chunk_size INTEGER NOT NULL CHECK(chunk_size BETWEEN 1 AND 20),
+    guidance TEXT NOT NULL, created TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('running','paused','done','cancelled')),
+    job_id TEXT REFERENCES reference_analyses(id), error TEXT NOT NULL DEFAULT ''
+  );
+  CREATE INDEX reference_batches_novel ON reference_batches(novel_id);
+  CREATE UNIQUE INDEX reference_batches_open ON reference_batches(novel_id) WHERE status IN ('running','paused');
+  CREATE UNIQUE INDEX reference_batches_running ON reference_batches(status) WHERE status='running';
+`
+
 const maxBooks = 24
 const maxAnalyses = 500
 const maxRange = 20
@@ -84,6 +97,8 @@ function parseReport(output, first, last, mode) {
 export function openReferenceNovels({ get, all, run, tx, hash, now, writingAvailable }) {
   const chapterRows = id => all('SELECT position,number,title,body FROM reference_novel_chapters WHERE novel_id=? ORDER BY position', id)
   const bookRows = pid => all('SELECT id,title,chapter_count,created FROM reference_novels WHERE project_id=? ORDER BY created DESC,id', pid)
+  const jobList = id => all('SELECT id,first,last,status,error,created,mode FROM reference_analyses WHERE novel_id=? ORDER BY rowid DESC', id)
+  const latestBatch = id => get('SELECT * FROM reference_batches WHERE novel_id=? ORDER BY rowid DESC LIMIT 1', id)
 
   function book(pid, id) {
     const row = get('SELECT * FROM reference_novels WHERE project_id=? AND id=?', pid, id)
@@ -140,9 +155,11 @@ export function openReferenceNovels({ get, all, run, tx, hash, now, writingAvail
   function detail(pid, id) {
     const { fingerprint, project_id, ...row } = book(pid, id)
     const chapters = all('SELECT position,number,title,length(body) characters FROM reference_novel_chapters WHERE novel_id=? ORDER BY position', id)
-    const jobs = all('SELECT id,first,last,status,error,created,mode FROM reference_analyses WHERE novel_id=? ORDER BY rowid DESC', id)
+    const jobs = jobList(id)
     const coverage = sourcesFor(jobs, row.chapter_count)
-    return { ...row, chapters, jobs, coverage: { completed: coverage.filter(Boolean).length,
+    const batch = latestBatch(id)
+    return { ...row, chapters, jobs, batch: batch ? { id: batch.id, status: batch.status } : null,
+      coverage: { completed: coverage.filter(Boolean).length,
       next: coverage.findIndex(source => !source) + 1 || null } }
   }
 
@@ -226,6 +243,15 @@ export function openReferenceNovels({ get, all, run, tx, hash, now, writingAvail
     return buildInput(source, inputFor(source, value), limit)
   }
 
+  function insertAnalysis(id, jobId, input, prepared) {
+    if (get('SELECT count(*) n FROM reference_analyses WHERE novel_id=?', id).n >= maxAnalyses) {
+      throw new ApiError(422, '此参考小说的拆解记录已达上限')
+    }
+    const { first, last, mode, guidance } = input
+    run("INSERT INTO reference_analyses (id,novel_id,first,last,guidance,created,status,mode,sources) VALUES (?,?,?,?,?,?,'running',?,?)",
+      jobId, id, first, last, guidance, now(), mode, JSON.stringify(prepared.sources))
+  }
+
   function start(pid, id, value, limit) {
     const jobId = identifier(object(value).mutationId)
     return tx(() => {
@@ -240,11 +266,9 @@ export function openReferenceNovels({ get, all, run, tx, hash, now, writingAvail
         return { job: analysis(pid, jobId) }
       }
       writingAvailable()
-      if (get('SELECT count(*) n FROM reference_analyses WHERE novel_id=?', id).n >= maxAnalyses) throw new ApiError(422, '此参考小说的拆解记录已达上限')
-      const { sources, messages } = buildInput(source, input, limit)
-      run("INSERT INTO reference_analyses (id,novel_id,first,last,guidance,created,status,mode,sources) VALUES (?,?,?,?,?,?,'running',?,?)",
-        jobId, id, first, last, guidance, now(), mode, JSON.stringify(sources))
-      return { job: analysis(pid, jobId), messages }
+      const prepared = buildInput(source, input, limit)
+      insertAnalysis(id, jobId, input, prepared)
+      return { job: analysis(pid, jobId), messages: prepared.messages }
     })
   }
 
@@ -255,15 +279,115 @@ export function openReferenceNovels({ get, all, run, tx, hash, now, writingAvail
       status = 'failed'
       error = '模型结果缺少有效结构或章节位置，已保留原输出'
     }
-    return run("UPDATE reference_analyses SET output=?,status=?,error=? WHERE id=? AND status='running'", output, status, error, id)
+    run("UPDATE reference_analyses SET output=?,status=?,error=? WHERE id=? AND status='running'", output, status, error, id)
+    return status
+  }
+
+  function batchOptions(value) {
+    object(value)
+    const { chunkSize } = value
+    if (!Number.isInteger(chunkSize) || chunkSize < 1 || chunkSize > maxRange) throw new ApiError(400, '每批请选择 1–20 节')
+    return { chunkSize, guidance: string(value.guidance ?? '', 2000).trim() }
+  }
+
+  function batch(pid, id) {
+    const row = get(`SELECT b.*,n.chapter_count FROM reference_batches b JOIN reference_novels n ON n.id=b.novel_id
+      WHERE n.project_id=? AND b.id=?`, pid, id)
+    if (!row) throw new ApiError(404, '整书拆解任务不存在')
+    const jobs = jobList(row.novel_id)
+    const coverage = sourcesFor(jobs, row.chapter_count)
+    return { ...row, completed: coverage.filter(Boolean).length, next: coverage.findIndex(id => !id) + 1 || null,
+      job: jobs.find(job => job.id === row.job_id) ?? null }
+  }
+
+  function startBatch(pid, id, value) {
+    const batchId = identifier(object(value).mutationId)
+    const { chunkSize, guidance } = batchOptions(value)
+    return tx(() => {
+      const source = book(pid, id)
+      const existing = get('SELECT * FROM reference_batches WHERE id=?', batchId)
+      if (existing) {
+        if (existing.novel_id !== id || existing.chunk_size !== chunkSize || existing.guidance !== guidance) {
+          throw new ApiError(409, '整书拆解编号已被使用')
+        }
+        return batch(pid, batchId)
+      }
+      if (get("SELECT 1 FROM reference_batches WHERE novel_id=? AND status IN ('running','paused')", id)) {
+        throw new ApiError(409, '此参考小说已有未结束的整书拆解')
+      }
+      if (sourcesFor(jobList(id), source.chapter_count).every(Boolean)) throw new ApiError(422, '全部位置已有拆解报告')
+      writingAvailable()
+      run("INSERT INTO reference_batches (id,novel_id,chunk_size,guidance,created,status) VALUES (?,?,?,?,?,'running')",
+        batchId, id, chunkSize, guidance, now())
+      return batch(pid, batchId)
+    })
+  }
+
+  function changeBatch(pid, id, action) {
+    return tx(() => {
+      const current = batch(pid, id)
+      if (action === 'resume' && current.status === 'paused') {
+        writingAvailable()
+        run("UPDATE reference_batches SET status='running',error='' WHERE id=?", id)
+      }
+      if (action === 'pause' && current.status === 'running') pauseBatch(id)
+      if (action === 'cancel' && ['running', 'paused'].includes(current.status)) {
+        run("UPDATE reference_batches SET status='cancelled',error='' WHERE id=?", id)
+      }
+      return batch(pid, id)
+    })
+  }
+
+  function pauseBatch(id, error = '') {
+    run("UPDATE reference_batches SET status='paused',error=? WHERE id=? AND status='running'", error, id)
+  }
+
+  function nextBatch(id, limit) {
+    return tx(() => {
+      const row = get("SELECT * FROM reference_batches WHERE id=? AND status='running'", id)
+      if (!row) return null
+      const source = get('SELECT * FROM reference_novels WHERE id=?', row.novel_id)
+      const coverage = sourcesFor(jobList(source.id), source.chapter_count)
+      const first = coverage.findIndex(id => !id) + 1
+      if (!first) {
+        run("UPDATE reference_batches SET status='done',error='' WHERE id=?", id)
+        return null
+      }
+      let last = first
+      while (last < source.chapter_count && last - first + 1 < row.chunk_size && !coverage[last]) last++
+      let prepared, input
+      try {
+        while (!prepared) {
+          input = { first, last, mode: 'range', guidance: row.guidance }
+          try { prepared = buildInput(source, input, limit) }
+          catch (error) {
+            if (!(error instanceof ApiError) || error.status !== 422 || first === last) throw error
+            last = first + Math.floor((last - first) / 2)
+          }
+        }
+        const jobId = randomUUID()
+        insertAnalysis(source.id, jobId, input, prepared)
+        run('UPDATE reference_batches SET job_id=? WHERE id=?', jobId, id)
+        return { job: analysis(source.project_id, jobId), messages: prepared.messages }
+      } catch (error) {
+        if (!(error instanceof ApiError)) throw error
+        pauseBatch(id, error.message)
+        return null
+      }
+    })
   }
 
   function backup(pid) {
-    return bookRows(pid).map(row => ({
-      title: row.title, chapters: chapterRows(row.id),
-      analyses: all('SELECT id,first,last,guidance,status,output,error,created,mode,sources FROM reference_analyses WHERE novel_id=? ORDER BY rowid', row.id)
-        .map(item => ({ ...item, sources: JSON.parse(item.sources) })),
-    }))
+    return bookRows(pid).map(row => {
+      const batch = latestBatch(row.id)
+      return {
+        title: row.title, chapters: chapterRows(row.id),
+        analyses: all('SELECT id,first,last,guidance,status,output,error,created,mode,sources FROM reference_analyses WHERE novel_id=? ORDER BY rowid', row.id)
+          .map(item => ({ ...item, sources: JSON.parse(item.sources) })),
+        ...(batch ? { batch: { chunkSize: batch.chunk_size, guidance: batch.guidance, created: batch.created,
+          status: batch.status, jobId: batch.job_id, error: batch.error } } : {}),
+      }
+    })
   }
 
   function importBackup(pid, data) {
@@ -295,8 +419,22 @@ export function openReferenceNovels({ get, all, run, tx, hash, now, writingAvail
           JSON.stringify(sources.map(entry => entry.id)))
         restored.set(previousId, { id: nextId, mode, first, last, status })
       }
+      if (source.batch !== undefined) {
+        const batch = object(source.batch)
+        const { chunkSize, guidance } = batchOptions(batch)
+        const job = batch.jobId === null ? null : restored.get(batch.jobId)
+        if (!['running', 'paused', 'done', 'cancelled'].includes(batch.status) || (batch.jobId !== null && job?.mode !== 'range') ||
+            (batch.status === 'done' && sourcesFor([...restored.values()].reverse(), chapter_count).some(id => !id))) {
+          throw new ApiError(400, '备份中的整书拆解任务无效')
+        }
+        const status = batch.status === 'running' ? 'paused' : batch.status
+        const error = batch.status === 'running' ? '备份已恢复，待手动继续' : string(batch.error, 500)
+        run('INSERT INTO reference_batches (id,novel_id,chunk_size,guidance,created,status,job_id,error) VALUES (?,?,?,?,?,?,?,?)',
+          randomUUID(), id, chunkSize, guidance, string(batch.created, 50, true), status, job?.id ?? null, error)
+      }
     }
   }
 
-  return { list: bookRows, detail, readChapter, importText, prepare, start, analysis, update, backup, importBackup }
+  return { list: bookRows, detail, readChapter, importText, prepare, start, analysis, update,
+    batch, startBatch, changeBatch, pauseBatch, nextBatch, backup, importBackup }
 }

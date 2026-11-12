@@ -341,7 +341,7 @@ async function generate(job, messages, prefix = '', reference = false) {
     clearTimeout(timeout)
     active.delete(activeKey)
     const output = visible().slice(0, 180_000)
-    if (reference) storage.referenceNovels.update(job.id, { status, error, output })
+    if (reference) status = storage.referenceNovels.update(job.id, { status, error, output })
     else storage.run('UPDATE runs SET status=?,error=?,output=? WHERE id=?', status, error, output, job.id)
   }
   return status
@@ -366,6 +366,29 @@ function runBatch(id) {
     try { storage.pauseBatch(id, '批量任务处理失败，请检查存储后继续') }
     catch { console.error('无法记录批次状态') }
   }).finally(() => batchWorkers.delete(id))
+}
+
+function runReferenceBatch(pid, id) {
+  const key = 'reference:' + id
+  if (batchWorkers.has(key) || stopping) return
+  batchWorkers.add(key)
+  const references = storage.referenceNovels
+  const work = async () => {
+    while (!stopping) {
+      const next = references.nextBatch(id, contextLimit)
+      if (!next) return
+      if (await generate(next.job, next.messages, '', true) !== 'done') {
+        const { error } = references.analysis(pid, next.job.id)
+        references.pauseBatch(id, error || '本区间未完成，可继续重试')
+        return
+      }
+    }
+  }
+  void work().catch(error => {
+    console.error('整书拆解执行失败：', error.code ?? error.name)
+    try { references.pauseBatch(id, '任务处理失败，请检查存储后继续') }
+    catch { console.error('无法记录整书拆解状态') }
+  }).finally(() => batchWorkers.delete(key))
 }
 
 async function route(req, res) {
@@ -543,6 +566,24 @@ async function route(req, res) {
       const { job, messages } = references.start(pid, id, await body(req, 16_384), contextLimit)
       if (messages) void generate(job, messages, '', true).catch(() => console.error('无法记录参考小说拆解结果'))
       return json(res, job, 202)
+    }
+    if (id && method === 'POST' && action === 'batch') {
+      if (!endpoint) throw new ApiError(422, '管理员尚未配置模型')
+      const batch = references.startBatch(pid, id, await body(req, 16_384))
+      if (batch.status === 'running') runReferenceBatch(pid, batch.id)
+      return json(res, references.batch(pid, batch.id), 202)
+    }
+  }
+  if (resource === 'reference-batches' && id) {
+    if (method === 'GET' && action === undefined) return json(res, references.batch(pid, id))
+    if (method === 'POST' && ['pause', 'resume', 'cancel'].includes(action)) {
+      if (action === 'resume' && !endpoint) throw new ApiError(422, '管理员尚未配置模型')
+      const batch = references.changeBatch(pid, id, action)
+      if (action === 'resume' && batch.status === 'running') runReferenceBatch(pid, id)
+      if (['pause', 'cancel'].includes(action) && batch.job?.status === 'running') {
+        active.get('reference:' + batch.job.id)?.abort(action === 'pause' ? 'paused' : 'cancelled')
+      }
+      return json(res, references.batch(pid, id))
     }
   }
   if (resource === 'reference-analysis' && id) {

@@ -36,7 +36,9 @@ const modelMock = createServer(async (req, res) => {
     if (instruction.includes('本次只生成「世界观」模块')) content = '## 世界规则\n灯塔每月熄灭一天。'
     if (instruction.includes('你是小说研究助手')) content = JSON.stringify({
       structure: '开篇先交代行动目标', style: '用动作表现人物', constraints: '用场景后果推动下一场冲突。',
-      chapters: [{ position: 1, summary: '主角看见轮渡', blueprint: '登船后呈现阻力' }],
+      chapters: [...payload.messages.at(-1).content.matchAll(/【位置 (\d+) · /g)].map(([, position]) => ({
+        position: Number(position), summary: '主角看见轮渡', blueprint: '登船后呈现阻力',
+      })),
     })
     if (payload.messages.at(-1).content.includes('【整书归纳】')) content = JSON.stringify({
       structure: '首尾呼应', style: '用动作表现人物', constraints: '用场景后果推动下一场冲突。',
@@ -690,7 +692,17 @@ try {
   await until(() => evaluate("document.querySelector('#dialog-body').textContent.includes('预览 3 节')"), 'EPUB reference preview did not display 3 chapters')
   await click('#dialog-submit')
   await until(() => evaluate("document.querySelector('#dialog-title').textContent === '海上样稿' && document.querySelector('#dialog-body select')?.options.length === 3"), 'EPUB did not enter the reference bookshelf')
-  console.log('Browser workflow passed (' + (enhanced ? 'CodeMirror' : 'plain') + '): writing, screenplay, desktop continuity and novel progress')
+  await dialogButton('整书自动拆解')
+  await visible('#dialog-body input[type=number]')
+  await fill('#dialog-body input[type=number]', '2')
+  await click('#dialog-submit')
+  await until(() => evaluate("document.querySelector('#dialog-body').textContent.includes('已完成 · 已拆解 3 / 3 节')"), 'Reference queue did not finish all chapters')
+  await dialogButton('返回参考小说')
+  await dialogButton('查看整书拆解')
+  await until(() => evaluate("document.querySelector('#dialog-body').textContent.includes('已完成 · 已拆解 3 / 3 节')"), 'Reference queue status did not persist')
+  await dialogButton('整书归纳')
+  await until(() => evaluate("document.querySelector('#dialog-title').textContent === '整书归纳'"), 'Reference queue did not lead to synthesis')
+  console.log('Browser workflow passed (' + (enhanced ? 'CodeMirror' : 'plain') + '): novel, screenplay, EPUB and reference batch')
 } finally {
   socket?.close()
   for (const child of [browser, app]) {
