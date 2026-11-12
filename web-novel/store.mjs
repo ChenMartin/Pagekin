@@ -23,6 +23,7 @@ import { ApiError, object, string, revision } from './input.mjs'
 import { screenplayStore } from './screenplay-store.mjs'
 import { openStoryboard, storyboardSchema } from './storyboard.mjs'
 import { mediaSchema, openMediaStore } from './media-store.mjs'
+import { mediaGenerationSchema, openGenerationStore } from './media-generation-store.mjs'
 import { openProduction, productionSchema } from './production-runs.mjs'
 
 export { ApiError, object, string } from './input.mjs'
@@ -339,6 +340,15 @@ export function openStore(directory) {
       COMMIT;
     `)
   }
+  if (version < 24) {
+    db.exec(`
+      BEGIN IMMEDIATE;
+      ${mediaGenerationSchema}
+      PRAGMA user_version=24;
+      COMMIT;
+    `)
+  }
+  db.prepare("UPDATE media_generations SET state='unknown',error='服务在提交期间停止，请核对供应商任务编号' WHERE state='submitting'").run()
   db.prepare("UPDATE media_renders SET status='interrupted',error='服务重启，成片任务已中断' WHERE status='running'").run()
   db.prepare("UPDATE runs SET status='interrupted',error='服务重启，已保留收到的内容' WHERE status='running'").run()
   db.prepare("UPDATE writing_batches SET status='paused',error='服务重启，待手动继续' WHERE status='running'").run()
@@ -364,6 +374,7 @@ export function openStore(directory) {
   const screenplay = screenplayStore({ get, all, run, tx, hash, now })
   const storyboard = openStoryboard({ get, all, run, tx, hash, now, screenplay })
   const media = openMediaStore({ get, all, run, tx, hash, now, screenplay, storyboard })
+  const generations = openGenerationStore({ get, all, run, tx, hash, now, screenplay, media })
   const production = openProduction({ get, all, run, tx, hash, now, screenplay, storyboard, writingAvailable })
   const referenceNovels = openReferenceNovels({ get, all, run, tx, hash, now, writingAvailable })
   const desktopHistory = desktopContinuity({ get, all, run, document })
@@ -1439,7 +1450,7 @@ export function openStore(directory) {
   const threadEvidence = openThreadEvidence({ all, get, run, tx, thread, now,
     finalized: (pid, number) => get(finalizedSelect + ' AND d.number=?', pid, number) })
   return { db, get, all, run, tx, project, document, createProject, renameProject, addDocument, importChapters, eventHead, projectEvents, pruneEvents,
-    screenplay, storyboard, production, architecture, media,
+    screenplay, storyboard, production, architecture, media, generations,
     projectGoals, saveProjectGoals, referenceNovels, continuity, continuityRuns, desktopHistory,
     save, chapters, search, addReference, reference, threads, thread, saveThread, threadEvidence, progress,
     transition, history, restore, getRun, runDetail, startRun, previewRun, continueRun, applyRun, previewPassage, previewRevision, applyRevision, backup, importBackup,

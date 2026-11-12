@@ -7,20 +7,21 @@ import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createReadStream } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { test } from 'node:test'
 import { promisify } from 'node:util'
 import { openStore } from './store.mjs'
 import { backupDatabase, restoreDatabase, verifyMedia } from './maintenance.mjs'
+import { replicateFixture } from './replicate-test-fixture.mjs'
 
 const exec = promisify(execFile)
 const password = 'pagekin-media-smoke-local'
 
-test('real FFmpeg renders trimmed picture and video, narration, Chinese subtitles and a recoverable film', async () => {
+test('real FFmpeg renders a recoverable film and validates mocked provider media end to end', async () => {
   const root = await mkdtemp(join(tmpdir(), 'pagekin-media-smoke-'))
   const data = join(root, 'data')
-  let child, base, cookie
+  let child, base, cookie, provider
   const ffmpeg = args => exec('ffmpeg', ['-nostdin', '-v', 'error', '-filter_threads', '1', '-y', ...args], { timeout: 20_000 })
 
   async function request(path, method = 'GET', value, status = 200, extra = {}) {
@@ -37,22 +38,46 @@ test('real FFmpeg renders trimmed picture and video, narration, Chinese subtitle
     return { bytes, headers: response.headers }
   }
 
-  async function waitJob(path, states) {
+  async function waitJob(path, states, field = 'status') {
     for (let attempt = 0; attempt < 150; attempt++) {
       const job = await request(path)
-      if (states.includes(job.status)) return job
+      if (states.includes(job[field])) return job
       await delay(100)
     }
-    assert.fail('Render did not reach ' + states.join(', '))
+    assert.fail('Task did not reach ' + states.join(', '))
+  }
+
+  async function stopApp() {
+    if (child && child.exitCode === null && child.signalCode === null) {
+      const stopped = once(child, 'exit'); child.kill(); await stopped
+    }
+  }
+
+  async function startApp() {
+    const app = process.env.PAGEKIN_TEST_APP_DIR ? join(process.env.PAGEKIN_TEST_APP_DIR, 'server.mjs') : fileURLToPath(new URL('./server.mjs', import.meta.url))
+    child = spawn(process.execPath, ['--import', pathToFileURL(provider.setup).href, app], { env: { ...process.env, APP_DATA_DIR: data,
+      APP_ORIGIN: '', APP_HOST: '127.0.0.1', PORT: '0', APP_PASSWORD: password, APP_PASSWORD_FILE: '', APP_SECURE_COOKIE: '0',
+      PAGEKIN_MEDIA: '1', WEBDAV_BACKUP_URL: '', REPLICATE_API_TOKEN: 'test-provider-token-only', REPLICATE_API_TOKEN_FILE: '',
+      PAGEKIN_GENERATION_JSON: '',
+    }, stdio: ['ignore', 'pipe', 'inherit'] })
+    const line = await Promise.race([once(child.stdout, 'data').then(([chunk]) => chunk.toString()),
+      once(child, 'exit').then(() => { throw new Error('Media app exited during startup') }), delay(10_000, null, { ref: false })])
+    assert.ok(line)
+    base = 'http://127.0.0.1:' + JSON.parse(line.trim().split('listening on ')[1]).port
   }
 
   try {
     const picture = join(root, 'scene.png'), video = join(root, 'clip.mp4'), audio = join(root, 'voice.wav')
+    const green = join(root, 'candidate.png'), yellow = join(root, 'second.png')
     await Promise.all([
       ffmpeg(['-f', 'lavfi', '-i', 'color=red:s=120x80', '-vf', 'format=rgb24', '-frames:v', '1', '-threads', '1', picture]),
       ffmpeg(['-f', 'lavfi', '-i', 'color=blue:s=160x90:d=2:r=25', '-c:v', 'libx264', '-threads', '1', video]),
       ffmpeg(['-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000', '-t', '1.2', audio]),
+      ...[[green, 'green'], [yellow, 'yellow']].map(([name, color]) => ffmpeg(['-f', 'lavfi', '-i', `color=${color}:s=120x80`,
+        '-vf', 'format=rgb24', '-frames:v', '1', '-threads', '1', name])),
     ])
+    provider = await replicateFixture(root, { image: await readFile(green), second: await readFile(yellow), video: await readFile(video),
+      audio: await readFile(audio), recover: await readFile(yellow) })
     const store = openStore(data)
     let pid, other, episode, board
     try {
@@ -73,14 +98,7 @@ test('real FFmpeg renders trimmed picture and video, narration, Chinese subtitle
       board = store.storyboard.change(pid, episode.id, { mutationId: randomUUID(), action: 'confirm', baseRev: board.rev, scriptRev: episode.rev })
     } finally { store.db.close() }
 
-    const app = process.env.PAGEKIN_TEST_APP_DIR ? join(process.env.PAGEKIN_TEST_APP_DIR, 'server.mjs') : fileURLToPath(new URL('./server.mjs', import.meta.url))
-    child = spawn(process.execPath, [app], { env: { ...process.env, APP_DATA_DIR: data, APP_ORIGIN: '', APP_HOST: '127.0.0.1', PORT: '0',
-      APP_PASSWORD: password, APP_PASSWORD_FILE: '', APP_SECURE_COOKIE: '0', PAGEKIN_MEDIA: '1', WEBDAV_BACKUP_URL: '',
-    }, stdio: ['ignore', 'pipe', 'inherit'] })
-    const line = await Promise.race([once(child.stdout, 'data').then(([chunk]) => chunk.toString()),
-      once(child, 'exit').then(() => { throw new Error('Media app exited during startup') }), delay(10_000, null, { ref: false })])
-    assert.ok(line)
-    base = 'http://127.0.0.1:' + JSON.parse(line.trim().split('listening on ')[1]).port
+    await startApp()
     await request('/session', 'POST', { password })
     assert.equal((await request('/media-capabilities')).available, true)
     const project = '/projects/' + pid
@@ -167,19 +185,88 @@ test('real FFmpeg renders trimmed picture and video, narration, Chinese subtitle
     assert.deepEqual(rebased.clips.map(row => row.assetId), [still.id, footage.id])
     assert.equal((await request(jobPath + '/film')).bytes.length, rendered.bytes.length)
 
+    const capabilities = await request('/media-generation-capabilities')
+    assert.equal(capabilities.available, true)
+    assert.deepEqual(Object.keys(capabilities.models), ['image', 'video', 'speech'])
+    assert.doesNotMatch(JSON.stringify(capabilities), /test-provider-token-only/u)
+    const generate = async (kind, prompt) => {
+      const input = { kind, prompt, boardRev: rebased.boardRev, timelineRev: rebased.rev, shotId: rebased.clips[0].shotId }
+      const preview = await request(episodePath + '/generation-preview', 'POST', input)
+      const value = { ...input, approval: preview.approval, mutationId: randomUUID() }
+      await request(episodePath + '/generations', 'POST', { ...value, prompt: '预览后变更' }, 409)
+      const job = await request(episodePath + '/generations', 'POST', value, 202)
+      const status = project + '/media-generations/' + job.id
+      assert.equal((await request(episodePath + '/generations', 'POST', value, 202)).id, job.id)
+      return { status, preview }
+    }
+    const imageJob = await generate('image', '渡口夜色')
+    assert.equal(imageJob.preview.manifest.input.aspect_ratio, '9:16')
+    assert.equal(imageJob.preview.manifest.input.output_format, 'png')
+    const generated = await waitJob(imageJob.status, ['ready'], 'state')
+    assert.equal(generated.variants.length, 2)
+    assert.equal(provider.submissions(), 1)
+    assert.equal((await request(project + '/media-assets')).length, 3)
+    await request('/projects/' + other + '/media-generations/' + generated.id + '/file?variant=1', 'GET', undefined, 404)
+    const variant = await request(imageJob.status + '/file?variant=1', 'GET', undefined, 206, { Range: 'bytes=0-7' })
+    assert.equal(variant.bytes.length, 8)
+    const added = await request(imageJob.status + '/adopt?variant=1', 'POST', { name: '候选静帧' })
+    assert.equal((await request(imageJob.status + '/adopt?variant=1', 'POST', {})).id, added.id)
+    assert.equal((await request(project + '/media-assets')).length, 4)
+    for (const [kind, prompt, expected] of [['video', '轮船离港', 'video/mp4'], ['speech', '轮船缓缓驶出', 'audio/wav']]) {
+      const job = await generate(kind, prompt)
+      const done = await waitJob(job.status, ['ready'], 'state')
+      assert.equal(done.variants[0].type, expected)
+    }
+
+    const uncertain = await generate('image', '提交结果未知')
+    const unknown = await waitJob(uncertain.status, ['unknown'], 'state')
+    assert.equal(unknown.external_id, null)
+    const match = [...provider.predictions.values()].find(row => row.input.prompt === '提交结果未知')
+    const wrong = [...provider.predictions.keys()][0]
+    await request(uncertain.status + '/link', 'POST', { externalId: wrong }, 422)
+    const beforeLink = provider.submissions()
+    await request(uncertain.status + '/link', 'POST', { externalId: match.id }, 202)
+    assert.equal((await waitJob(uncertain.status, ['ready'], 'state')).external_id, match.id)
+    assert.equal(provider.submissions(), beforeLink)
+
+    const recovery = await generate('image', '回收失败')
+    const interrupted = await waitJob(recovery.status, ['recover'], 'state')
+    const beforeRetry = provider.submissions()
+    await request(recovery.status + '/resume', 'POST', undefined, 202)
+    assert.equal((await waitJob(recovery.status, ['ready'], 'state')).external_id, interrupted.external_id)
+    assert.equal(provider.submissions(), beforeRetry)
+    const unsafe = await generate('image', '安全检查')
+    assert.match((await waitJob(unsafe.status, ['recover'], 'state')).error, /地址不在允许范围/u)
+
+    const waiting = await generate('video', '暂不结束')
+    const waitingState = await waitJob(waiting.status, ['waiting'], 'state')
+    const beforeRestart = provider.submissions()
+    await stopApp()
+    await startApp()
+    assert.equal((await request(waiting.status)).external_id, waitingState.external_id)
+    await request(waiting.status + '/cancel', 'POST', undefined, 202)
+    assert.equal((await waitJob(waiting.status, ['cancelled'], 'state')).external_id, waitingState.external_id)
+    assert.equal(provider.submissions(), beforeRestart)
+    assert.ok(provider.requests.some(row => row.pathname.endsWith(waitingState.external_id + '/cancel')))
+
+    const pending = await generate('video', '快照中暂不结束')
+    const pendingState = await waitJob(pending.status, ['waiting'], 'state')
+
     const snapshot = join(root, 'snapshot.sqlite')
     await backupDatabase(join(data, 'novels.sqlite'), snapshot)
-    assert.deepEqual(await verifyMedia(snapshot, data), { mediaFiles: 4 })
+    assert.deepEqual(await verifyMedia(snapshot, data), { mediaFiles: 6 })
     const recovered = join(root, 'recovered')
     const database = join(recovered, 'novels.sqlite')
     await restoreDatabase(createReadStream(snapshot), database)
     await assert.rejects(verifyMedia(database), /缺失或摘要不匹配/u)
     await cp(join(data, 'media', 'blobs'), join(recovered, 'media', 'blobs'), { recursive: true })
-    assert.deepEqual(await verifyMedia(database), { mediaFiles: 4 })
+    assert.deepEqual(await verifyMedia(database), { mediaFiles: 6 })
+    const recoveredStore = openStore(recovered)
+    try { assert.equal(recoveredStore.generations.detail(pid, pendingState.id).state, 'poll_paused') }
+    finally { recoveredStore.db.close() }
   } finally {
-    if (child && child.exitCode === null && child.signalCode === null) {
-      const stopped = once(child, 'exit'); child.kill(); await stopped
-    }
+    await stopApp()
+    await provider?.close()
     await rm(root, { recursive: true, force: true })
   }
 })

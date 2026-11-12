@@ -28,7 +28,9 @@ export async function verifyMedia(path, directory = dirname(path)) {
   let rows
   try {
     if (!db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='media_assets'").get()) return { mediaFiles: 0 }
-    rows = db.prepare('SELECT sha,bytes FROM media_assets UNION SELECT sha,bytes FROM media_renders WHERE sha IS NOT NULL').all()
+    const candidates = db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='media_generation_variants'").get()
+    rows = db.prepare('SELECT sha,bytes FROM media_assets UNION SELECT sha,bytes FROM media_renders WHERE sha IS NOT NULL' +
+      (candidates ? ' UNION SELECT sha,bytes FROM media_generation_variants' : '')).all()
   } finally { db.close() }
   for (const file of rows) {
     const location = blobPath(directory, file.sha)
@@ -51,10 +53,14 @@ async function stageFile(destination, action) {
   } finally { await rm(stage, { recursive: true, force: true }) }
 }
 
-function clearSessions(path) {
+function clearSessions(path, restoring = false) {
   const db = new DatabaseSync(path, { allowExtension: false })
   try {
     db.exec('PRAGMA trusted_schema=OFF; PRAGMA journal_mode=DELETE; PRAGMA secure_delete=ON; DELETE FROM sessions;')
+    if (restoring && db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='media_generations'").get()) {
+      db.exec(`UPDATE media_generations SET state='unknown',cancel_requested=0,error='从快照恢复，请核对供应商任务' WHERE state IN ('queued','submitting');
+        UPDATE media_generations SET state='poll_paused',cancel_requested=0,error='从快照恢复，请核对后查询原任务' WHERE state='waiting';`)
+    }
   } finally { db.close() }
 }
 
@@ -78,7 +84,7 @@ export async function restoreDatabase(sourceStream, destination) {
   return stageFile(destination, async path => {
     await pipeline(sourceStream, createWriteStream(path, { flags: 'wx', mode: 0o600 }))
     const verified = verifyDatabase(path)
-    clearSessions(path)
+    clearSessions(path, true)
     return verified
   })
 }

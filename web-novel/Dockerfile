@@ -25,6 +25,7 @@ COPY --chown=node:node desktop-character-import.mjs desktop-continuity.mjs novel
 COPY --chown=node:node architecture-store.mjs thread-evidence.mjs ./
 COPY --chown=node:node storyboard.mjs production-runs.mjs ./
 COPY --chown=node:node media-store.mjs media-files.mjs media-render.mjs ./
+COPY --chown=node:node media-generation.mjs media-generation-store.mjs replicate.mjs ./
 COPY --chown=node:node epub-extraction.ts epub-preview-worker.mjs ./
 COPY --chown=node:node public ./public
 COPY --from=editor-build --chown=node:node /build/node_modules ./node_modules

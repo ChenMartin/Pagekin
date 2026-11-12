@@ -20,7 +20,7 @@
 
 候选版之后的开发分支已接入 CodeMirror 6。从源码构建的容器会打包增强编辑器及其许可证，也可通过 `APP_EDITOR=plain` 使用普通编辑器。增强和普通模式均通过 Edge 回归，增强模式覆盖合成中文输入。已发布的 v0.1.0-rc.1 离线镜像仍使用普通编辑器。[小说工作区使用说明](../../../web-novel/README.md)
 
-当前开发分支为 `0.2.0-dev.13`，采用 Web SQLite schema 23。已确认的分镜可进入剪辑时间线，上传画面与配音后导出 MP4 和字幕。 [使用与升级说明](../../../web-novel/README.md)
+当前开发分支为 `0.2.0-dev.14`，采用 Web SQLite schema 24。已确认的分镜可进入剪辑时间线，使用上传或外部生成的画面与配音，导出 MP4 和字幕。 [使用与升级说明](../../../web-novel/README.md)
 
 1. [源码调研与证据](01-source-audit.md)：已确认事实、修正前次结论、改造入口。
 2. [系统设计](02-system-design.md)：后端、数据、任务、安全、NAS 部署。
@@ -33,6 +33,7 @@
 8. [Web 小说阶段任务清单](08-novel-completion-checklist.md)。
 9. [剧本与分镜阶段开发清单](09-screenplay-storyboard-checklist.md)。
 10. [素材与成片阶段开发清单](10-media-render-checklist.md)。
+11. [外部素材生成开发清单](11-media-generation-checklist.md)。
 
 ## 核心决策
 

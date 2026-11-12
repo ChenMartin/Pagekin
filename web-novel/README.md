@@ -1,6 +1,6 @@
 # 书童 Web 小说工作区
 
-把小说工作区部署在 NAS 后，可在电脑、iPad 和手机上打开同一个作品。当前源码版本为 `0.2.0-dev.13`，使用 Web SQLite schema 23。已发布的离线镜像 `v0.2.0-rc.1` 使用 schema 11。离线载入见 [v0.2.0-rc.1 发布说明](RELEASE.md)。
+把小说工作区部署在 NAS 后，可在电脑、iPad 和手机上打开同一个作品。当前源码版本为 `0.2.0-dev.14`，使用 Web SQLite schema 24。已发布的离线镜像 `v0.2.0-rc.1` 使用 schema 11。离线载入见 [v0.2.0-rc.1 发布说明](RELEASE.md)。
 
 | 能力 | 可用操作 |
 | --- | --- |
@@ -12,6 +12,7 @@
 | 运维 | Compose、在线整库快照、WebDAV 定时备份、新数据卷恢复 |
 | 剧本与分镜 | 从小说定稿生成分集提案和剧本候选，逐场建立镜头，确认、复核来源并导出 |
 | 剪辑与成片 | 素材库、画面片段与配音轨、镜头字幕、可取消的后台渲染、MP4 和 SRT |
+| 外部素材生成 | Replicate 图像、视频和配音任务，输入预览、候选回收和人工入库 |
 
 日常写作可直接使用。AI 和语义检索各自配置模型，互不依赖。 [部署与备份](#fnos-部署) · [编辑和写作流程](#保存与-ai) · [资料检索](#参考资料语义检索) · [桌面作品迁移](#从-pagekin-桌面版导入) · [实施进度](https://github.com/ChenMartin/Pagekin/blob/codex/web-novel-fnos/docs/research/nas-web/07-implementation-progress.md)
 
@@ -59,7 +60,7 @@ Compose 默认监听 NAS 宿主机的回环地址。用宿主机上的 HTTPS 反
 
 作品和登录会话存放在 `PAGEKIN_VOLUME` 指定的命名卷，默认名称为 `web-novel_novels`。升级时保留原卷名和 `.env`，避免换目录后连到空库。若已有测试部署，先确认旧容器的实际数据卷名称，再填入 `PAGEKIN_VOLUME`。应用内 JSON 备份适合单部作品，恢复上限为 24 MB。整库备份可在服务运行时生成。
 
-从 `v0.2.0-rc.1` 或较早的开发版升级前，先把当时的整库快照复制到容器外。从同一 Compose 目录重新构建后，服务启动时会自动升级到 schema 23。若需回退，将升级前的快照恢复到独立卷，再启动对应的旧镜像。
+从 `v0.2.0-rc.1` 或较早的开发版升级前，先把当时的整库快照复制到容器外。从同一 Compose 目录重新构建后，服务启动时会自动升级到 schema 24。若需回退，将升级前的快照恢复到独立卷，再启动对应的旧镜像。
 
 ## 整库备份和恢复
 
@@ -264,6 +265,22 @@ PAGEKIN_VOLUME=web-novel_novels_recovered docker compose run --rm --no-deps -T p
 PAGEKIN_VOLUME=web-novel_novels_recovered docker compose run --rm --no-deps -T pagekin node maintenance.mjs verify-media /data/novels.sqlite
 ```
 
+## 外部素材生成
+
+启用 `PAGEKIN_MEDIA=1` 后，在 NAS 的 `.env` 配置 `REPLICATE_API_TOKEN`，或用 `REPLICATE_API_TOKEN_FILE` 指向服务用户可读的只读挂载文件。用 `docker compose up -d --build` 应用配置。默认采用 FLUX Schnell 生成 PNG、MiniMax Video-01 生成 MP4、MiniMax Speech-02 Turbo 生成配音。实际费率由供应商和模型决定。 [图像模型](https://replicate.com/black-forest-labs/flux-schnell/api) · [视频模型](https://replicate.com/minimax/video-01/api) · [配音模型](https://replicate.com/minimax/speech-02-turbo/api)
+
+可以用 `PAGEKIN_GENERATION_JSON` 覆盖模型清单。每个配置包含 `model`，可选 64 位版本号 `version`、文字输入字段 `promptField`、画幅字段 `aspectField`、返回对象里的文件字段 `outputField` 和由标量组成的 `defaults`。只保留需要的类型。预览会显示这些模型参数，API Token 应通过上面的专用变量或文件配置。
+
+```dotenv
+PAGEKIN_GENERATION_JSON='{"image":{"model":"black-forest-labs/flux-schnell","aspectField":"aspect_ratio","defaults":{"output_format":"png","num_outputs":2}}}'
+```
+
+1. 在“剪辑与成片”选一个镜头，打开“AI 素材生成”。图像和视频默认带入镜头提示词或画面描述，配音默认带入当前字幕。文字可先修改，再预览要发送的内容并确认付费生成。任务记录会保存所用模型、分镜和时间线版本。
+2. 成功后，NAS 从供应商文件服务下载 1–4 个候选并检查格式。确认入库前可逐个预览或试听。点击“加入素材库”后，可在时间线里选择这份文件。
+3. 供应商任务号保存后，服务重启会接着查询。取消结果以供应商状态为准。提交回执丢失时，可在供应商后台核对原任务并填入编号。下载失败后点“继续查询并回收”，沿用原任务号。供应商输出有保留期限，成功回收到 NAS 的候选按本地媒体备份。 [Replicate HTTP API](https://replicate.com/docs/reference/http) · [输出保留规则](https://replicate.com/docs/topics/predictions/data-retention/)
+
+从 SQLite 快照恢复时，原先排队或正在提交的生成任务进入待核对，已有供应商编号的任务可手动恢复查询。完整备份包含 SQLite 和 `media/blobs`，可保存已入库素材与待采用候选。
+
 ## 从 Pagekin 桌面版导入
 
 用 Pagekin 桌面版导出作品备份，在 Web 书房点击“恢复备份”并选择 `.ainovel` 文件。支持 Pagekin 原始归档格式 v1 和桌面数据库 schema 7–9。单个归档上限为 48 MB，转换后的作品上限为 24 MB。通过 HTTPS 反向代理访问时，代理的上传限制也要允许对应大小。导入时会检查归档清单、各文件校验值和数据库版本，然后创建独立的 Web 作品。
@@ -296,7 +313,7 @@ EPUB 在 NAS 上解析，预览确认后才保存。提取范围为正文文字�
 
 ## 当前实现范围
 
-当前实现覆盖小说、剧本、分镜，以及上传素材到样片导出。功能和实机验收进度见 [实施进度](https://github.com/ChenMartin/Pagekin/blob/codex/web-novel-fnos/docs/research/nas-web/07-implementation-progress.md)。媒体生成、多轨效果和 3D 导演台见 [小说到成片设计](https://github.com/ChenMartin/Pagekin/blob/codex/web-novel-fnos/docs/research/nas-web/06-novel-to-film.md)。
+当前实现覆盖小说、剧本、分镜、上传和生成素材以及样片导出。功能和实机验收进度见 [实施进度](https://github.com/ChenMartin/Pagekin/blob/codex/web-novel-fnos/docs/research/nas-web/07-implementation-progress.md)。多轨效果和 3D 导演台见 [小说到成片设计](https://github.com/ChenMartin/Pagekin/blob/codex/web-novel-fnos/docs/research/nas-web/06-novel-to-film.md)。
 
 ## 开发与验证
 
@@ -306,6 +323,6 @@ EPUB 在 NAS 上解析，预览确认后才保存。提取范围为正文文字�
 node --test smoke.test.mjs
 ```
 
-安装 FFmpeg 和 ffprobe 后，在仓库的 `web-novel` 运行 `node --test media-smoke.mjs`。测试生成静帧、视频和配音音轨夹具，验证实际 MP4、中文字幕、取消、重试和备份恢复。
+安装 FFmpeg 和 ffprobe 后，在仓库的 `web-novel` 运行 `node --test media-smoke.mjs`。测试生成真实媒体夹具，验证实际 MP4、中文字幕、取消、重试和备份恢复，并用本机模拟供应商验证三类生成和人工采用。
 
 可选浏览器回归检查。将 `BROWSER_EXE` 指向 Edge 或 Chromium 的可执行文件，再运行 `node browser-smoke.mjs`。可设置 `PAGEKIN_TEST_EDITOR=enhanced` 或 `plain` 强制检查对应模式。增强模式测试包括浏览器合成中文输入事件。测试使用独立的临时浏览器配置和 SQLite 数据库。

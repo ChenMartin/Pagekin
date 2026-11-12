@@ -63,28 +63,31 @@ export function openMediaFiles(directory, enabled) {
   }
 
   async function receive(req, path) {
-    const declared = Number(req.headers['content-length'])
+    return ingest(req.iterator({ destroyOnReturn: false }), path, Number(req.headers['content-length']), { overflow: () => req.resume() })
+  }
+
+  async function ingest(source, path, declared, { signal, overflow } = {}) {
     if (Number.isFinite(declared) && (declared > maxUploadBytes || declared < 1)) throw new ApiError(413, '单个素材须为 1 字节至 64 MiB')
     const hash = createHash('sha256')
     let bytes = 0
     const file = createWriteStream(path, { flags: 'wx', mode: 0o600 })
     // Keep the HTTP response writable when a chunked upload exceeds the limit.
     async function* checked() {
-      for await (const chunk of req.iterator({ destroyOnReturn: false })) {
+      for await (const chunk of source) {
         bytes += chunk.length
-        if (bytes > maxUploadBytes) { req.resume(); throw new ApiError(413, '单个素材最多 64 MiB') }
+        if (bytes > maxUploadBytes) { overflow?.(); throw new ApiError(413, '单个素材最多 64 MiB') }
         hash.update(chunk)
         yield chunk
       }
     }
-    await pipeline(checked(), file)
+    await pipeline(checked(), file, { signal })
     if (!bytes) throw new ApiError(400, '素材为空')
     const fd = await open(path, 'r')
     const header = Buffer.alloc(12)
     try { await fd.read(header) } finally { await fd.close() }
     const type = detect(header)
     let data
-    try { data = await probe(path, type) }
+    try { data = await probe(path, type, signal) }
     catch { throw new ApiError(422, '素材损坏或无法读取') }
     const visual = data.streams?.find(stream => stream.codec_type === 'video')
     const audio = data.streams?.find(stream => stream.codec_type === 'audio')
@@ -99,7 +102,7 @@ export function openMediaFiles(directory, enabled) {
     if (image) {
       try {
         await execute('ffmpeg', ['-nostdin', '-v', 'error', '-xerror', '-threads', '1', '-protocol_whitelist', 'file',
-          '-f', formatByType[type], '-i', path, '-frames:v', '1', '-f', 'null', '-'], { timeout: 8000 })
+          '-f', formatByType[type], '-i', path, '-frames:v', '1', '-f', 'null', '-'], { signal, timeout: 8000 })
       } catch { throw new ApiError(422, '素材损坏或无法读取') }
     }
     return { type, sha: hash.digest('hex'), bytes, durationMs, width: sound ? null : visual.width, height: sound ? null : visual.height }
@@ -128,7 +131,7 @@ export function openMediaFiles(directory, enabled) {
     return ['-protocol_whitelist', 'file', '-f', formatByType[file.type], '-i', blobPath(directory, file.sha)]
   }
 
-  return { available, stage, receive, publish, probe, inputArgs, execute }
+  return { available, stage, receive, ingest, publish, probe, inputArgs, execute }
 }
 
 export async function sendMedia(req, res, directory, file, attachment) {

@@ -90,6 +90,7 @@ try {
     env: { ...process.env, APP_PASSWORD: password, APP_PASSWORD_FILE: '', APP_SECURE_COOKIE: '0',
       WEBDAV_BACKUP_URL: '',
       PAGEKIN_MEDIA: '0',
+      REPLICATE_API_TOKEN: '', REPLICATE_API_TOKEN_FILE: '', PAGEKIN_GENERATION_JSON: '',
       APP_ORIGIN: '', APP_HOST: '127.0.0.1', PORT: '0', APP_DATA_DIR: join(root, 'data'),
       APP_EDITOR: process.env.PAGEKIN_TEST_EDITOR === 'plain' ? 'plain' : 'auto',
       EMBEDDING_BASE_URL: modelBase,
@@ -740,6 +741,74 @@ try {
   await click('#dialog-submit')
   await until(() => evaluate("document.querySelector('#timeline-status').textContent.includes('时间线 v1')"), 'Timeline was not saved')
   assert.equal(await evaluate("document.querySelector('#timeline-caption').value"), '中文成片字幕。')
+  await dialogButton('AI 素材生成')
+  await until(() => evaluate("document.querySelector('#dialog-body').textContent.includes('配置 Replicate')"), 'Media generation configuration guidance did not appear')
+  await dialogButton('返回时间线')
+  const generationId = 'e99a3e47-7692-4c7d-a513-86698d7f8d60'
+  const assetId = '36591082-19f9-4039-833f-78887f9cf3be'
+  let browserGeneration
+  let browserAdopted = false
+  let browserPosted = false
+  let interceptionError
+  const handleGeneration = async event => {
+    const message = JSON.parse(event.data)
+    if (message.method !== 'Fetch.requestPaused') return
+    const { requestId, request } = message.params
+    const url = new URL(request.url)
+    const submitted = request.postData ? JSON.parse(request.postData) : null
+    let value, type = 'application/json', encoded
+    try {
+      if (url.pathname.endsWith('/media-generation-capabilities')) value = { available: true, models: { image: 'mock/scene' } }
+      else if (url.pathname.endsWith('/generation-preview')) {
+        assert.equal(submitted.kind, 'image')
+        assert.ok(submitted.shotId && submitted.boardRev)
+        browserGeneration = { kind: submitted.kind, boardRev: submitted.boardRev, model: 'mock/scene', input: { prompt: submitted.prompt } }
+        value = { manifest: browserGeneration, approval: 'fixture-approved' }
+      } else if (url.pathname.endsWith('/generations') && request.method === 'GET') value = []
+      else if (url.pathname.endsWith('/adopt')) {
+        assert.ok(submitted.name)
+        browserAdopted = true
+        value = { id: assetId, type: 'image/png', name: '测试生成图像' }
+      } else if (url.pathname.endsWith('/file')) {
+        type = 'image/png'
+        encoded = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j0ioAAAAASUVORK5CYII='
+      } else {
+        if (request.method === 'POST') {
+          assert.equal(submitted.approval, 'fixture-approved')
+          assert.equal(submitted.prompt, browserGeneration.input.prompt)
+          assert.ok(submitted.mutationId)
+          browserPosted = true
+        }
+        value = { id: generationId, state: 'ready', kind: 'image', manifest: browserGeneration,
+          variants: [{ ordinal: 1, type: 'image/png', adopted_asset_id: browserAdopted ? assetId : null }] }
+      }
+      await command('Fetch.fulfillRequest', { requestId, responseCode: 200, responseHeaders: [{ name: 'Content-Type', value: type }],
+        body: encoded ?? Buffer.from(JSON.stringify(value)).toString('base64') })
+    } catch (error) {
+      interceptionError = error
+      await command('Fetch.failRequest', { requestId, errorReason: 'Failed' })
+    }
+  }
+  socket.addEventListener('message', handleGeneration)
+  try {
+    await command('Fetch.enable', { patterns: ['*/api/media-generation-capabilities', '*/api/projects/*/episodes/*/generations',
+      '*/api/projects/*/episodes/*/generation-preview', '*/api/projects/*/media-generations/*'].map(urlPattern => ({ urlPattern })) })
+    await dialogButton('AI 素材生成')
+    await dialogButton('生成图像')
+    assert.equal(await evaluate("document.querySelector('#media-generation-submit').disabled"), true)
+    await fill('#media-generation-prompt', '测试海雾画面')
+    await dialogButton('预览发送内容')
+    await until(() => evaluate("!document.querySelector('#media-generation-submit').disabled"), 'Provider preview did not enable confirmation')
+    await click('#media-generation-submit')
+    await dialogButton('加入素材库')
+    await until(() => evaluate("document.querySelector('#dialog-body').textContent.includes('已加入素材库')"), 'Generated asset was not adopted')
+    assert.equal(browserPosted, true)
+    assert.equal(browserAdopted, true)
+  } finally {
+    socket.removeEventListener('message', handleGeneration)
+    await command('Fetch.disable')
+  }
+  if (interceptionError) throw interceptionError
   await click('#close-dialog')
   const importedPeople = await evaluate(`(async () => {
     const sourceDoc = (id, kind, title, body, number = null, status = 'draft') =>

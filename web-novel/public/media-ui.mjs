@@ -1,4 +1,5 @@
 import { ui } from './locale.mjs'
+import { mediaGenerationWorkspace } from './media-generation-ui.mjs'
 
 const statuses = { queued: '等待渲染', running: '正在渲染', done: '成片已就绪', failed: '失败', cancelled: '已取消', interrupted: '已中断' }
 const ms = input => Math.round(input.valueAsNumber * 1000)
@@ -16,6 +17,7 @@ function field(text, input) {
 }
 
 export function mediaWorkspace({ api, dialog, actionButton, localTransaction, uuid, isCurrent }) {
+  const generation = mediaGenerationWorkspace({ api, dialog, actionButton, uuid, isCurrent })
   let active
   const modal = () => document.getElementById('dialog')
   const visible = (state, panel = state.panel) => panel?.isConnected && modal().open && isCurrent(state.pid)
@@ -260,6 +262,11 @@ export function mediaWorkspace({ api, dialog, actionButton, localTransaction, uu
     const controls = node('div')
     controls.className = 'tools'
     controls.append(actionButton(ui('素材库'), async () => { if (await canLeave(state)) library(state) }), actionButton(ui('成片任务'), () => jobs(state)),
+      actionButton(ui('AI 素材生成'), async () => {
+        if (await canLeave(state)) await generation.open(state, () => render(state), asset => {
+          if (!state.assets.some(row => row.id === asset.id)) state.assets.unshift(asset)
+        })
+      }),
       actionButton(ui('重新读取 NAS'), async () => { if (await canLeave(state)) await open(state.pid, state.id, state.back) }),
       actionButton(ui('返回分镜'), async () => { if (await canLeave(state)) await state.back() }))
     panel.append(state.status, state.error, controls)

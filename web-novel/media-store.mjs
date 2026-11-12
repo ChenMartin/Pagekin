@@ -57,23 +57,26 @@ export function openMediaStore({ get, all, run, tx, hash, now, screenplay, story
 
   function checkQuota(sha, bytes) {
     const used = get(`SELECT COALESCE(SUM(bytes),0) size,COUNT(*) FILTER (WHERE sha=?) existing FROM (
-      SELECT sha,bytes FROM media_assets UNION SELECT sha,bytes FROM media_renders WHERE sha IS NOT NULL)`, sha)
+      SELECT sha,bytes FROM media_assets UNION SELECT sha,bytes FROM media_renders WHERE sha IS NOT NULL
+      UNION SELECT sha,bytes FROM media_generation_variants)`, sha)
     if (!used.existing && used.size + bytes > mediaQuota) throw new ApiError(422, '媒体存储已达到 2 GiB 上限')
   }
 
   function registerAsset(pid, id, file) {
-    return tx(() => {
-      const existing = get('SELECT * FROM media_assets WHERE id=?', id)
-      if (existing && (existing.sha !== file.sha || existing.project_id !== pid)) throw new ApiError(409, '素材上传编号已使用')
-      if (existing) return existing
-      const same = get('SELECT * FROM media_assets WHERE project_id=? AND sha=?', pid, file.sha)
-      if (same) return same
-      if (get('SELECT COUNT(*) n FROM media_assets WHERE project_id=?', pid).n >= 300) throw new ApiError(422, '每部作品最多保存 300 份素材')
-      checkQuota(file.sha, file.bytes)
-      run('INSERT INTO media_assets VALUES (?,?,?,?,?,?,?,?,?,?)', id, pid, file.sha, file.name, file.type, file.bytes,
-        file.durationMs, file.width, file.height, now())
-      return asset(pid, id)
-    })
+    return tx(() => insertAsset(pid, id, file))
+  }
+
+  function insertAsset(pid, id, file) {
+    const existing = get('SELECT * FROM media_assets WHERE id=?', id)
+    if (existing && (existing.sha !== file.sha || existing.project_id !== pid)) throw new ApiError(409, '素材上传编号已使用')
+    if (existing) return existing
+    const same = get('SELECT * FROM media_assets WHERE project_id=? AND sha=?', pid, file.sha)
+    if (same) return same
+    if (get('SELECT COUNT(*) n FROM media_assets WHERE project_id=?', pid).n >= 300) throw new ApiError(422, '每部作品最多保存 300 份素材')
+    checkQuota(file.sha, file.bytes)
+    run('INSERT INTO media_assets VALUES (?,?,?,?,?,?,?,?,?,?)', id, pid, file.sha, file.name, file.type, file.bytes,
+      file.durationMs, file.width, file.height, now())
+    return asset(pid, id)
   }
 
   const latest = id => get('SELECT * FROM media_timelines WHERE episode_id=? ORDER BY rev DESC LIMIT 1', id)
@@ -95,7 +98,7 @@ export function openMediaStore({ get, all, run, tx, hash, now, screenplay, story
     const content = row ? JSON.parse(row.content) : { clips: board.current ? defaultClips(board) : [], narration: null }
     return { id, title: board.title, rev: row?.rev ?? 0, boardRev, currentBoardRev: board.current,
       stale: !!row && boardRev !== board.current, ...content,
-      shots: source.shots.map(shot => ({ id: shot.id, visual: shot.visual, clip: clipFor(shot) })) }
+      shots: source.shots.map(shot => ({ id: shot.id, visual: shot.visual, prompt: shot.prompt, clip: clipFor(shot) })) }
   }
 
   function timeline(pid, id) {
@@ -240,5 +243,5 @@ export function openMediaStore({ get, all, run, tx, hash, now, screenplay, story
     run("UPDATE media_renders SET status='done',progress=100,sha=?,bytes=? WHERE id=? AND status='running'", sha, bytes, id)
   }
 
-  return { assets, asset, checkQuota, registerAsset, timeline, change, renders, render, manifest, enqueue, next, cancel, progress, fail, finish }
+  return { assets, asset, checkQuota, registerAsset, insertAsset, timeline, change, renders, render, manifest, enqueue, next, cancel, progress, fail, finish }
 }

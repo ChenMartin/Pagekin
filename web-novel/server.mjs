@@ -20,6 +20,8 @@ import { openWebDavBackup } from './webdav-backup.mjs'
 import { mediaId } from './media-store.mjs'
 import { openMediaFiles, sendMedia } from './media-files.mjs'
 import { openRenderer, subtitles } from './media-render.mjs'
+import { openReplicate } from './replicate.mjs'
+import { openGeneration } from './media-generation.mjs'
 import { string } from './input.mjs'
 
 const password = process.env.APP_PASSWORD_FILE
@@ -38,6 +40,9 @@ const media = storage.media
 const mediaEnabled = process.env.PAGEKIN_MEDIA === '1'
 const mediaFiles = openMediaFiles(directory, mediaEnabled)
 const renderer = openRenderer(media, mediaFiles)
+const replicate = openReplicate()
+const generations = storage.generations
+const generation = openGeneration(generations, media, mediaFiles, replicate)
 let mediaUploads = 0
 const referenceGeneration = { prefix: 'reference:', update: storage.referenceNovels.update }
 const productionGeneration = { prefix: 'production:', update: storage.production.update }
@@ -64,6 +69,7 @@ const files = new Map([
   ['/production-ui.mjs', ['production-ui.mjs', 'text/javascript']],
   ['/storyboard-ui.mjs', ['storyboard-ui.mjs', 'text/javascript']],
   ['/media-ui.mjs', ['media-ui.mjs', 'text/javascript']],
+  ['/media-generation-ui.mjs', ['media-generation-ui.mjs', 'text/javascript']],
   ['/reference-novel-ui.mjs', ['reference-novel-ui.mjs', 'text/javascript']],
   ['/character-state.mjs', ['character-state.mjs', 'text/javascript']],
   ['/character-continuity-ui.mjs', ['character-continuity-ui.mjs', 'text/javascript']],
@@ -441,6 +447,9 @@ async function route(req, res) {
   if (path === '/api/webdav-backup' && method === 'GET') return json(res, webdav.status())
   if (path === '/api/webdav-backup' && method === 'POST') return json(res, webdav.start(), 202)
   if (method === 'GET' && path === '/api/media-capabilities') return json(res, { enabled: mediaEnabled, available: await mediaFiles.available() })
+  if (method === 'GET' && path === '/api/media-generation-capabilities') return json(res, {
+    ...replicate.capabilities, available: await generation.canRun(),
+  })
   if (path === '/api/projects' && method === 'GET') {
     return json(res, storage.all('SELECT * FROM projects ORDER BY created DESC'))
   }
@@ -462,6 +471,30 @@ async function route(req, res) {
     if (method === 'PUT') return json(res, storage.saveProjectGoals(pid, await body(req, 8192)))
   }
   const screenplay = storage.screenplay
+  if (resource === 'media-generations' && id) {
+    const variant = () => Number(url.searchParams.get('variant'))
+    if (method === 'GET' && action === undefined) return json(res, generations.detail(pid, id))
+    if ((method === 'GET' || method === 'HEAD') && action === 'file') {
+      return sendMedia(req, res, directory, generations.variant(pid, id, variant()))
+    }
+    if (method === 'POST' && action === 'adopt') {
+      return json(res, generations.adopt(pid, id, variant(), await body(req, 4096)))
+    }
+    if (method === 'POST' && action === 'cancel') {
+      const task = generations.cancel(pid, id)
+      generation.kick()
+      return json(res, task, 202)
+    }
+    if (method === 'POST' && action === 'resume') {
+      if (!await generation.canRun()) throw new ApiError(503, '请先启用媒体环境并配置 Replicate')
+      const task = generations.resume(pid, id)
+      generation.kick()
+      return json(res, task, 202)
+    }
+    if (method === 'POST' && action === 'link') {
+      return json(res, await generation.link(pid, id, (await body(req, 4096)).externalId), 202)
+    }
+  }
   if (resource === 'media-assets') {
     if (method === 'GET' && id === undefined) return json(res, media.assets(pid))
     if ((method === 'GET' || method === 'HEAD') && id && action === 'file') return sendMedia(req, res, directory, media.asset(pid, id))
@@ -535,6 +568,15 @@ async function route(req, res) {
     if (method === 'POST' && id && action === 'episodes') return json(res, screenplay.createEpisode(pid, id, await body(req, 8192)), 201)
   }
   if (resource === 'episodes' && id) {
+    if (method === 'GET' && action === 'generations') return json(res, generations.list(pid, id))
+    if (method === 'POST' && ['generations', 'generation-preview'].includes(action)) {
+      if (!await generation.canRun()) throw new ApiError(503, '请先启用媒体环境并配置 Replicate')
+      const value = await body(req, 20_000)
+      if (action === 'generation-preview') return json(res, generations.prepare(pid, id, value, replicate))
+      const task = generations.enqueue(pid, id, value, replicate)
+      generation.kick()
+      return json(res, task, 202)
+    }
     if (method === 'GET' && action === 'timeline') return json(res, media.timeline(pid, id))
     if (method === 'PUT' && action === 'timeline') return json(res, media.change(pid, id, await body(req)))
     if (method === 'GET' && action === 'renders') return json(res, media.renders(pid, id))
@@ -802,6 +844,7 @@ server.listen(Number(process.env.PORT || '3100'), process.env.APP_HOST || '127.0
   () => {
     webdav.schedule()
     renderer.kick()
+    generation.start()
     console.log(`Pagekin Web listening on ${JSON.stringify(server.address())}`)
   })
 
@@ -813,13 +856,15 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
     Promise.resolve(webdav.close()).finally(() => { backingUp = false })
     let rendering = true
     Promise.resolve(renderer.stop()).finally(() => { rendering = false })
+    let generating = true
+    Promise.resolve(generation.close()).finally(() => { generating = false })
     clearInterval(eventTimer)
     for (const client of eventClients) client.res.end()
     for (const controller of active.values()) controller.abort('shutdown')
     server.close(() => {
       const deadline = Date.now() + 5000
       const wait = setInterval(() => {
-        if ((active.size || batchWorkers.size || backingUp || rendering) && Date.now() < deadline) return
+        if ((active.size || batchWorkers.size || backingUp || rendering || generating) && Date.now() < deadline) return
         clearInterval(wait)
         storage.db.close()
       }, 50)

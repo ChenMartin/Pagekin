@@ -8,6 +8,9 @@
 !media-store.mjs
 !media-files.mjs
 !media-render.mjs
+!media-generation.mjs
+!media-generation-store.mjs
+!replicate.mjs
 !desktop-archive.mjs
 !desktop-copy.mjs
 !writing-context.mjs

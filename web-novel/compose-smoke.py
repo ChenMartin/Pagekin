@@ -27,6 +27,7 @@ def smoke(directory: Path, compose: str, previous_image: str | None = None) -> N
         "PAGEKIN_BIND": "127.0.0.1", "PAGEKIN_PORT": str(port), "LLM_MODEL": "", "LLM_API_KEY": "",
         "WEBDAV_BACKUP_URL": "",
         "PAGEKIN_MEDIA": "0",
+        "REPLICATE_API_TOKEN": "", "REPLICATE_API_TOKEN_FILE": "", "PAGEKIN_GENERATION_JSON": "",
     }
     client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
     temporary = TemporaryDirectory(prefix="pagekin-compose-")
@@ -142,6 +143,9 @@ def smoke(directory: Path, compose: str, previous_image: str | None = None) -> N
             timeline = request(timeline_path, {"action": "save", "baseRev": 0, "boardRev": initial["boardRev"],
                 "clips": clips, "narration": None, "mutationId": str(uuid4())}, "PUT")
             assert timeline["rev"] == 1
+        if current_schema >= 24:
+            assert not request("/api/media-generation-capabilities")["available"]
+            assert request(episode_path + "/generations") == []
         backup_path = "/data/backups/compose-test.sqlite"
         backup = stack("", "exec", "-T", "pagekin", "node", "maintenance.mjs", "backup", backup_path)
         assert json.loads(backup)["projects"] == 1
