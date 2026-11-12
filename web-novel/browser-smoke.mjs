@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { createServer } from 'node:http'
+import { DatabaseSync } from 'node:sqlite'
 import { sampleEpub } from './epub-test-fixture.mjs'
 
 const executable = process.env.BROWSER_EXE
@@ -746,6 +747,7 @@ try {
   await dialogButton('返回时间线')
   const generationId = 'e99a3e47-7692-4c7d-a513-86698d7f8d60'
   const assetId = '36591082-19f9-4039-833f-78887f9cf3be'
+  const audioId = 'bcd8d0f5-33d5-4451-9035-6822705ff024'
   let browserGeneration
   let browserAdopted = false
   let browserPosted = false
@@ -767,6 +769,13 @@ try {
       } else if (url.pathname.endsWith('/generations') && request.method === 'GET') value = []
       else if (url.pathname.endsWith('/adopt')) {
         assert.ok(submitted.name)
+        const database = new DatabaseSync(join(root, 'data', 'novels.sqlite'), { timeout: 4000 })
+        try {
+          const pid = url.pathname.split('/')[3]
+          const insert = database.prepare('INSERT INTO media_assets VALUES (?,?,?,?,?,?,?,?,?,?)')
+          insert.run(assetId, pid, 'a'.repeat(64), '测试生成图像', 'image/png', 8, 0, 1, 1, new Date().toISOString())
+          insert.run(audioId, pid, 'b'.repeat(64), '测试配乐', 'audio/wav', 8, 1000, null, null, new Date().toISOString())
+        } finally { database.close() }
         browserAdopted = true
         value = { id: assetId, type: 'image/png', name: '测试生成图像' }
       } else if (url.pathname.endsWith('/file')) {
@@ -804,11 +813,47 @@ try {
     await until(() => evaluate("document.querySelector('#dialog-body').textContent.includes('已加入素材库')"), 'Generated asset was not adopted')
     assert.equal(browserPosted, true)
     assert.equal(browserAdopted, true)
+    await dialogButton('返回生成任务')
+    await dialogButton('返回时间线')
   } finally {
     socket.removeEventListener('message', handleGeneration)
     await command('Fetch.disable')
   }
   if (interceptionError) throw interceptionError
+  const select = (selector, value) => evaluate(`(() => {
+    const el = document.querySelector(${JSON.stringify(selector)});
+    el.value = ${JSON.stringify(value)};
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`)
+  await dialogButton('重新读取 NAS')
+  await until(() => evaluate("document.querySelector('#timeline-audio-music')?.options.length === 2"), 'Music track was not available')
+  await select('#timeline-visual', assetId)
+  await visible('#timeline-motion')
+  await select('#timeline-motion', 'zoom-in')
+  await select('#timeline-audio-music', audioId)
+  await click('label:has(#timeline-audio-music) + button')
+  await select('#timeline-subtitle-mode', 'custom')
+  await visible('#timeline-subtitle-0')
+  assert.equal(await evaluate("document.querySelector('#timeline-subtitle-0').value"), '中文成片字幕。')
+  await fill('#timeline-subtitle-0', '独立字幕在本机恢复。')
+  await until(() => evaluate("document.querySelector('#timeline-status')?.textContent.includes('本机草稿')"), 'Multitrack draft was not stored locally')
+  await reload()
+  await visible('#screenplay-workspace')
+  await click('#screenplay-workspace')
+  await dialogButton('夜航短剧')
+  await dialogButton('第 1 季 · 第 2 集')
+  await dialogButton('分镜工作区')
+  await dialogButton('剪辑与成片')
+  await dialogButton('查看本机时间线')
+  await click('#dialog-submit')
+  await visible('#timeline-subtitle-0')
+  assert.equal(await evaluate("document.querySelector('#timeline-subtitle-0').value"), '独立字幕在本机恢复。')
+  assert.equal(await evaluate("document.querySelector('#timeline-motion').value"), 'zoom-in')
+  assert.equal(await evaluate("document.querySelector('#timeline-editor').textContent.includes('移除音频片段')"), true)
+  await click('#dialog-submit')
+  await until(() => evaluate("document.querySelector('#timeline-status')?.textContent.includes('时间线 v2')"), 'Recovered multitrack timeline was not saved')
+  await dialogButton('重新读取 NAS')
+  await until(() => evaluate("document.querySelector('#timeline-subtitle-0')?.value === '独立字幕在本机恢复。'"), 'Multitrack settings did not reopen from NAS')
   await click('#close-dialog')
   const importedPeople = await evaluate(`(async () => {
     const sourceDoc = (id, kind, title, body, number = null, status = 'draft') =>
@@ -896,7 +941,7 @@ try {
   await until(() => evaluate("document.querySelector('#dialog-body').textContent.includes('已完成 · 已拆解 3 / 3 节')"), 'Reference queue status did not persist')
   await dialogButton('整书归纳')
   await until(() => evaluate("document.querySelector('#dialog-title').textContent === '整书归纳'"), 'Reference queue did not lead to synthesis')
-  console.log('Browser workflow passed (' + (enhanced ? 'CodeMirror' : 'plain') + '): novel, screenplay proposals, storyboard, EPUB and reference batch')
+  console.log('Browser workflow passed (' + (enhanced ? 'CodeMirror' : 'plain') + '): novel, screenplay, storyboard, media generation, multitrack editing and reference batch')
 } finally {
   socket?.close()
   for (const child of [browser, app]) {

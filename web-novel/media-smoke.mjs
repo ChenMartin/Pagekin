@@ -68,11 +68,12 @@ test('real FFmpeg renders a recoverable film and validates mocked provider media
 
   try {
     const picture = join(root, 'scene.png'), video = join(root, 'clip.mp4'), audio = join(root, 'voice.wav')
-    const green = join(root, 'candidate.png'), yellow = join(root, 'second.png')
+    const green = join(root, 'candidate.png'), yellow = join(root, 'second.png'), music = join(root, 'music.wav')
     await Promise.all([
-      ffmpeg(['-f', 'lavfi', '-i', 'color=red:s=120x80', '-vf', 'format=rgb24', '-frames:v', '1', '-threads', '1', picture]),
+      ffmpeg(['-f', 'lavfi', '-i', 'testsrc2=s=240x320', '-vf', 'format=rgb24', '-frames:v', '1', '-threads', '1', picture]),
       ffmpeg(['-f', 'lavfi', '-i', 'color=blue:s=160x90:d=2:r=25', '-c:v', 'libx264', '-threads', '1', video]),
       ffmpeg(['-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000', '-t', '1.2', audio]),
+      ffmpeg(['-f', 'lavfi', '-i', 'sine=frequency=880:sample_rate=48000', '-t', '1.2', music]),
       ...[[green, 'green'], [yellow, 'yellow']].map(([name, color]) => ffmpeg(['-f', 'lavfi', '-i', `color=${color}:s=120x80`,
         '-vf', 'format=rgb24', '-frames:v', '1', '-threads', '1', name])),
     ])
@@ -140,6 +141,17 @@ test('real FFmpeg renders a recoverable film and validates mocked provider media
     await request(path, 'PUT', { ...value, baseRev: timeline.rev, mutationId: randomUUID(),
       clips: [{ ...value.clips[0], startMs: 1700 }, value.clips[1]] }, 422)
     const submission = { rev: timeline.rev, mutationId: randomUUID() }
+    // Simulate an existing queued job written by the previous renderer.
+    await stopApp()
+    const legacy = openStore(data)
+    try {
+      const job = legacy.media.enqueue(pid, episode.id, submission)
+      const { width, height, durationMs, boardRev, fps, clips, narration } = legacy.media.manifest(pid, job.id)
+      const manifest = { width, height, durationMs, boardRev, fps, version: 1, narration,
+        clips: clips.map(({ shotId, assetId, asset, startMs, durationMs, caption }) => ({ shotId, assetId, asset, startMs, durationMs, caption })) }
+      legacy.run('UPDATE media_renders SET manifest=? WHERE id=?', JSON.stringify(manifest), job.id)
+    } finally { legacy.db.close() }
+    await startApp()
     const job = await request(episodePath + '/renders', 'POST', submission, 202)
     assert.equal((await request(episodePath + '/renders', 'POST', submission, 202)).id, job.id)
     const jobPath = project + '/media-renders/' + job.id
@@ -185,12 +197,106 @@ test('real FFmpeg renders a recoverable film and validates mocked provider media
     assert.deepEqual(rebased.clips.map(row => row.assetId), [still.id, footage.id])
     assert.equal((await request(jobPath + '/film')).bytes.length, rendered.bytes.length)
 
+    assert.equal((await request('/media-capabilities')).subtitleBurn, true)
+    const song = await upload(music, '背景音乐.wav')
+    const timed = { action: 'save', boardRev: rebased.boardRev, baseRev: rebased.rev, mutationId: randomUUID(),
+      clips: [value.clips[0], { ...value.clips[1], motion: 'zoom-in' }], narration: null,
+      audioClips: [
+        { track: 'voice', assetId: voice.id, startMs: 100, durationMs: 600, offsetMs: 240, volume: 100, fadeInMs: 120, fadeOutMs: 120 },
+        { track: 'music', assetId: song.id, startMs: 200, durationMs: 800, offsetMs: 440, volume: 70, fadeOutMs: 80 },
+        { track: 'effects', assetId: voice.id, startMs: 0, durationMs: 200, offsetMs: 1400, volume: 60 },
+      ],
+      subtitleCues: [{ startMs: 360, endMs: 720, text: '渡口夜色' }, { startMs: 880, endMs: 1200, text: '跨镜字幕' }], subtitleOutput: 'burn' }
+    await request(path, 'PUT', { ...timed, clips: [{ ...timed.clips[0], motion: 'pan-left' }, timed.clips[1]] }, 422)
+    await request(path, 'PUT', { ...timed, subtitleCues: [{ startMs: 320, endMs: 400, text: '重叠' }, ...timed.subtitleCues] }, 422)
+    await request(path, 'PUT', { ...timed, subtitleCues: [{ startMs: 361, endMs: 720, text: '未对帧' }] }, 422)
+    await request(path, 'PUT', { ...timed, audioClips: [{ ...timed.audioClips[0], startMs: 800 }] }, 400)
+    await request(path, 'PUT', { ...timed, audioClips: [{ ...timed.audioClips[0], fadeOutMs: 500 }] }, 400)
+    await request(path, 'PUT', { ...timed, audioClips: [{ ...timed.audioClips[0], assetId: footage.id }] }, 422)
+    const outside = await request(path, 'PUT', { ...timed, audioClips: [{ ...timed.audioClips[0], offsetMs: 1800 }] })
+    await request(episodePath + '/renders', 'POST', { rev: outside.rev, mutationId: randomUUID() }, 422)
+    const multitrack = await request(path, 'PUT', { ...timed, baseRev: outside.rev, mutationId: randomUUID() })
+    assert.equal(multitrack.audioClips.length, 3)
+    assert.equal(multitrack.clips[1].motion, 'zoom-in')
+    // A cached client updating the old fields cannot erase the added tracks or motion.
+    const preserved = await request(path, 'PUT', { ...value, baseRev: multitrack.rev, boardRev: multitrack.boardRev,
+      mutationId: randomUUID(), clips: value.clips.map(({ shotId, assetId, startMs, durationMs, caption }) => ({ shotId, assetId, startMs, durationMs, caption })),
+      narration: null })
+    assert.deepEqual(preserved, multitrack)
+    const renderTimeline = async (rev, target) => {
+      const row = await request(episodePath + '/renders', 'POST', { rev, mutationId: randomUUID() }, 202)
+      const route = project + '/media-renders/' + row.id
+      const result = await waitJob(route, ['done', 'failed'])
+      assert.equal(result.status, 'done', result.error)
+      await writeFile(target, (await request(route + '/film')).bytes)
+      return (await request(route + '/subtitles')).bytes.toString()
+    }
+    const burned = join(root, 'burned.mp4')
+    assert.equal(await renderTimeline(multitrack.rev, burned), '1\n00:00:00,360 --> 00:00:00,720\n渡口夜色\n\n2\n00:00:00,880 --> 00:00:01,200\n跨镜字幕\n')
+    const probe = await exec('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_name', '-of', 'csv=p=0', burned])
+    assert.deepEqual(probe.stdout.trim().split(/\r?\n/u), ['h264', 'aac'])
+    const frame = async (file, time, filters) => (await exec('ffmpeg', ['-v', 'error', '-filter_threads', '1', '-ss', String(time), '-i', file,
+      '-frames:v', '1', '-vf', filters, '-pix_fmt', 'gray', '-f', 'rawvideo', '-'], { encoding: 'buffer' })).stdout
+    const captionFrame = (file, time) => frame(file, time, 'crop=540:180:0:780')
+    const bright = pixels => pixels.filter(value => value > 200).length
+    assert.ok(bright(await captionFrame(burned, .52)) > 100, 'Chinese subtitles should appear in the picture')
+    assert.ok(bright(await captionFrame(burned, .20)) < 10, 'Subtitle should start at its selected time')
+    assert.ok(bright(await captionFrame(burned, .80)) < 10, 'Subtitle should disappear at its selected time')
+    const frameHash = async (file, time) => (await exec('ffmpeg', ['-v', 'error', '-ss', String(time), '-i', file,
+      '-frames:v', '1', '-vf', 'scale=80:120', '-f', 'md5', '-'])).stdout
+    assert.notEqual(await frameHash(burned, 1.28), await frameHash(burned, 1.84), 'Still image zoom should change across frames')
+
+    const pcm = (await exec('ffmpeg', ['-v', 'error', '-i', burned, '-vn', '-ac', '1', '-ar', '48000', '-f', 's16le', '-'],
+      { encoding: 'buffer', maxBuffer: 300_000 })).stdout
+    function tone(hz, at, windowMs = 50) {
+      let real = 0, imaginary = 0
+      const samples = windowMs * 48
+      for (let index = 0; index < samples; index++) {
+        const sample = pcm.readInt16LE((at * 48 + index) * 2) / 32768
+        const angle = 2 * Math.PI * hz * index / 48000
+        real += sample * Math.cos(angle)
+        imaginary += sample * Math.sin(angle)
+      }
+      return Math.hypot(real, imaginary) * 2 / samples
+    }
+    assert.ok(tone(440, 100) < .002 && tone(440, 370) > .06, 'Voice starts at the selected offset')
+    assert.ok(tone(440, 240, 25) < tone(440, 370) / 3 && tone(440, 805, 25) < tone(440, 370) / 2, 'Voice fades change output levels')
+    assert.ok(tone(440, 620) > .06 && tone(880, 620) > .035, 'The soundtrack mixes voice and music')
+    assert.ok(tone(440, 970) < .002 && tone(880, 970) > .035, 'Music continues after the voice clip ends')
+    assert.ok(tone(440, 1460) > .035 && tone(440, 1700) < .002, 'Effects use independent timing')
+
+    const softTimeline = await request(path, 'PUT', { ...timed, baseRev: multitrack.rev, mutationId: randomUUID(), subtitleOutput: 'soft',
+      narration: { ...value.narration, volume: 0 }, clips: [
+        { ...value.clips[0], assetId: still.id, startMs: 0, motion: 'pan-left' }, { ...value.clips[1], motion: 'pan-right' },
+      ] })
+    const softOutput = join(root, 'soft-multitrack.mp4')
+    await renderTimeline(softTimeline.rev, softOutput)
+    const softText = await exec('ffmpeg', ['-v', 'error', '-i', softOutput, '-map', '0:s:0', '-f', 'srt', '-'])
+    assert.match(softText.stdout, /跨镜字幕/u)
+    assert.notEqual(await frameHash(softOutput, .08), await frameHash(softOutput, .84), 'Pan-left should move the frame')
+    assert.notEqual(await frameHash(softOutput, 1.08), await frameHash(softOutput, 1.84), 'Pan-right should move the frame')
+
+    const zoomOut = await request(path, 'PUT', { ...timed, baseRev: softTimeline.rev, mutationId: randomUUID(),
+      clips: [{ ...value.clips[1], motion: 'zoom-out' }, value.clips[0]], audioClips: [], subtitleCues: [] })
+    const silent = join(root, 'silent.mp4')
+    assert.equal(await renderTimeline(zoomOut.rev, silent), '')
+    assert.notEqual(await frameHash(silent, .08), await frameHash(silent, .84), 'Zoom-out should move the frame')
+    const silentInfo = await exec('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_name', '-of', 'csv=p=0', silent])
+    assert.equal(silentInfo.stdout.trim(), 'h264')
+    const beforeRebase = await request(path, 'PUT', { ...timed, baseRev: zoomOut.rev, mutationId: randomUUID() })
+    const boardDraft = await request(boardPath, 'PUT', { action: 'reopen', mutationId: randomUUID(), baseRev: confirmed.rev, scriptRev: episode.rev })
+    const currentBoard = await request(boardPath, 'PUT', { action: 'confirm', mutationId: randomUUID(), baseRev: boardDraft.rev, scriptRev: episode.rev })
+    const afterRebase = await request(path, 'PUT', { action: 'rebase', mutationId: randomUUID(), baseRev: beforeRebase.rev, boardRev: currentBoard.rev })
+    assert.deepEqual(afterRebase.audioClips, beforeRebase.audioClips)
+    assert.deepEqual(afterRebase.subtitleCues, beforeRebase.subtitleCues)
+    assert.equal(afterRebase.clips.find(clip => clip.assetId === still.id).motion, 'zoom-in')
+
     const capabilities = await request('/media-generation-capabilities')
     assert.equal(capabilities.available, true)
     assert.deepEqual(Object.keys(capabilities.models), ['image', 'video', 'speech'])
     assert.doesNotMatch(JSON.stringify(capabilities), /test-provider-token-only/u)
     const generate = async (kind, prompt) => {
-      const input = { kind, prompt, boardRev: rebased.boardRev, timelineRev: rebased.rev, shotId: rebased.clips[0].shotId }
+      const input = { kind, prompt, boardRev: afterRebase.boardRev, timelineRev: afterRebase.rev, shotId: afterRebase.clips[0].shotId }
       const preview = await request(episodePath + '/generation-preview', 'POST', input)
       const value = { ...input, approval: preview.approval, mutationId: randomUUID() }
       await request(episodePath + '/generations', 'POST', { ...value, prompt: '预览后变更' }, 409)
@@ -205,13 +311,14 @@ test('real FFmpeg renders a recoverable film and validates mocked provider media
     const generated = await waitJob(imageJob.status, ['ready'], 'state')
     assert.equal(generated.variants.length, 2)
     assert.equal(provider.submissions(), 1)
-    assert.equal((await request(project + '/media-assets')).length, 3)
+    assert.deepEqual(new Set((await request(project + '/media-assets')).map(row => row.id)), new Set([still.id, footage.id, voice.id, song.id]))
     await request('/projects/' + other + '/media-generations/' + generated.id + '/file?variant=1', 'GET', undefined, 404)
     const variant = await request(imageJob.status + '/file?variant=1', 'GET', undefined, 206, { Range: 'bytes=0-7' })
     assert.equal(variant.bytes.length, 8)
     const added = await request(imageJob.status + '/adopt?variant=1', 'POST', { name: '候选静帧' })
     assert.equal((await request(imageJob.status + '/adopt?variant=1', 'POST', {})).id, added.id)
-    assert.equal((await request(project + '/media-assets')).length, 4)
+    assert.deepEqual(new Set((await request(project + '/media-assets')).map(row => row.id)),
+      new Set([still.id, footage.id, voice.id, song.id, added.id]))
     for (const [kind, prompt, expected] of [['video', '轮船离港', 'video/mp4'], ['speech', '轮船缓缓驶出', 'audio/wav']]) {
       const job = await generate(kind, prompt)
       const done = await waitJob(job.status, ['ready'], 'state')
@@ -254,15 +361,18 @@ test('real FFmpeg renders a recoverable film and validates mocked provider media
 
     const snapshot = join(root, 'snapshot.sqlite')
     await backupDatabase(join(data, 'novels.sqlite'), snapshot)
-    assert.deepEqual(await verifyMedia(snapshot, data), { mediaFiles: 6 })
+    assert.deepEqual(await verifyMedia(snapshot, data), { mediaFiles: 10 })
     const recovered = join(root, 'recovered')
     const database = join(recovered, 'novels.sqlite')
     await restoreDatabase(createReadStream(snapshot), database)
     await assert.rejects(verifyMedia(database), /缺失或摘要不匹配/u)
     await cp(join(data, 'media', 'blobs'), join(recovered, 'media', 'blobs'), { recursive: true })
-    assert.deepEqual(await verifyMedia(database), { mediaFiles: 6 })
+    assert.deepEqual(await verifyMedia(database), { mediaFiles: 10 })
     const recoveredStore = openStore(recovered)
-    try { assert.equal(recoveredStore.generations.detail(pid, pendingState.id).state, 'poll_paused') }
+    try {
+      assert.equal(recoveredStore.generations.detail(pid, pendingState.id).state, 'poll_paused')
+      assert.deepEqual(recoveredStore.media.timeline(pid, episode.id), afterRebase)
+    }
     finally { recoveredStore.db.close() }
   } finally {
     await stopApp()

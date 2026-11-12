@@ -348,6 +348,8 @@ export function openStore(directory) {
       COMMIT;
     `)
   }
+  // Older renderers cannot interpret timed tracks or version 2 render manifests.
+  if (version < 25) db.exec('PRAGMA user_version=25')
   db.prepare("UPDATE media_generations SET state='unknown',error='服务在提交期间停止，请核对供应商任务编号' WHERE state='submitting'").run()
   db.prepare("UPDATE media_renders SET status='interrupted',error='服务重启，成片任务已中断' WHERE status='running'").run()
   db.prepare("UPDATE runs SET status='interrupted',error='服务重启，已保留收到的内容' WHERE status='running'").run()

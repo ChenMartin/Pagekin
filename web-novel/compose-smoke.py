@@ -81,6 +81,26 @@ def smoke(directory: Path, compose: str, previous_image: str | None = None) -> N
         assert confirmed["status"] == "confirmed"
         return episode_path, confirmed, scene, saved, final
 
+    def confirmed_board_for(episode_path, confirmed, scene):
+        board_path = episode_path + "/storyboard"
+        shot = {"id": str(uuid4()), "sceneId": scene["id"], "size": "wide", "durationMs": 3500, "visual": "渔船靠岸全景"}
+        board = request(board_path, {"action": "save", "baseRev": 0, "scriptRev": confirmed["rev"],
+            "shots": [shot], "mutationId": str(uuid4())}, "PUT")
+        result = request(board_path, {"action": "confirm", "baseRev": board["rev"],
+            "scriptRev": confirmed["rev"], "mutationId": str(uuid4())}, "PUT")
+        assert result["status"] == "confirmed"
+        return board_path, shot, result
+
+    def save_timeline(episode_path, board, **settings):
+        path = episode_path + "/timeline"
+        initial = request(path)
+        assert initial["boardRev"] == board["rev"]
+        clips = [{**initial["clips"][0], "caption": "渔船靠岸。"}]
+        timeline = request(path, {"action": "save", "baseRev": 0, "boardRev": initial["boardRev"],
+            "clips": clips, "narration": None, "mutationId": str(uuid4()), **settings}, "PUT")
+        assert timeline["rev"] == 1
+        return path, timeline
+
     try:
         stack("", "config", "--quiet")
         stack("", "up", "-d", "--no-build", "--pull", "never", previous=bool(previous_image))
@@ -92,12 +112,16 @@ def smoke(directory: Path, compose: str, previous_image: str | None = None) -> N
         chapter = request(route, {"kind": "chapter", "title": "第一章", "number": 1, "body": "容器持久化"})
         path = route + "/" + chapter["id"]
         legacy_episode = None
+        legacy_timeline = None
         if previous_image:
             old_version = version
             old_schema = schema(previous=True)
             if old_schema >= 11:
                 original = request(route, {"kind": "chapter", "title": "旧剧本来源", "number": 2, "body": "升级前的小说定稿"})
-                legacy_episode, _, legacy_scene, _, _ = confirmed_episode(project_path, route + "/" + original["id"], original, "升级前剧本")
+                legacy_episode, legacy_confirmed, legacy_scene, _, _ = confirmed_episode(project_path, route + "/" + original["id"], original, "升级前剧本")
+                if old_schema >= 23:
+                    _, _, legacy_board = confirmed_board_for(legacy_episode, legacy_confirmed, legacy_scene)
+                    legacy_path, legacy_timeline = save_timeline(legacy_episode, legacy_board)
             stack("", "up", "-d", "--force-recreate", "--no-build", "--pull", "never")
             version = ready()
             upgraded_schema = schema()
@@ -107,6 +131,11 @@ def smoke(directory: Path, compose: str, previous_image: str | None = None) -> N
             assert request(path + "/history")[0]["body"] == "容器持久化"
             if legacy_episode:
                 assert request(legacy_episode)["scenes"] == [legacy_scene]
+            if legacy_timeline:
+                updated = request(legacy_path)
+                assert updated["rev"] == legacy_timeline["rev"]
+                assert updated["clips"] == [{"motion": "none", **clip} for clip in legacy_timeline["clips"]]
+                assert updated["subtitleCues"] is None and updated["subtitleOutput"] == "soft" and updated["audioClips"] == []
             print(f"Compose upgrade v{old_version} -> v{version}, schema {old_schema} -> {upgraded_schema}: manuscript and history preserved")
         episode_path = None
         current_schema = schema()
@@ -128,21 +157,13 @@ def smoke(directory: Path, compose: str, previous_image: str | None = None) -> N
                 "documentId": chapter["id"], "sourceRev": final["rev"], "start": 0, "quote": "容器持久化"}, "PUT")["current"]
             assert not request("/api/webdav-backup")["enabled"]
         if current_schema >= 22:
-            board_path = episode_path + "/storyboard"
-            shot = {"id": str(uuid4()), "sceneId": scene["id"], "size": "wide", "durationMs": 3500, "visual": "渔船靠岸全景"}
-            board = request(board_path, {"action": "save", "baseRev": 0, "scriptRev": confirmed["rev"],
-                "shots": [shot], "mutationId": str(uuid4())}, "PUT")
-            confirmed_board = request(board_path, {"action": "confirm", "baseRev": board["rev"],
-                "scriptRev": confirmed["rev"], "mutationId": str(uuid4())}, "PUT")
-            assert confirmed_board["status"] == "confirmed"
+            board_path, shot, confirmed_board = confirmed_board_for(episode_path, confirmed, scene)
         if current_schema >= 23:
-            timeline_path = episode_path + "/timeline"
-            initial = request(timeline_path)
-            assert initial["boardRev"] == confirmed_board["rev"]
-            clips = [{**initial["clips"][0], "caption": "渔船靠岸。"}]
-            timeline = request(timeline_path, {"action": "save", "baseRev": 0, "boardRev": initial["boardRev"],
-                "clips": clips, "narration": None, "mutationId": str(uuid4())}, "PUT")
-            assert timeline["rev"] == 1
+            subtitle = [{"startMs": 200, "endMs": 1600, "text": "独立的中文字幕"}]
+            settings = {"subtitleCues": subtitle, "subtitleOutput": "burn"} if current_schema >= 25 else {}
+            timeline_path, timeline = save_timeline(episode_path, confirmed_board, **settings)
+            if settings:
+                assert timeline["subtitleCues"] == subtitle and timeline["subtitleOutput"] == "burn"
         if current_schema >= 24:
             assert not request("/api/media-generation-capabilities")["available"]
             assert request(episode_path + "/generations") == []

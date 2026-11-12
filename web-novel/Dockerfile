@@ -15,7 +15,7 @@ RUN if [ "$PAGEKIN_INSTALL_MEDIA" = 1 ]; then \
       node -e 'process.stdout.write(require("node:tls").rootCertificates.join("\n") + "\n")' > /tmp/pagekin-debian-ca.pem && \
       sed -i 's@http://deb.debian.org@https://deb.debian.org@g' /etc/apt/sources.list.d/debian.sources && \
       apt-get -o Acquire::https::CaInfo=/tmp/pagekin-debian-ca.pem -o Acquire::Retries=2 -o Acquire::https::Timeout=25 update && \
-      apt-get -o Acquire::https::CaInfo=/tmp/pagekin-debian-ca.pem -o Acquire::Retries=2 -o Acquire::https::Timeout=25 install -y --no-install-recommends ffmpeg && \
+      apt-get -o Acquire::https::CaInfo=/tmp/pagekin-debian-ca.pem -o Acquire::Retries=2 -o Acquire::https::Timeout=25 install -y --no-install-recommends ffmpeg fonts-noto-cjk && \
       rm /tmp/pagekin-debian-ca.pem && \
       rm -rf /var/lib/apt/lists/*; \
     fi

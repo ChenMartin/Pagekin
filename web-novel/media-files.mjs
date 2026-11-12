@@ -37,10 +37,11 @@ export function openMediaFiles(directory, enabled) {
   const staging = resolve(directory, 'media', 'staging')
   let publishing = Promise.resolve()
   let checking
+  let checkingSubtitles
 
-  async function execute(program, args, { signal, timeout = 60_000 } = {}) {
+  async function execute(program, args, { signal, timeout = 60_000, cwd } = {}) {
     const env = { PATH: process.env.PATH, ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) }
-    return exec(program, args, { env, signal, timeout, maxBuffer: 192_000, windowsHide: true })
+    return exec(program, args, { env, signal, timeout, cwd, maxBuffer: 192_000, windowsHide: true })
   }
 
   function available() {
@@ -48,6 +49,13 @@ export function openMediaFiles(directory, enabled) {
     checking ??= Promise.all([execute('ffmpeg', ['-hide_banner', '-encoders'], { timeout: 4000 }),
       execute('ffprobe', ['-version'], { timeout: 4000 })]).then(([{ stdout }]) => /\blibx264\b/u.test(stdout), () => false)
     return checking
+  }
+
+  async function canBurnSubtitles() {
+    if (!await available()) return false
+    checkingSubtitles ??= execute('ffmpeg', ['-hide_banner', '-filters'], { timeout: 4000 })
+      .then(({ stdout }) => /\bsubtitles\s+V->V\b/u.test(stdout), () => false)
+    return checkingSubtitles
   }
 
   async function stage() {
@@ -131,7 +139,7 @@ export function openMediaFiles(directory, enabled) {
     return ['-protocol_whitelist', 'file', '-f', formatByType[file.type], '-i', blobPath(directory, file.sha)]
   }
 
-  return { available, stage, receive, ingest, publish, probe, inputArgs, execute }
+  return { available, canBurnSubtitles, stage, receive, ingest, publish, probe, inputArgs, execute }
 }
 
 export async function sendMedia(req, res, directory, file, attachment) {

@@ -3,6 +3,14 @@ import { mediaGenerationWorkspace } from './media-generation-ui.mjs'
 
 const statuses = { queued: '等待渲染', running: '正在渲染', done: '成片已就绪', failed: '失败', cancelled: '已取消', interrupted: '已中断' }
 const ms = input => Math.round(input.valueAsNumber * 1000)
+const trackNames = { voice: '旁白轨', music: '音乐轨', effects: '音效轨' }
+const pictureMotions = { none: '静止', 'zoom-in': '推近', 'zoom-out': '拉远', 'pan-left': '向左平移', 'pan-right': '向右平移' }
+const filmDuration = clips => clips.reduce((sum, clip) => sum + (clip.durationMs || 0), 0)
+
+function timelineContent(source) {
+  return structuredClone({ clips: source.clips.map(clip => ({ ...clip, motion: clip.motion ?? 'none' })), narration: source.narration ?? null,
+    audioClips: source.audioClips ?? [], subtitleCues: source.subtitleCues ?? null, subtitleOutput: source.subtitleOutput ?? 'soft' })
+}
 
 function node(tag, text = '') {
   const element = document.createElement(tag)
@@ -30,19 +38,19 @@ export function mediaWorkspace({ api, dialog, actionButton, localTransaction, uu
     const [base, assets, capability, drafts] = await Promise.all([api(path + '/timeline'), api(projectPath(pid) + '/media-assets'),
       api('/media-capabilities'), localTransaction('readonly', store => store.index('document').getAll(id)).catch(() => [])])
     if (!isCurrent(pid)) return
+    const baseline = timelineContent(base)
     const recovery = drafts.filter(row => row.scope === 'timeline' && (row.baseRev !== base.rev ||
-      JSON.stringify(row.clips) !== JSON.stringify(base.clips) || JSON.stringify(row.narration) !== JSON.stringify(base.narration)))
+      JSON.stringify(timelineContent(row)) !== JSON.stringify(baseline)))
       .sort((a, b) => b.updated - a.updated)
     render({ pid, id, path, back, base, assets, capability, recovery, key: 'timeline:' + uuid(),
-      clips: structuredClone(base.clips), narration: structuredClone(base.narration), selected: 0, dirty: false })
+      ...baseline, selected: 0, dirty: false })
   }
 
   function paint(state) {
     state.status.textContent = [state.base.rev ? ui('时间线 v$1', state.base.rev) : ui('新时间线'),
       state.base.boardRev && ui('分镜 v$1', state.base.boardRev), state.base.stale && ui('分镜来源待复核'),
       state.dirty && ui(state.localOk === true ? '本机草稿' : state.localOk === false ? '本机保存失败' : '本机草稿保存中')].filter(Boolean).join(' · ')
-    if (state.total) state.total.textContent = ui('$1 段 · $2 秒', state.clips.length,
-      state.clips.reduce((sum, clip) => sum + (clip.durationMs || 0), 0) / 1000)
+    if (state.total) state.total.textContent = ui('$1 段 · $2 秒', state.clips.length, filmDuration(state.clips) / 1000)
     if (state.editor) state.editor.disabled = state.busy
     for (const button of state.recoverButtons ?? []) button.disabled = state.dirty || state.busy
     if (state.launch) state.launch.disabled = state.busy || state.dirty || !state.base.rev || !state.capability.available
@@ -51,7 +59,7 @@ export function mediaWorkspace({ api, dialog, actionButton, localTransaction, uu
 
   function persist(state) {
     const record = { scope: 'timeline', key: state.key, document: state.id, baseRev: state.base.rev, boardRev: state.base.boardRev,
-      clips: structuredClone(state.clips), narration: structuredClone(state.narration), updated: Date.now() }
+      ...timelineContent(state), updated: Date.now() }
     const writing = localTransaction('readwrite', store => state.dirty ? store.put(record) : store.delete(record.key)).then(() => true, () => false)
     state.writing = writing
     void writing.then(ok => { if (state.writing === writing) { state.localOk = ok; paint(state) } })
@@ -85,7 +93,7 @@ export function mediaWorkspace({ api, dialog, actionButton, localTransaction, uu
   async function save(state, action) {
     if (state.busy || (action === 'save' && !state.dirty)) return
     const value = { action, baseRev: state.base.rev, boardRev: state.base.currentBoardRev,
-      ...(action === 'save' ? { clips: state.clips, narration: state.narration } : {}) }
+      ...(action === 'save' ? timelineContent(state) : {}) }
     const key = JSON.stringify(value)
     if (state.pending?.key !== key) state.pending = { key, id: uuid() }
     const panel = state.panel
@@ -94,8 +102,8 @@ export function mediaWorkspace({ api, dialog, actionButton, localTransaction, uu
     paint(state)
     try {
       state.base = await api(state.path + '/timeline', 'PUT', { ...value, mutationId: state.pending.id })
-      state.clips = structuredClone(state.base.clips)
-      state.narration = structuredClone(state.base.narration)
+      Object.assign(state, timelineContent(state.base))
+      state.manualCues = null
       state.dirty = false
       state.pending = null
       await persist(state)
@@ -173,6 +181,126 @@ export function mediaWorkspace({ api, dialog, actionButton, localTransaction, uu
     return input
   }
 
+  function options(entries, value) {
+    const select = node('select')
+    select.append(...Object.entries(entries).map(([key, label]) => new Option(ui(label), key)))
+    select.value = value
+    return select
+  }
+
+  function timedAudio(state, audio) {
+    const section = node('fieldset')
+    section.className = 'script-fields'
+    section.append(node('legend', ui('音频轨道')))
+    const duration = Math.min(180_000, filmDuration(state.clips))
+    for (const [track, title] of Object.entries(trackNames)) {
+      const lane = node('fieldset')
+      lane.className = 'script-fields'
+      lane.append(node('legend', ui(title)))
+      for (const item of state.audioClips.filter(clip => clip.track === track)) {
+        const asset = audio.find(row => row.id === item.assetId)
+        const row = node('fieldset')
+        row.className = 'script-fields'
+        row.append(node('legend', asset?.name ?? ''), ...(asset ? [preview(state, asset)] : []))
+        for (const [key, label, minimum, maximum] of [
+          ['offsetMs', '音频在时间线的起点（秒）', 0, 180], ['startMs', '素材起点（秒）', 0, Math.max(0, (asset?.duration_ms ?? 0) - 100) / 1000],
+          ['durationMs', '音频片段时长（秒）', .1, 180], ['fadeInMs', '淡入（秒）', 0, 180], ['fadeOutMs', '淡出（秒）', 0, 180],
+        ]) {
+          row.append(field(label, number(item[key] / 1000, minimum, maximum, .001, input => { item[key] = ms(input); edit(state) })))
+        }
+        row.append(field('音频音量（%）', number(item.volume, 0, 200, 1, input => { item.volume = input.valueAsNumber; edit(state) })),
+          actionButton(ui('移除音频片段'), () => { state.audioClips.splice(state.audioClips.indexOf(item), 1); edit(state, true) }))
+        lane.append(row)
+      }
+      if (audio.length && duration >= 100 && state.audioClips.length < 24) {
+        const source = choice(audio, null, '选择音频素材')
+        source.id = `timeline-audio-${track}`
+        const add = actionButton(ui('添加音频片段'), () => {
+          const asset = audio.find(row => row.id === source.value)
+          if (!asset) return
+          const length = Math.min(180_000, filmDuration(state.clips), asset.duration_ms)
+          if (length < 100) return
+          state.audioClips.push({ track, assetId: asset.id, startMs: 0, durationMs: length, offsetMs: 0,
+            volume: track === 'music' ? 30 : 100, fadeInMs: 0, fadeOutMs: 0 })
+          edit(state, true)
+        })
+        add.disabled = true
+        source.addEventListener('change', () => { add.disabled = !source.value })
+        lane.append(field('音频素材', source), add)
+      }
+      section.append(lane)
+    }
+    if (!audio.length) section.append(node('p', ui('请先在素材库上传或采用音频。')))
+    return section
+  }
+
+  function shotCues(clips) {
+    let offset = 0
+    const cues = []
+    for (const clip of clips) {
+      const end = offset + clip.durationMs
+      if (clip.caption.trim()) cues.push({ startMs: offset, endMs: end, text: clip.caption })
+      offset = end
+    }
+    return cues
+  }
+
+  function captionTrack(state) {
+    const section = node('fieldset')
+    section.className = 'script-fields'
+    section.append(node('legend', ui('字幕轨')))
+    const mode = options({ shot: '使用镜头字幕', custom: '编辑独立字幕' }, state.subtitleCues === null ? 'shot' : 'custom')
+    mode.id = 'timeline-subtitle-mode'
+    mode.addEventListener('change', () => {
+      if (mode.value === 'shot') { state.manualCues = state.subtitleCues; state.subtitleCues = null }
+      else state.subtitleCues = state.manualCues ?? shotCues(state.clips)
+      edit(state, true)
+    })
+    const output = options({ soft: '内嵌字幕（可开关）', burn: '烧录字幕（显示在画面上）' }, state.subtitleOutput)
+    output.id = 'timeline-subtitle-output'
+    output.options[1].disabled = !state.capability.subtitleBurn
+    output.addEventListener('change', () => { state.subtitleOutput = output.value; edit(state) })
+    section.append(field('字幕来源', mode), field('字幕输出方式', output))
+    if (state.subtitleOutput === 'burn' && !state.capability.subtitleBurn) {
+      section.append(node('p', ui('当前 FFmpeg 不支持烧录字幕，请切换为内嵌字幕')))
+    }
+    if (state.subtitleCues === null) return section
+    const cues = state.subtitleCues
+    for (const [index, cue] of cues.entries()) {
+      const row = node('fieldset')
+      row.className = 'script-fields'
+      row.append(node('legend', ui('字幕 $1', index + 1)))
+      for (const [key, label, minimum] of [['startMs', '字幕起点（秒）', 0], ['endMs', '字幕结束（秒）', .04]]) {
+        row.append(field(label, number(cue[key] / 1000, minimum, 180, .04, input => { cue[key] = ms(input); edit(state) })))
+      }
+      const text = node('textarea')
+      Object.assign(text, { id: `timeline-subtitle-${index}`, value: cue.text, maxLength: 500, rows: 2, required: true })
+      text.addEventListener('input', () => { cue.text = text.value; edit(state) })
+      row.append(field('字幕正文', text), actionButton(ui('移除字幕'), () => { cues.splice(index, 1); edit(state, true) }))
+      section.append(row)
+    }
+    const feedback = node('p')
+    feedback.setAttribute('role', 'status')
+    const add = actionButton(ui('添加字幕'), () => {
+      let startMs = 0
+      const limit = Math.min(180_000, filmDuration(state.clips))
+      for (const cue of [...cues].sort((a, b) => a.startMs - b.startMs)) {
+        if (cue.startMs - startMs >= 40) { append(Math.min(limit, cue.startMs)); return }
+        startMs = Math.max(startMs, cue.endMs)
+      }
+      append(limit)
+      function append(end) {
+        if (end - startMs < 40 || !Number.isFinite(startMs)) { feedback.textContent = ui('请先留出至少一帧的空白字幕区间。'); return }
+        const index = cues.push({ startMs, endMs: Math.min(end, startMs + 2000), text: '' }) - 1
+        edit(state, true)
+        document.getElementById(`timeline-subtitle-${index}`)?.focus()
+      }
+    })
+    add.disabled = cues.length >= 200
+    section.append(add, feedback)
+    return section
+  }
+
   function tracks(state) {
     const form = node('fieldset')
     form.className = 'script-fields'
@@ -200,10 +328,16 @@ export function mediaWorkspace({ api, dialog, actionButton, localTransaction, uu
       const visual = state.assets.filter(asset => !asset.type.startsWith('audio/'))
       const select = choice(visual, clip.assetId, '选择画面素材')
       select.id = 'timeline-visual'
-      select.addEventListener('change', () => { clip.assetId = select.value || null; clip.startMs = 0; edit(state, true) })
+      select.addEventListener('change', () => { clip.assetId = select.value || null; clip.startMs = 0; clip.motion = 'none'; edit(state, true) })
       const item = visual.find(asset => asset.id === clip.assetId)
       form.append(field('画面素材', select))
       if (item) form.append(preview(state, item))
+      if (item?.type.startsWith('image/')) {
+        const motion = options(pictureMotions, clip.motion)
+        motion.id = 'timeline-motion'
+        motion.addEventListener('change', () => { clip.motion = motion.value; edit(state) })
+        form.append(field('静帧运动', motion))
+      }
       if (item?.type === 'video/mp4') form.append(field('素材起点（秒）', number(clip.startMs / 1000, 0, item.duration_ms / 1000, .001,
         input => { clip.startMs = ms(input); edit(state) })))
       const duration = number(clip.durationMs / 1000, .28, 180, .04, input => { clip.durationMs = ms(input); edit(state) })
@@ -225,7 +359,9 @@ export function mediaWorkspace({ api, dialog, actionButton, localTransaction, uu
         buttons.append(button)
       }
       buttons.append(actionButton(ui('移除片段'), () => { state.clips.splice(state.selected, 1); edit(state, true) }))
-      form.append(field('片段时长（秒）', duration), field('镜头字幕', caption), buttons)
+      form.append(field('片段时长（秒）', duration))
+      if (state.subtitleCues === null) form.append(field('镜头字幕', caption))
+      form.append(buttons)
     }
     const audio = state.assets.filter(asset => asset.type.startsWith('audio/'))
     const voice = choice(audio, state.narration?.assetId, '无配音')
@@ -234,14 +370,15 @@ export function mediaWorkspace({ api, dialog, actionButton, localTransaction, uu
       state.narration = voice.value ? { assetId: voice.value, startMs: 0, volume: 100 } : null
       edit(state, true)
     })
-    form.append(field('配音轨', voice))
     if (state.narration) {
+      form.append(field('原配音轨', voice))
       const narration = state.narration
       const asset = audio.find(item => item.id === narration.assetId)
       if (asset) form.append(preview(state, asset), field('配音起点（秒）', number(narration.startMs / 1000, 0,
         (asset.duration_ms - 1) / 1000, .001, input => { narration.startMs = ms(input); edit(state) })))
       form.append(field('配音音量（%）', number(narration.volume, 0, 200, 1, input => { narration.volume = input.valueAsNumber; edit(state) })))
     }
+    form.append(timedAudio(state, audio), captionTrack(state))
     return form
   }
 
@@ -273,7 +410,7 @@ export function mediaWorkspace({ api, dialog, actionButton, localTransaction, uu
     if (!state.capability.available) panel.append(node('p', ui('启用 NAS 媒体运行环境后可上传素材和渲染。')))
     if (!state.base.currentBoardRev) panel.append(node('p', ui('请先确认当前分镜，再建立时间线。')))
     if (state.base.stale && state.base.currentBoardRev) controls.append(actionButton(ui('复核分镜来源'), () => {
-      dialog(ui('复核分镜来源'), [node('p', ui('采用新分镜顺序，保留仍存在镜头的素材和字幕。旧时间线留在已提交的成片任务中。')),
+      dialog(ui('复核分镜来源'), [node('p', ui('采用新分镜顺序，保留对应镜头的素材、运动和字幕。请复核音频与独立字幕的时间点。')),
         actionButton(ui('返回时间线'), () => render(state))], async () => { render(state); await save(state, 'rebase') }, ui('采用新分镜'))
     }))
     for (const record of state.recovery.slice(0, 3)) {
@@ -300,11 +437,11 @@ export function mediaWorkspace({ api, dialog, actionButton, localTransaction, uu
   }
 
   function recovery(state, record) {
-    const output = node('pre', JSON.stringify({ clips: record.clips, narration: record.narration }, null, 2))
+    const output = node('pre', JSON.stringify(timelineContent(record), null, 2))
     const compatible = state.editable && record.baseRev === state.base.rev && record.boardRev === state.base.boardRev
     dialog(ui('本机时间线'), [output, actionButton(ui('返回时间线'), () => render(state))], compatible ? () => {
-      state.clips = structuredClone(record.clips)
-      state.narration = structuredClone(record.narration)
+      Object.assign(state, timelineContent(record))
+      state.manualCues = null
       state.recovered = record
       edit(state, true)
     } : undefined, ui('加载本机稿到编辑器'))

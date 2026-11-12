@@ -27,6 +27,10 @@ export const mediaSchema = `
 export const maxUploadBytes = 64 * 1024 ** 2
 export const maxFilmMs = 180_000
 export const frameMs = 40
+const maxAudioClips = 24
+const maxSubtitleCues = 200
+const audioTracks = new Set(['voice', 'music', 'effects'])
+const imageMotions = new Set(['none', 'zoom-in', 'zoom-out', 'pan-left', 'pan-right'])
 const mediaQuota = 2 * 1024 ** 3
 const sizes = { '9:16': [540, 960], '16:9': [960, 540], '1:1': [720, 720] }
 const jobFields = 'id,episode_id,timeline_rev,status,progress,sha,bytes,error,created'
@@ -44,7 +48,26 @@ function count(value, minimum, maximum, message) {
 
 function clipFor(shot) {
   return { shotId: shot.id, assetId: null, startMs: 0, durationMs: Math.max(280, Math.round(shot.durationMs / frameMs) * frameMs),
-    caption: (shot.dialogue || '').slice(0, 500) }
+    caption: (shot.dialogue || '').slice(0, 500), motion: 'none' }
+}
+
+function contentWithDefaults(content) {
+  return { clips: content.clips.map(clip => ({ ...clip, motion: clip.motion ?? 'none' })), narration: content.narration ?? null,
+    audioClips: content.audioClips ?? [], subtitleCues: content.subtitleCues ?? null, subtitleOutput: content.subtitleOutput ?? 'soft' }
+}
+
+function parseSubtitles(value) {
+  if (value == null) return null
+  if (!Array.isArray(value) || value.length > maxSubtitleCues) throw new ApiError(400, '最多保存 200 条独立字幕')
+  const cues = value.map(item => {
+    object(item)
+    const startMs = count(item.startMs, 0, maxFilmMs - frameMs, '字幕起点无效')
+    const endMs = count(item.endMs, startMs + frameMs, maxFilmMs, '字幕结束时间无效')
+    if (startMs % frameMs || endMs % frameMs) throw new ApiError(422, '字幕时间须对齐 40 毫秒帧')
+    return { startMs, endMs, text: string(item.text, 500, true).trim() }
+  }).sort((a, b) => a.startMs - b.startMs)
+  if (cues.some((cue, index) => index > 0 && cue.startMs < cues[index - 1].endMs)) throw new ApiError(422, '独立字幕时间不能重叠')
+  return cues
 }
 
 export function openMediaStore({ get, all, run, tx, hash, now, screenplay, storyboard }) {
@@ -95,7 +118,7 @@ export function openMediaStore({ get, all, run, tx, hash, now, screenplay, story
   function view(pid, id, board, row) {
     const boardRev = row?.board_rev ?? board.current
     const source = boardRev && board.rev !== boardRev ? storyboard.detail(pid, id, boardRev) : board
-    const content = row ? JSON.parse(row.content) : { clips: board.current ? defaultClips(board) : [], narration: null }
+    const content = contentWithDefaults(row ? JSON.parse(row.content) : { clips: board.current ? defaultClips(board) : [] })
     return { id, title: board.title, rev: row?.rev ?? 0, boardRev, currentBoardRev: board.current,
       stale: !!row && boardRev !== board.current, ...content,
       shots: source.shots.map(shot => ({ id: shot.id, visual: shot.visual, prompt: shot.prompt, clip: clipFor(shot) })) }
@@ -103,6 +126,23 @@ export function openMediaStore({ get, all, run, tx, hash, now, screenplay, story
 
   function timeline(pid, id) {
     return view(pid, id, boardContext(pid, id), latest(id))
+  }
+
+  function parseAudio(pid, items) {
+    if (!Array.isArray(items) || items.length > maxAudioClips) throw new ApiError(400, '最多保存 24 个音频片段')
+    return items.map(item => {
+      object(item)
+      if (!audioTracks.has(item.track)) throw new ApiError(400, '音频轨道无效')
+      const source = asset(pid, mediaId(item.assetId))
+      if (!source.type.startsWith('audio/')) throw new ApiError(422, '音频轨需要音频素材')
+      const startMs = count(item.startMs, 0, source.duration_ms - 100, '音频起点超出素材时长')
+      const durationMs = count(item.durationMs, 100, Math.min(maxFilmMs, source.duration_ms - startMs), '音频片段须至少 0.1 秒且在素材时长内')
+      const offsetMs = count(item.offsetMs, 0, maxFilmMs - durationMs, '音频位置超出 180 秒时间线')
+      const volume = count(item.volume, 0, 200, '音频音量应在 0–200% 之间')
+      const fadeInMs = count(item.fadeInMs ?? 0, 0, durationMs, '音频淡入时长无效')
+      const fadeOutMs = count(item.fadeOutMs ?? 0, 0, durationMs - fadeInMs, '音频淡出时长无效')
+      return { track: item.track, assetId: source.id, startMs, durationMs, offsetMs, volume, fadeInMs, fadeOutMs }
+    })
   }
 
   function parseContent(pid, value, board) {
@@ -119,7 +159,11 @@ export function openMediaStore({ get, all, run, tx, hash, now, screenplay, story
       const durationMs = count(item.durationMs, 280, maxFilmMs, '单镜时长应在 0.28–180 秒之间')
       if (durationMs % frameMs || (source?.type === 'video/mp4' ? startMs + durationMs > source.duration_ms : startMs !== 0) ||
           source?.type.startsWith('audio/')) throw new ApiError(422, '画面范围超出素材时长或未对齐 40 毫秒帧')
-      return { shotId: item.shotId, assetId, startMs, durationMs, caption: string(item.caption ?? '', 500).trim() }
+      const motion = item.motion ?? 'none'
+      if (!imageMotions.has(motion) || (motion !== 'none' && !source?.type.startsWith('image/'))) {
+        throw new ApiError(422, '画面运动须使用静帧素材')
+      }
+      return { shotId: item.shotId, assetId, startMs, durationMs, caption: string(item.caption ?? '', 500).trim(), motion }
     })
     let narration = null
     if (value.narration != null) {
@@ -129,7 +173,11 @@ export function openMediaStore({ get, all, run, tx, hash, now, screenplay, story
       narration = { assetId: voice.id, startMs: count(input.startMs, 0, voice.duration_ms - 1, '配音起点超出素材时长'),
         volume: count(input.volume, 0, 200, '配音音量应在 0–200% 之间') }
     }
-    return { clips, narration }
+    const audioClips = parseAudio(pid, value.audioClips ?? [])
+    const subtitleCues = parseSubtitles(value.subtitleCues)
+    const subtitleOutput = value.subtitleOutput ?? 'soft'
+    if (subtitleOutput !== 'soft' && subtitleOutput !== 'burn') throw new ApiError(400, '字幕输出方式无效')
+    return { clips, narration, audioClips, subtitleCues, subtitleOutput }
   }
 
   function change(pid, id, value) {
@@ -147,17 +195,25 @@ export function openMediaStore({ get, all, run, tx, hash, now, screenplay, story
       }
       const previous = latest(id)
       if (board.current !== boardRev || (previous?.rev ?? 0) !== baseRev) throw new ApiError(409, '分镜或时间线已更新，请重新读取')
+      const prior = previous && contentWithDefaults(JSON.parse(previous.content))
       let content
       if (value.action === 'rebase' && previous && previous.board_rev !== boardRev) {
-        const prior = JSON.parse(previous.content)
         const retained = new Map(prior.clips.map(clip => [clip.shotId, clip]))
         content = { ...prior, clips: defaultClips(board).map(clip => retained.get(clip.shotId) ?? clip) }
       } else {
         if (value.action !== 'save' || (previous && previous.board_rev !== boardRev)) throw new ApiError(409, '请先复核并更新分镜来源')
-        content = value
+        content = { audioClips: prior?.audioClips, subtitleCues: prior?.subtitleCues, subtitleOutput: prior?.subtitleOutput, ...value }
+        if (prior && Array.isArray(value.clips)) {
+          const retained = new Map(prior.clips.map(clip => [clip.shotId, clip]))
+          content.clips = value.clips.map(clip => {
+            object(clip)
+            const old = retained.get(clip.shotId)
+            return old && old.assetId === clip.assetId ? { motion: old.motion, ...clip } : clip
+          })
+        }
       }
       const payload = JSON.stringify(parseContent(pid, content, board))
-      const rev = previous?.content === payload && previous.board_rev === boardRev ? previous.rev : baseRev + 1
+      const rev = previous?.board_rev === boardRev && JSON.stringify(prior) === payload ? previous.rev : baseRev + 1
       if (rev !== previous?.rev) run('INSERT INTO media_timelines VALUES (?,?,?,?,?)', id, rev, boardRev, payload, now())
       run('INSERT INTO media_timeline_receipts VALUES (?,?,?,?)', id, mutation, fingerprint, rev)
       return view(pid, id, board, at(id, rev))
@@ -205,15 +261,19 @@ export function openMediaStore({ get, all, run, tx, hash, now, screenplay, story
         const board = boardContext(pid, episodeId)
         const row = latest(episodeId)
         if (!row || row.rev !== rev || row.board_rev !== board.current) throw new ApiError(409, '请保存当前分镜对应的时间线')
-        const { clips, narration } = JSON.parse(row.content)
+        const { clips, narration, audioClips, subtitleCues, subtitleOutput } = contentWithDefaults(JSON.parse(row.content))
         const durationMs = clips.reduce((sum, item) => sum + item.durationMs, 0)
         if (!clips.length || clips.length > 120 || durationMs > maxFilmMs || clips.some(clip => !clip.assetId)) {
           throw new ApiError(422, '成片须含 1–120 个已关联素材的片段，且总长不超过 180 秒')
         }
+        if (audioClips.some(item => item.offsetMs + item.durationMs > durationMs) || subtitleCues?.some(cue => cue.endMs > durationMs)) {
+          throw new ApiError(422, '请将音频片段和独立字幕调整到成片时长内')
+        }
         const [width, height] = sizes[screenplay.details(pid, episode.adaptation_id).aspect]
-        frozen = { width, height, durationMs, boardRev: row.board_rev, fps: 25, version: 1,
+        frozen = { width, height, durationMs, boardRev: row.board_rev, fps: 25, version: 2, subtitleCues, subtitleOutput,
           clips: clips.map(clip => ({ ...clip, asset: asset(pid, clip.assetId) })),
-          narration: narration ? { ...narration, asset: asset(pid, narration.assetId) } : null }
+          narration: narration ? { ...narration, asset: asset(pid, narration.assetId) } : null,
+          audioClips: audioClips.map(item => ({ ...item, asset: asset(pid, item.assetId) })) }
       }
       run(`INSERT INTO media_renders (id,project_id,episode_id,timeline_rev,manifest,fingerprint,status,created)
         VALUES (?,?,?,?,?,?,'queued',?)`, id, pid, episodeId, rev, JSON.stringify(frozen), fingerprint, now())

@@ -446,7 +446,8 @@ async function route(req, res) {
   }
   if (path === '/api/webdav-backup' && method === 'GET') return json(res, webdav.status())
   if (path === '/api/webdav-backup' && method === 'POST') return json(res, webdav.start(), 202)
-  if (method === 'GET' && path === '/api/media-capabilities') return json(res, { enabled: mediaEnabled, available: await mediaFiles.available() })
+  if (method === 'GET' && path === '/api/media-capabilities') return json(res, { enabled: mediaEnabled,
+    available: await mediaFiles.available(), subtitleBurn: await mediaFiles.canBurnSubtitles() })
   if (method === 'GET' && path === '/api/media-generation-capabilities') return json(res, {
     ...replicate.capabilities, available: await generation.canRun(),
   })
@@ -530,7 +531,7 @@ async function route(req, res) {
       return sendMedia(req, res, directory, { ...job, type: 'video/mp4' }, url.searchParams.get('download') === '1' ? 'pagekin-film.mp4' : undefined)
     }
     if (method === 'GET' && action === 'subtitles') {
-      const text = subtitles(media.manifest(pid, id).clips)
+      const text = subtitles(media.manifest(pid, id))
       res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Content-Disposition': 'attachment; filename="pagekin-film.srt"' })
       return res.end(text)
     }
