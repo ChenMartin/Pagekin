@@ -21,6 +21,8 @@ RUN if [ "$PAGEKIN_INSTALL_MEDIA" = 1 ]; then \
     fi
 COPY --chown=node:node server.mjs store.mjs input.mjs screenplay-store.mjs desktop-archive.mjs desktop-copy.mjs writing-context.mjs review-report.mjs revision-merge.mjs continuation.mjs version.mjs maintenance.mjs semantic.mjs ./
 COPY --chown=node:node manuscript-export.mjs reference-novels.mjs character-continuity.mjs continuity-report.mjs ./
+COPY --chown=node:node manuscript-inference.mjs ./
+COPY --chown=node:node novel-workbench.mjs bundled-writing-skills.mjs ./
 COPY --chown=node:node desktop-character-import.mjs desktop-continuity.mjs novel-progress.mjs model-profiles.mjs webdav-backup.mjs ./
 COPY --chown=node:node architecture-store.mjs thread-evidence.mjs ./
 COPY --chown=node:node storyboard.mjs production-runs.mjs ./

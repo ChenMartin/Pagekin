@@ -21,7 +21,7 @@ export const architectureSections = {
   },
 }
 
-export function splitArchitecture(body, headings) {
+function markdownHeadings(body) {
   const matches = []
   let fence = ''
   for (const line of body.matchAll(/^([^\r\n]*)(?:\r?\n|$)/gmu)) {
@@ -31,13 +31,55 @@ export function splitArchitecture(body, headings) {
       continue
     }
     if (fence) continue
-    const title = /^ {0,3}##[ \t]+(.+?)[ \t]*$/u.exec(line[1])?.[1]
-    if (headings.includes(title)) matches.push({ title, start: line.index, end: line.index + line[0].length })
+    const heading = /^ {0,3}(#{1,6})[ \t]+(.+?)[ \t]*$/u.exec(line[1])
+    if (heading) matches.push({ title: heading[2], level: heading[1].length, start: line.index, end: line.index + line[0].length })
   }
+  return matches
+}
+
+export function splitArchitecture(body, headings) {
+  const matches = markdownHeadings(body).filter(heading => heading.level === 2 && headings.includes(heading.title))
   const fields = matches.slice(-headings.length)
   if (fields.length !== headings.length || fields.some((field, index) => field.title !== headings[index])) return null
   return { preamble: body.slice(0, fields[0].start), values: fields.map((field, index) =>
     body.slice(field.end, fields[index + 1]?.start).replace(/^\r?\n|(?:\r?\n)+$/gu, '')) }
+}
+
+const blueprintNoteFields = new Map([
+  ['作者指导', 'guidance'], ['作者微操指导', 'guidance'], ['author guidance', 'guidance'],
+  ['章节要点', 'notes'], ['chapter notes', 'notes'],
+])
+
+function blueprintNotes(body) {
+  const headings = markdownHeadings(body)
+  const notes = new Map()
+  for (const [index, heading] of headings.entries()) {
+    const key = blueprintNoteFields.get(heading.title.toLowerCase())
+    if (!key || notes.has(key)) continue
+    let next = index + 1
+    while (headings[next]?.level > heading.level) next++
+    const end = headings[next]?.start ?? body.length
+    notes.set(key, { start: heading.start, end, empty: !body.slice(heading.end, end).trim(), section: body.slice(heading.start, end).trimEnd() })
+  }
+  return notes
+}
+
+export function preserveBlueprintNotes(original, candidate) {
+  const before = blueprintNotes(original)
+  const after = blueprintNotes(candidate)
+  const replacements = []
+  const additions = []
+  for (const [key, item] of before) {
+    if (item.empty) continue
+    const proposed = after.get(key)
+    if (!proposed) additions.push(item.section)
+    else if (proposed.empty) replacements.push({ ...proposed, section: item.section })
+  }
+  let result = candidate
+  for (const { start, end, section } of replacements.sort((a, b) => b.start - a.start)) {
+    result = result.slice(0, start) + section + '\n\n' + result.slice(end)
+  }
+  return additions.length ? [result.trimEnd(), ...additions].join('\n\n') + '\n' : result
 }
 
 export function joinArchitecture(preamble, headings, values = []) {

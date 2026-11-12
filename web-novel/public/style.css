@@ -118,6 +118,11 @@ a { color: var(--accent); }
 #ai p { overflow-wrap: anywhere; }
 #ai .tools button { min-height: 2.3rem; }
 .chapter-next { padding: .55rem .65rem; border-inline-start: 3px solid var(--accent); background: var(--accent-wash); border-radius: .2rem; }
+.workbench-section > legend { color: var(--accent); padding-inline: .3rem; font-weight: 650; }
+#dialog-body .workbench-actions button { margin: 0; }
+#dialog-body .workbench-section textarea { margin-top: .25rem; }
+#dialog-body .workbench-section .manuscript-check { min-height: 2.4rem; margin: 0; }
+.workbench-section pre { max-height: 30dvh; }
 .find-panel { border: 1px solid var(--line); border-radius: .35rem; padding: .65rem; margin-bottom: .65rem; }
 .find-panel input:not([type=checkbox]) { margin-block: .25rem; }
 .find-panel .check { display: inline-flex; align-items: center; min-height: 2.65rem; gap: .35rem; }

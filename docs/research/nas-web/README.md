@@ -20,7 +20,7 @@
 
 候选版之后的开发分支已接入 CodeMirror 6。从源码构建的容器会打包增强编辑器及其许可证，也可通过 `APP_EDITOR=plain` 使用普通编辑器。增强和普通模式均通过 Edge 回归，增强模式覆盖合成中文输入。已发布的 v0.1.0-rc.1 离线镜像仍使用普通编辑器。[小说工作区使用说明](../../../web-novel/README.md)
 
-当前开发分支为 `0.2.0-dev.16`，采用 Web SQLite schema 25。小说工作区增加目录、稿纸和写作助手，完善蓝图写稿、选段预览和逐段手动合并。 [使用与升级说明](../../../web-novel/README.md)
+当前开发分支为 `0.2.0-dev.18`，采用 Web SQLite schema 27。小说工作区增加创作简报、叙述声音、逐章任务、定稿引句和小说写作技能目录。 [使用与升级说明](../../../web-novel/README.md)
 
 1. [源码调研与证据](01-source-audit.md)：已确认事实、修正前次结论、改造入口。
 2. [系统设计](02-system-design.md)：后端、数据、任务、安全、NAS 部署。
@@ -36,6 +36,8 @@
 11. [外部素材生成开发清单](11-media-generation-checklist.md)。
 12. [多轨剪辑开发清单](12-multitrack-editing-checklist.md)。
 13. [小说工作区优化清单](13-novel-workspace-checklist.md)。
+14. [桌面 1.4.0 对照清单](14-desktop-1-4-alignment-checklist.md)。
+15. [小说写作 Skill 与 Web 工作台](15-writing-workbench.md)。
 
 ## 核心决策
 

@@ -15,7 +15,8 @@ import { releaseVersion } from './version.mjs'
 import { openSemantic } from './semantic.mjs'
 import { continuationAddition } from './continuation.mjs'
 import { manuscriptExport } from './manuscript-export.mjs'
-import { fetchChat, openModelProfiles } from './model-profiles.mjs'
+import { fetchChat, openModelProfiles, writingStage } from './model-profiles.mjs'
+import { inferenceMessages } from './manuscript-inference.mjs'
 import { openWebDavBackup } from './webdav-backup.mjs'
 import { mediaId } from './media-store.mjs'
 import { openMediaFiles, sendMedia } from './media-files.mjs'
@@ -53,9 +54,12 @@ const batchWorkers = new Set()
 const eventClients = new Set()
 let archiveImporting = false
 let stopping = false
-const prepareMessages = contextLimit => (kind, context) => kind === 'continuity'
-  ? continuityMessages(context, contextLimit) : writingMessages(kind, context, contextLimit)
-const previewBudget = () => models.current()?.contextLimit ?? models.defaultBudget
+const prepareMessages = contextLimit => (kind, context) => {
+  if (kind === 'continuity') return continuityMessages(context, contextLimit)
+  if (kind === 'infer') return inferenceMessages(context.chapters, contextLimit)
+  return writingMessages(kind, context, contextLimit)
+}
+const previewBudget = stage => models.current(stage)?.contextLimit ?? models.defaultBudget
 
 const files = new Map([
   ['/', ['index.html', 'text/html']],
@@ -64,6 +68,8 @@ const files = new Map([
   ['/locale-en.mjs', ['locale-en.mjs', 'text/javascript']],
   ['/manuscript.mjs', ['manuscript.mjs', 'text/javascript']],
   ['/novel-goals.mjs', ['novel-goals.mjs', 'text/javascript']],
+  ['/workbench-fields.mjs', ['workbench-fields.mjs', 'text/javascript']],
+  ['/workbench-ui.mjs', ['workbench-ui.mjs', 'text/javascript']],
   ['/architecture.mjs', ['architecture.mjs', 'text/javascript']],
   ['/screenplay-ui.mjs', ['screenplay-ui.mjs', 'text/javascript']],
   ['/production-ui.mjs', ['production-ui.mjs', 'text/javascript']],
@@ -343,12 +349,14 @@ async function generate(profile, job, messages, prefix = '', target) {
     else if (job.kind === 'outline' && output.length > outlineMaxChars) error = '生成细纲过长，请缩短要求后重新生成'
     else if (finish === 'stop') { status = 'done'; error = '' }
     else error = '模型输出未正常完成，已保留收到的内容'
-  } catch {
+  } catch (failure) {
     if (controller.signal.aborted) {
       const reason = controller.signal.reason
       status = reason === 'cancelled' ? 'cancelled' : ['paused', 'shutdown'].includes(reason) ? 'interrupted' : 'failed'
       error = reason === 'timeout' ? '模型响应超时' : reason === 'shutdown' ? '服务停止'
         : reason === 'paused' ? '批次已暂停，保留已收到的内容' : '已取消'
+    } else if (failure instanceof TypeError && ['fetch failed', 'terminated'].includes(failure.message)) {
+      error = '模型连接中断，请检查网络或代理。已保留收到的内容。'
     }
   } finally {
     clearTimeout(timeout)
@@ -439,6 +447,7 @@ async function route(req, res) {
   })
   if (path === '/api/model-profiles' && method === 'GET') return json(res, { ...models.list(), semantic: !!semantic })
   if (path === '/api/model-profiles' && method === 'PUT') return json(res, models.select(await body(req, 4096)))
+  if (path === '/api/model-profiles/stages' && method === 'PUT') return json(res, models.selectStages(await body(req, 4096)))
   if (path === '/api/model-profiles/diagnose' && method === 'POST') return json(res, await models.diagnose(await body(req, 4096)))
   if (path === '/api/model-profiles/diagnose-semantic' && method === 'POST') {
     if (!semantic) throw new ApiError(422, '尚未配置语义模型')
@@ -470,6 +479,22 @@ async function route(req, res) {
   if (resource === 'goals' && id === undefined) {
     if (method === 'GET') return json(res, storage.projectGoals(pid))
     if (method === 'PUT') return json(res, storage.saveProjectGoals(pid, await body(req, 8192)))
+  }
+  if (resource === 'workbench' && action === undefined) {
+    const workbench = storage.novelWorkbench
+    if (id === undefined && method === 'GET') return json(res, workbench.project(pid))
+    if (id === undefined && method === 'PUT') {
+      const value = await body(req, 32_000)
+      return json(res, storage.tx(() => workbench.saveProject(pid, value)))
+    }
+    if (/^[1-9]\d{0,4}$/u.test(id ?? '')) {
+      const number = Number(id)
+      if (method === 'GET') return json(res, { ...workbench.chapter(pid, number), finals: workbench.earlierFinals(pid, number) })
+      if (method === 'PUT') {
+        const value = await body(req, 32_000)
+        return json(res, storage.tx(() => workbench.saveChapter(pid, number, value)))
+      }
+    }
   }
   const screenplay = storage.screenplay
   if (resource === 'media-generations' && id) {
@@ -624,6 +649,8 @@ async function route(req, res) {
     }
   }
   if (resource === 'writing-skills' && action === undefined) {
+    if (id === 'bundle' && method === 'GET') return json(res, storage.bundledSkills(pid))
+    if (id === 'bundle' && method === 'POST') return json(res, storage.importBundledSkills(pid, await body(req, 4096)))
     if (method === 'GET') return json(res, id ? storage.writingSkill(pid, id) : storage.listSkills(pid))
     if (method === 'POST' && id === undefined) return json(res, storage.installSkill(pid, await body(req, 50_000)), 201)
     if (method === 'PUT' && id === 'bindings') return json(res, storage.bindSkills(pid, await body(req, 4096)))
@@ -634,7 +661,7 @@ async function route(req, res) {
     if (method === 'GET' && action === undefined) return json(res, id ? storage.getBatch(pid, id) : storage.listBatches(pid))
     if (method === 'POST' && id === undefined) {
       const value = await body(req, 32_000)
-      const profile = models.required()
+      const profile = models.required(null, value?.blueprintRange ? 'planning' : 'draft')
       const batch = storage.createBatch(pid, value, profile.ref)
       if (batch.status === 'running') runBatch(batch.id, models.pinned(batch.model_ref))
       return json(res, storage.getBatch(pid, batch.id), 202)
@@ -763,7 +790,7 @@ async function route(req, res) {
   if (resource === 'documents') {
     if (method === 'GET' && id === undefined) return json(res, storage.all(`
       SELECT id,kind,number,title,rev,status,updated,length(trim(body, char(9,10,13,32,12288))) > 0 AS has_body
-      FROM documents WHERE project_id=? ORDER BY kind,number,created`, pid))
+      FROM documents INDEXED BY document_catalog WHERE project_id=? ORDER BY kind,number,created`, pid))
     if (method === 'POST' && id === undefined) {
       const value = await body(req)
       return json(res, storage.tx(() => storage.addDocument(pid, value)), 201)
@@ -771,22 +798,29 @@ async function route(req, res) {
     if (id && action === undefined && method === 'GET') return json(res, storage.document(pid, id))
     if (id && action === undefined && method === 'PUT') return json(res, storage.save(pid, id, await body(req)))
     if (id && action === 'status' && method === 'POST') return json(res, storage.transition(pid, id, await body(req)))
-    if (id && action === 'history' && method === 'GET') return json(res, storage.history(pid, id))
+    if (id && action === 'history' && method === 'GET') {
+      if (url.searchParams.has('rev')) return json(res, storage.historyEntry(pid, id, Number(url.searchParams.get('rev'))))
+      if (url.searchParams.get('summary') === '1') return json(res, storage.historySummaries(pid, id))
+      return json(res, storage.history(pid, id))
+    }
     if (id && action === 'history' && method === 'POST') return json(res, storage.restore(pid, id, await body(req)))
     if (id && action === 'runs' && method === 'GET') {
       storage.document(pid, id)
-      return json(res, storage.all('SELECT id,kind,status,base_rev,applied_rev,created FROM runs WHERE document_id=? ORDER BY created DESC,rowid DESC LIMIT 50', id))
+      return json(res, storage.all(`SELECT id,kind,status,base_rev,applied_rev,created,continued_from,
+        CASE WHEN kind='passage' THEN json_extract(request_data,'$.request.passage.mode') END passage_mode
+        FROM runs WHERE document_id=? ORDER BY created DESC,rowid DESC LIMIT 50`, id))
     }
     if (id && action === 'runs' && method === 'POST') {
       const value = await body(req)
-      const profile = models.required(value?.modelProfileId)
+      const profile = models.required(value?.modelProfileId, writingStage(value?.kind, value?.passage?.mode))
       const { job, messages } = storage.startRun(pid, id, value, prepareMessages(profile.contextLimit), profile.ref)
       if (messages) void generate(profile, job, messages).catch(() => console.error('无法记录任务结果'))
       return json(res, storage.runDetail(pid, job.id), 202)
     }
     if (id && action === 'context' && method === 'POST') {
       const value = await body(req)
-      const limit = value?.modelProfileId == null ? previewBudget() : models.required(value.modelProfileId).contextLimit
+      const stage = writingStage(value?.kind, value?.passage?.mode)
+      const limit = value?.modelProfileId == null ? previewBudget(stage) : models.required(value.modelProfileId).contextLimit
       const messages = storage.previewRun(pid, id, value, prepareMessages(limit))
       return json(res, { messages, limit })
     }
@@ -803,6 +837,8 @@ async function route(req, res) {
   }
   if (resource === 'runs' && id) {
     if (method === 'GET' && action === undefined) return json(res, storage.runDetail(pid, id))
+    if (action === 'inference' && method === 'GET') return json(res, storage.inferenceReview(pid, id))
+    if (action === 'inference' && method === 'POST') return json(res, storage.inferenceReview(pid, id, await body(req, 4096)))
     if (method === 'GET' && action === 'candidate') return json(res, storage.previewPassage(pid, id))
     if (method === 'POST' && action === 'continue') {
       const value = await body(req, 4096)

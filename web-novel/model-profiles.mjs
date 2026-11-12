@@ -9,6 +9,15 @@ export const modelProfileSchema = `
   ALTER TABLE reference_analyses ADD COLUMN model_ref TEXT;
   ALTER TABLE reference_batches ADD COLUMN model_ref TEXT;
 `
+export const modelStageSchema = `
+  CREATE TABLE model_stage_preferences (id INTEGER PRIMARY KEY CHECK(id=1), selections TEXT NOT NULL, rev INTEGER NOT NULL);
+`
+const stages = ['planning', 'draft', 'review', 'revision', 'continuity']
+export function writingStage(kind, passageMode) {
+  if (kind === 'plan' || kind === 'outline' || kind === 'infer') return 'planning'
+  if (kind === 'passage') return passageMode === 'continue' ? 'draft' : 'revision'
+  return kind === 'revise' ? 'revision' : stages.includes(kind) ? kind : null
+}
 
 const profileId = /^[a-zA-Z0-9_-]{1,40}$/
 export function importedModelRef(value) {
@@ -42,7 +51,7 @@ function configured(raw, fallbackBudget) {
   return { id, label, model, key, endpoint, contextLimit, ref }
 }
 
-export function openModelProfiles({ get, run }, env = process.env) {
+export function openModelProfiles({ get, run, tx }, env = process.env) {
   const defaultBudget = budget(Number(env.LLM_CONTEXT_CHARS || '64000'))
   const profiles = new Map()
   const legacy = (env.LLM_MODEL || '').trim() ? configured({
@@ -64,13 +73,22 @@ export function openModelProfiles({ get, run }, env = process.env) {
   }
   const first = profiles.keys().next().value ?? null
   const stored = () => get('SELECT profile_id,rev FROM model_preference WHERE id=1')
-  const current = () => profiles.get(stored()?.profile_id ?? first) ?? null
+  const storedStages = () => get('SELECT selections,rev FROM model_stage_preferences WHERE id=1')
+  const selections = row => row ? JSON.parse(row.selections) : {}
+  const current = stage => {
+    const chosen = stage && selections(storedStages())[stage]
+    return profiles.get(chosen) ?? profiles.get(stored()?.profile_id ?? first) ?? null
+  }
   const summary = ({ id, label, model, contextLimit }) => ({ id, label, model, contextLimit })
 
   function list() {
     const saved = stored()
+    const stageRow = storedStages()
     const activeId = saved?.profile_id ?? first
-    return { activeId, rev: saved?.rev ?? 0, available: profiles.has(activeId), profiles: [...profiles.values()].map(summary) }
+    const selected = selections(stageRow)
+    return { activeId, rev: saved?.rev ?? 0, stageRev: stageRow?.rev ?? 0,
+      stages: Object.fromEntries(stages.map(stage => [stage, profiles.has(selected[stage]) ? selected[stage] : null])),
+      available: profiles.has(activeId), profiles: [...profiles.values()].map(summary) }
   }
 
   function select(value) {
@@ -84,8 +102,26 @@ export function openModelProfiles({ get, run }, env = process.env) {
     return list()
   }
 
-  function required(id) {
-    const profile = id == null ? current() : profiles.get(id)
+  function selectStages(value) {
+    const { baseRev, stages: input } = object(value)
+    object(input)
+    if (!Number.isSafeInteger(baseRev) || baseRev < 0 || Object.keys(input).some(key => !stages.includes(key))) {
+      throw new ApiError(400, '分工模型设置无效')
+    }
+    return tx(() => {
+      const saved = list()
+      const next = { ...saved.stages, ...input }
+      if (Object.values(next).some(id => id !== null && !profiles.has(id))) throw new ApiError(400, '请选择有效的模型预设')
+      if (JSON.stringify(next) === JSON.stringify(saved.stages)) return saved
+      if (baseRev !== saved.stageRev) throw new ApiError(409, '另一设备已更改分工模型，请重新读取', saved)
+      run(`INSERT INTO model_stage_preferences VALUES (1,?,?)
+        ON CONFLICT(id) DO UPDATE SET selections=excluded.selections,rev=excluded.rev`, JSON.stringify(next), baseRev + 1)
+      return list()
+    })
+  }
+
+  function required(id, stage) {
+    const profile = id == null ? current(stage) : profiles.get(id)
     if (!profile) throw new ApiError(422, '请选择可用的写作模型预设')
     return profile
   }
@@ -146,7 +182,7 @@ export function openModelProfiles({ get, run }, env = process.env) {
       testing = false
     }
   }
-  return { list, select, required, current, pinned, diagnose, defaultBudget }
+  return { list, select, selectStages, required, current, pinned, diagnose, defaultBudget }
 }
 
 export function fetchChat({ endpoint, key, model }, messages, signal) {

@@ -24,8 +24,9 @@ export function reviewReport(output, snapshot) {
       if (typeof issue[key] !== 'string' || !issue[key].trim() || issue[key].length > max) return null
     }
     const quote = lineEndings(issue.quote)
+    const category = ['contradiction', 'uncertain', 'misdirection', 'style'].includes(issue.category) ? issue.category : null
     issues.push({ title: issue.title, severity: issue.severity, quote, reason: issue.reason, suggestion: issue.suggestion,
-      evidence: quoteEvidence(body, quote) })
+      ...(category ? { category } : {}), evidence: quoteEvidence(body, quote) })
   }
   return { issues }
 }

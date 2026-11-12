@@ -143,6 +143,10 @@ rc.2 的 Windows 和 `linux/amd64` 容器 HTTP 回归各通过 4 项。Edge 普�
 
 `0.2.0-dev.16` 重排小说工作区，增加章号目录、蓝图直达写稿、单次模型选择、选段对比和逐段手动合并。Edge 普通编辑器及 CodeMirror 验证窄屏目录、选段、跨页合并和重载后找回待处理修稿。Windows 和 Linux amd64 各通过 8 项 HTTP 回归，Compose 隔离卷验证从 `dev.14` 升级与备份恢复。 [小说工作区优化清单](13-novel-workspace-checklist.md)
 
+`0.2.0-dev.17` 对照桌面 `1.4.0`，增加分工模型、选段按意见改、定稿原稿反推、历史定稿标记及蓝图要点保护。Windows 和 Linux amd64 各通过 8 项 HTTP 回归，Edge 两种编辑模式验证按意见改写、模型设置和反推采用。SQLite 查询计划确认目录使用覆盖索引。Compose 隔离卷验证 schema 11 和 25 升到 26，保留正文、分镜和时间线，并通过独立卷恢复。反推和断流使用模拟端点。 [桌面 1.4.0 对照清单](14-desktop-1-4-alignment-checklist.md)
+
+`0.2.0-dev.18` 增加创作工作台、本章准备、前文定稿引句和九个可批量导入的小说写作 Skill。Windows 和 Linux amd64 各通过 9 项 HTTP 回归，Edge 普通编辑器和 CodeMirror 验证工作台保存、章节方法选择及 Skill 导入。Compose 隔离卷从 schema 11 和 26 升到 27，保留正文和历史，并通过在线备份及独立卷恢复。模型请求使用模拟端点。 [小说写作 Skill 与 Web 工作台](15-writing-workbench.md)
+
 | 验收项 | 可复现的验证或下一步 |
 | --- | --- |
 | HTTP、迁移、模型与备份 | 在 `web-novel` 运行 `node --test smoke.test.mjs`。覆盖跨设备保存、整稿导入、语义索引、细纲与审稿、合并冲突、批次重启、Skill 恢复及重复续跑。 |

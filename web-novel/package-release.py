@@ -16,7 +16,8 @@ def package(output: Path) -> Path:
     files = [
         ".dockerignore", ".env.example", "Dockerfile", "compose.yaml", "README.md", "RELEASE.md",
         "server.mjs", "store.mjs", "writing-context.mjs", "review-report.mjs", "desktop-archive.mjs", "desktop-copy.mjs",
-        "revision-merge.mjs", "continuation.mjs", "manuscript-export.mjs", "input.mjs", "screenplay-store.mjs", "public/screenplay-ui.mjs",
+        "revision-merge.mjs", "continuation.mjs", "manuscript-export.mjs", "manuscript-inference.mjs", "input.mjs", "screenplay-store.mjs", "public/screenplay-ui.mjs",
+        "novel-workbench.mjs", "bundled-writing-skills.mjs", "public/workbench-fields.mjs", "public/workbench-ui.mjs",
         "storyboard.mjs", "production-runs.mjs",
         "media-store.mjs", "media-files.mjs", "media-render.mjs", "public/media-ui.mjs",
         "media-generation.mjs", "media-generation-store.mjs", "replicate.mjs", "public/media-generation-ui.mjs",

@@ -68,5 +68,5 @@ export function openArchitecture({ all, get, run, tx, document, addDocument }) {
       run('UPDATE architecture_sections SET confirmed_rev=? WHERE project_id=? AND section=?', confirmed, pid, key)
     }
   }
-  return { list, sectionFor, change, importBackup }
+  return { list, sectionFor, bind, change, importBackup }
 }

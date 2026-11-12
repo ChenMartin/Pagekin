@@ -39,6 +39,7 @@
         <div id="project-tools" hidden>
           <nav aria-label="作品入口" class="tools">
             <button id="workbench-overview">作品概览</button>
+            <button id="novel-workbench">创作工作台</button>
             <button id="project-progress">长篇进度</button>
             <button id="project-goals">写作目标</button>
             <button id="project-runs">运行中心</button>
@@ -102,6 +103,7 @@
       <section id="empty">
         <h1 id="overview-title">书房</h1>
         <p id="overview-summary">选择一部作品，或新建作品开始写作。</p>
+        <button id="overview-workbench" class="primary" hidden>打开创作工作台</button>
         <div id="overview-progress" class="overview-progress" hidden></div>
         <div id="overview-documents" class="overview-documents"></div>
       </section>
@@ -117,7 +119,9 @@
           <button id="previous-chapter" type="button" hidden>上一章</button>
           <button id="next-chapter" type="button" hidden>下一章</button>
           <button id="paired-document" type="button" hidden></button>
+          <button id="chapter-workbench" type="button" hidden>本章任务与依据</button>
           <button id="write-blueprint" type="button" class="primary" hidden></button>
+          <button id="infer-manuscript" type="button" hidden>反推原稿设定</button>
           <button id="ai-passage" type="button" hidden>选段 AI</button>
           <button id="assistant-toggle" type="button" aria-controls="ai" aria-expanded="false">AI 助手</button>
           <button id="focus-writing" type="button" aria-pressed="false">专注写作</button>
@@ -149,6 +153,7 @@
           <button type="button" data-passage="polish">润色</button>
           <button type="button" data-passage="expand">扩写</button>
           <button type="button" data-passage="dialogue">改成对话</button>
+          <button type="button" data-passage="note">按意见改</button>
         </div>
         <label class="sr" for="body">正文</label>
         <textarea id="body" maxlength="180000" placeholder="开始写作…" spellcheck="false"></textarea>
@@ -194,6 +199,7 @@
           </div>
           <div id="run-view" hidden>
             <p id="run-status" role="status"></p>
+            <p id="passage-note" hidden></p>
             <pre id="run-output"></pre>
             <div id="review-report" hidden>
               <p id="review-summary"></p>
@@ -210,6 +216,7 @@
               <button id="apply-run" hidden>预览并应用候选</button>
               <button id="use-outline" hidden>将此细纲用于写稿</button>
               <button id="use-review" hidden>选中文字后加入修稿要求</button>
+              <button id="inference-candidates" hidden>查看原稿反推候选</button>
             </div>
           </div>
         </details>

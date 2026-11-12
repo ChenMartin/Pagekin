@@ -5,13 +5,15 @@ import { novelGoals } from './novel-goals.mjs'
 import { architectureSections, joinArchitecture, splitArchitecture } from './architecture.mjs'
 import { referenceNovelWorkspace } from './reference-novel-ui.mjs'
 import { continuityWorkspace } from './character-continuity-ui.mjs'
+import { openWorkbenchUi } from './workbench-ui.mjs'
 
 const $ = id => document.getElementById(id)
 const names = { settings: ui("设定与架构"), character: ui("人物"), blueprint: ui("章节蓝图"), chapter: ui("正文"), reference: ui("参考资料") }
 const stages = ['settings', 'character', 'blueprint', 'chapter']
 const chapterRuns = { draft: ui("写稿"), outline: ui("写前细纲"), review: ui("审稿"), revise: ui("修稿") }
-const passageActions = { continue: '在选段后续写', polish: '润色', expand: '扩写', dialogue: '改成对话' }
-const runNames = { ...chapterRuns, plan: ui("AI 规划"), passage: ui("选段 AI"), continuity: ui("人物变化提取") }
+const passageActions = { continue: '在选段后续写', polish: '润色', expand: '扩写', dialogue: '改成对话', note: '按意见改' }
+const writingStages = { planning: '规划', draft: '写稿', review: '审稿', revision: '修稿', continuity: '定稿人物提取' }
+const runNames = { ...chapterRuns, plan: ui("AI 规划"), passage: ui("选段 AI"), continuity: ui("人物变化提取"), infer: ui("原稿反推") }
 const runStates = { running: ui("生成中"), done: ui("已完成"), failed: ui("失败"), cancelled: ui("已取消"), interrupted: ui("已中断") }
 const batchStates = { running: ui("进行中"), paused: ui("已暂停"), done: ui("已结束"), cancelled: ui("已取消") }
 const threadKinds = { plot: ui("剧情线索"), foreshadow: ui("伏笔") }
@@ -158,10 +160,13 @@ function paint(state = editor) {
   $('next-chapter').disabled = !adjacentChapter(state, 1)
   const pairedKind = { chapter: 'blueprint', blueprint: 'chapter' }[state.doc.kind]
   $('paired-document').hidden = !pairedKind
+  $('chapter-workbench').hidden = !pairedKind
   if (pairedKind) $('paired-document').textContent = ui("本章") + (pairedKind === 'blueprint' ? ui("蓝图") : ui("正文"))
   const blueprint = state.doc.kind === 'blueprint'
   const pairedChapter = blueprint && documents.find(row => row.kind === 'chapter' && row.number === state.doc.number)
   $('write-blueprint').hidden = !blueprint || !model || Boolean(pairedChapter?.status === 'final' || pairedChapter?.has_body)
+  $('infer-manuscript').hidden = !locked || !model || state.doc.kind !== 'chapter'
+  $('infer-manuscript').disabled = state.job?.status === 'running'
   if (blueprint) $('write-blueprint').textContent = ui("写第 $1 章", state.doc.number)
   $('recover').hidden = !state.recovered.length
   $('conflict').hidden = !state.conflict
@@ -517,6 +522,7 @@ function renderCatalog(selected = editor?.doc.id ?? '', reveal = false) {
   const counts = stages.map(kind => documents.filter(row => row.kind === kind).length)
   const finalized = documents.filter(row => row.kind === 'chapter' && row.status === 'final').length
   $('overview-summary').hidden = Boolean(project)
+  $('overview-workbench').hidden = !project
   const progress = $('overview-progress')
   progress.hidden = !project
   progress.replaceChildren(...stages.map((kind, index) => {
@@ -1136,6 +1142,9 @@ function manuscriptPreview(pid, parsed, existing) {
   const preserveLabel = document.createElement('label')
   preserveLabel.className = 'manuscript-check'
   preserveLabel.append(preserve, ui(" 保留文件中的章号"))
+  const [finalLabel, finalize] = field(ui("导入为已定稿的作者原稿"), { id: 'manuscript-finalize', type: 'checkbox', required: false })
+  const [inferLabel, inferAfter] = field(ui("导入后预览原稿反推"), { id: 'manuscript-infer-after', type: 'checkbox', required: false })
+  finalLabel.className = inferLabel.className = 'manuscript-check'
   const status = document.createElement('p')
   status.setAttribute('role', 'status')
   const list = document.createElement('div')
@@ -1165,6 +1174,7 @@ function manuscriptPreview(pid, parsed, existing) {
   let submitted = false
 
   function update() {
+    inferLabel.hidden = !finalize.checked || !model
     startLabel.hidden = preserve.checked
     start.disabled = preserve.checked
     let next = start.valueAsNumber
@@ -1176,7 +1186,8 @@ function manuscriptPreview(pid, parsed, existing) {
       const issue = !Number.isInteger(number) || number < 1 || number > 99999 ? ui("章号无效")
         : occupied.has(number) ? ui("章号已占用")
           : seen.has(number) ? ui("章号重复")
-            : chapter.body.length > 180_000 ? ui("正文超过单章上限") : ''
+            : chapter.body.length > 180_000 ? ui("正文超过单章上限")
+              : finalize.checked && !chapter.body.trim() ? ui("空章不能导入为定稿") : ''
       title.textContent = (checked.checked && Number.isInteger(number) ? ui("第 ") + number + ui(" 章 · ") : '')
         + chapter.title + '（' + chapter.body.length.toLocaleString() + ui(" 字符）") + (checked.checked && issue ? ' · ' + issue : '')
       if (!checked.checked) continue
@@ -1186,22 +1197,24 @@ function manuscriptPreview(pid, parsed, existing) {
       plan.push({ index, number, title: chapter.title, body: chapter.body })
     }
     status.textContent = problems.length ? ui("请取消选择有问题的章节或调整编号。")
-      : plan.length ? ui("已选择 ") + plan.length + ui(" 章，将作为草稿加入作品。") : ui("请选择至少一章。")
+      : plan.length ? ui("已选择 ") + plan.length + ui(finalize.checked ? " 章，将作为定稿加入作品。" : " 章，将作为草稿加入作品。") : ui("请选择至少一章。")
   }
 
   preserve.addEventListener('change', update)
+  finalize.addEventListener('change', update)
   start.addEventListener('input', update)
   list.addEventListener('change', update)
   update()
-  dialog(ui("预览整稿导入"), [summary, preserveLabel, startLabel, status, list], async () => {
+  dialog(ui("预览整稿导入"), [summary, preserveLabel, startLabel, finalLabel, inferLabel, status, list], async () => {
     if (submitted || pid !== project) return
     if (!plan.length || problems.length) return
     const requestNavigation = navigation
     const selected = plan
-    const key = selected.map(chapter => chapter.index + ':' + chapter.number).join(',')
+    const openInference = finalize.checked && inferAfter.checked && model
+    const key = (finalize.checked ? 'final:' : '') + selected.map(chapter => chapter.index + ':' + chapter.number).join(',')
     const mutationId = attempts.get(key) ?? uuid()
     const chapters = selected.map(({ number, title, body }) => ({ number, title, body }))
-    const data = { mutationId, chapters }
+    const data = { mutationId, chapters, ...(finalize.checked ? { finalize: true } : {}) }
     if (new Blob([JSON.stringify(data)]).size > manuscriptRequestBytes) {
       status.textContent = ui("选中的正文超过单次上传限制，请分批导入。")
       return
@@ -1229,7 +1242,10 @@ function manuscriptPreview(pid, parsed, existing) {
     note(ui("已导入 ") + receipt.chapters.length + ui(" 章"))
     if (pid === project) {
       await refreshDocuments(editor?.doc.id)
-      if (stillPreviewing && pid === project && navigation === requestNavigation) await openDocument(receipt.chapters[0].id)
+      if (stillPreviewing && pid === project && navigation === requestNavigation) {
+        await openDocument(receipt.chapters[0].id)
+        if (openInference && editor?.doc.id === receipt.chapters[0].id) startInference(receipt.chapters.slice(1, 3).map(row => row.id))
+      }
     }
   }, ui("导入选中章节"))
 }
@@ -1305,19 +1321,30 @@ async function mutateEditor(state, action) {
 
 async function showHistory() {
   const state = editor
-  const items = await api(docPath(state) + '/history')
+  const path = docPath(state) + '/history'
+  const { items, finalRev } = await api(path + '?summary=1')
   if (editor !== state) return
-  dialog(ui("历史版本"), items.map(item => actionButton(`v${item.rev} · ${item.title} · ${new Date(item.created).toLocaleString()}`, () => {
-    dialog(ui("查看历史正文"), [compare(ui("当前版本"), state.body, ui("历史 v$1", item.rev), item.body)],
-      state.doc.status === 'final' ? undefined : () => mutateEditor(state, async () => {
-        const updated = await api(docPath(state) + '/history', 'POST', { baseRev: state.doc.rev, rev: item.rev })
-        if (editor === state) {
-          const next = showEditor(updated)
-          await loadRecovery(next)
-        }
-        $('dialog').close()
-      }), ui("恢复为新版本"))
-  })))
+  const status = item => item.status === 'final' ? ui(item.rev === finalRev ? '当前定稿' : '已被替换的定稿（只读）') : ''
+  const list = document.createElement('div')
+  list.className = 'batch-list'
+  for (const item of items) list.append(actionButton([`v${item.rev}`, item.title, status(item), new Date(item.created).toLocaleString()].filter(Boolean).join(' · '), async () => {
+    const entry = await api(path + '?rev=' + item.rev)
+    if (editor !== state || !list.isConnected || !$('dialog').open) return
+    const feedback = document.createElement('p')
+    feedback.setAttribute('role', 'status')
+    const contents = [compare(ui("当前版本"), state.body, [ui("历史 v$1", item.rev), status(item)].filter(Boolean).join(' · '), entry.body)]
+    if (navigator.clipboard?.writeText) contents.push(actionButton(ui("复制历史正文"), async () => {
+      await navigator.clipboard.writeText(entry.body)
+      feedback.textContent = ui("已复制历史正文")
+    }), feedback)
+    contents.push(actionButton(ui("返回历史版本"), showHistory))
+    dialog(ui("查看历史正文"), contents, state.doc.status === 'final' ? undefined : () => mutateEditor(state, async () => {
+      const updated = await api(path, 'POST', { baseRev: state.doc.rev, rev: item.rev })
+      if (editor === state) { const next = showEditor(updated); await loadRecovery(next) }
+      $('dialog').close()
+    }), ui("恢复为新版本"))
+  }))
+  dialog(ui("历史版本"), [list])
 }
 
 function currentReview(state) {
@@ -1335,14 +1362,17 @@ function renderReview(state) {
   $('review-summary').textContent = issues.length
     ? ui("$1 · 模型列出 $2 条问题，请核对原文后选择。", version, issues.length)
     : ui("$1 · 模型未列出问题。", version)
+  $('review-summary').append(' ', ui('覆盖范围为当前章正文及所附上下文。引文定位与问题判断需分别核对。'))
   $('review-issues').hidden = issues.length === 0
   $('use-review-issues').hidden = !issues.some(issue => issue.evidence === 'verified')
   $('use-review-issues').disabled = true
   const evidence = { verified: ui("引文可唯一定位"), ambiguous: ui("引文在原文中出现多次"), missing: ui("在该版本未找到引文"), unavailable: ui("缺少审稿版本的正文快照") }
+  const categories = { contradiction: '可能矛盾', uncertain: '材料不足待核', misdirection: '人物误信或叙事误导', style: '表达建议' }
   issues.forEach((issue, index) => {
     const item = document.createElement('article')
     const title = document.createElement('h3')
-    title.textContent = `${index + 1}. ${issue.title}（${issue.severity === 'major' ? ui("重要") : ui("一般")}）`
+    title.textContent = [`${index + 1}. ${issue.title}`, ui(issue.severity === 'major' ? '重要' : '一般'),
+      issue.category && ui(categories[issue.category])].filter(Boolean).join(' · ')
     const source = document.createElement('p')
     const quote = document.createElement('q')
     quote.textContent = issue.quote
@@ -1387,17 +1417,21 @@ function renderJob(state) {
   $('run-view').hidden = !job
   $('run-output').textContent = job?.output || ''
   $('run-output').hidden = Boolean(job?.reviewReport)
+  $('passage-note').hidden = job?.passageMode !== 'note'
+  $('passage-note').textContent = job?.passageNote ? ui("原改写意见 · $1", job.passageNote) : ''
   renderReview(state)
   $('run-status').textContent = job ? [runNames[job.kind], runStates[job.status],
     job.continued_from && ui("分段续跑"), job.applied_rev !== null && ui("已应用"), job.error, modelName(job.model_ref)].filter(Boolean).join(' · ') : ''
   $('cancel-run').hidden = job?.status !== 'running'
   $('continue-run').hidden = !job?.canContinue
+  $('continue-run').textContent = ui(job?.passageMode === 'note' ? '按原意见继续改写' : '从完整句段继续生成')
   $('apply-run').hidden = !job || !['draft', 'revise', 'plan', 'passage'].includes(job.kind) ||
     job.status === 'running' || (['plan', 'passage'].includes(job.kind) && job.status !== 'done') || !job.source_hash ||
     !job.output?.trim() || job.applied_rev !== null
   $('use-outline').hidden = !model || job?.kind !== 'outline' || job.status !== 'done' || !job.source_hash ||
     job.base_rev !== state.doc.rev || state.doc.status === 'final'
   $('use-review').hidden = job?.kind !== 'review' || job.status === 'running' || !job.output || Boolean(job.reviewReport)
+  $('inference-candidates').hidden = job?.kind !== 'infer' || job.status !== 'done'
   paint(state)
 }
 
@@ -1422,8 +1456,10 @@ async function findActive(state) {
   if (editor !== state || state.jobView) return
   const active = runs.find(run => run.status === 'running')
   const current = runs.filter(run => run.base_rev === state.doc.rev && run.applied_rev == null && run.status === 'done')
-  const pending = state.doc.kind === 'chapter' && state.doc.status !== 'final' &&
-    (current.find(run => run.kind === 'revise') ?? current.find(run => run.kind === 'review' || run.kind === 'draft'))
+  const superseded = new Set(runs.map(run => run.continued_from))
+  const noted = runs.find(run => run.passage_mode === 'note' && run.base_rev === state.doc.rev && run.applied_rev == null && !superseded.has(run.id))
+  const pending = state.doc.kind === 'chapter' && (state.doc.status === 'final' ? current.find(run => run.kind === 'infer')
+    : current.find(run => run.kind === 'revise') ?? noted ?? current.find(run => run.kind === 'review' || run.kind === 'draft'))
   if (active || pending) await viewRun(state, (active ?? pending).id)
 }
 
@@ -1493,10 +1529,10 @@ async function writeBlueprintChapter() {
   const source = editor
   if (!source || source.doc.kind !== 'blueprint' || !model) return
   await clean(source)
-  const { activeId, profiles } = await api('/model-profiles')
+  const { activeId, profiles, stages: modelStages } = await api('/model-profiles')
   if (editor !== source) return
   const chapterNumber = source.doc.number
-  const [modelField, profile] = selectField(ui("本次写作模型"), Object.fromEntries(profiles.map(row => [row.id, row.label])), activeId)
+  const [modelField, profile] = selectField(ui("本次写作模型"), Object.fromEntries(profiles.map(row => [row.id, row.label])), modelStages?.draft ?? activeId)
   const [guidanceField, guidance] = field(ui("本次要求（可选）"), { maxLength: 6000, required: false })
   const feedback = document.createElement('p')
   feedback.setAttribute('role', 'status')
@@ -1527,6 +1563,73 @@ async function writeBlueprintChapter() {
       if (editor === target && feedback.isConnected) { $('dialog').close(); assistant(true, true) }
     } catch (error) { feedback.textContent = error.message }
   }, ui("生成章节草稿"))
+}
+
+function startInference(selected = []) {
+  const state = editor
+  if (state?.doc.kind !== 'chapter' || state.doc.status !== 'final' || !model) return
+  const eligible = documents.filter(row => row.kind === 'chapter' && row.status === 'final' && row.id !== state.doc.id)
+  const options = { '': ui("不加选"), ...Object.fromEntries(eligible.map(row => [row.id, numberedTitle(row)])) }
+  const choices = [0, 1].map(index => selectField(ui("加选定稿 $1", index + 1), options, selected[index] ?? ''))
+  const source = document.createElement('p')
+  source.textContent = ui("每次最多选三章定稿，按模型预算读取各章开头片段。预览可核对实际发送的内容。")
+  const result = document.createElement('div')
+  const input = () => {
+    const ids = new Set(choices.map(([, select]) => select.value).filter(Boolean))
+    const inferenceChapters = [state.doc, ...eligible.filter(row => ids.has(row.id))].map(({ id, rev }) => ({ id, rev }))
+    return { inferenceChapters, guidance: '', referenceIds: [], referenceSpans: [], referenceQuery: '' }
+  }
+  const preview = actionButton(ui("预览发送内容"), () => showContext(state, result, 'infer', input()))
+  dialog(ui("原稿反推 · $1", state.doc.title), [source, ...choices.map(([label]) => label), preview, result], async () => {
+    if (state !== editor) return
+    try {
+      await startRun('infer', input())
+      if (state === editor && result.isConnected) { $('dialog').close(); assistant(true, true) }
+    } catch (error) { result.textContent = error.message }
+  }, ui("生成反推候选"))
+}
+
+async function showInferenceCandidates(state = editor, snapshot) {
+  const job = state?.job
+  if (job?.kind !== 'infer') return
+  const path = `/projects/${state.doc.project_id}/runs/${job.id}/inference`
+  const { stale, items } = snapshot ?? await api(path)
+  if (state !== editor || state.job?.id !== job.id) return
+  const list = document.createElement('div')
+  list.className = 'batch-list'
+  const feedback = document.createElement('p')
+  feedback.setAttribute('role', 'status')
+  if (stale) feedback.textContent = ui("用于反推的定稿已经更新，请重新选择")
+  else if (!items.length) feedback.textContent = ui("本次未得到有依据的反推候选。")
+  for (const item of items) {
+    const row = document.createElement('section')
+    const label = document.createElement('label')
+    const check = document.createElement('input')
+    check.type = 'checkbox'
+    check.value = item.index
+    check.disabled = stale || !item.available
+    const status = ui(item.documentId ? '已采用' : item.available ? '可补入空白' : '已有内容，供参考')
+    label.append(check, [item.number && ui("第 $1 章", item.number), item.title, status].filter(Boolean).join(' · '))
+    const detail = document.createElement('details')
+    const summary = document.createElement('summary')
+    summary.textContent = ui("查看候选")
+    const body = document.createElement('pre')
+    body.textContent = item.body
+    detail.append(summary, body)
+    row.append(label, detail)
+    list.append(row)
+  }
+  const all = actionButton(ui("全选可补项"), () => { for (const input of list.querySelectorAll('input:not(:disabled)')) input.checked = true })
+  const adoptable = !stale && items.some(item => item.available)
+  dialog(ui("原稿反推候选"), [feedback, ...(adoptable ? [all] : []), list], adoptable ? async () => {
+    const picks = [...list.querySelectorAll('input:checked')].map(input => Number(input.value))
+    if (!picks.length) { feedback.textContent = ui("请选择有效的原稿反推候选"); return }
+    try {
+      const updated = await api(path, 'POST', { picks })
+      await refreshDocuments()
+      if (list.isConnected) await showInferenceCandidates(state, updated)
+    } catch (error) { feedback.textContent = error.message }
+  } : undefined, ui("采用选中的候选"))
 }
 
 async function planArchitecture() {
@@ -1582,8 +1685,21 @@ function editPassage(defaultMode = 'continue') {
   const guidanceLabel = document.createElement('label')
   const guidance = document.createElement('textarea')
   guidance.rows = 3
-  guidance.maxLength = 6000
-  guidanceLabel.append(ui("本次要求"), guidance)
+  const caption = document.createTextNode('')
+  guidanceLabel.append(caption, guidance)
+  const updateMode = () => {
+    const note = mode.value === 'note'
+    guidance.required = note
+    guidance.maxLength = note ? 2000 : 6000
+    caption.textContent = ui(note ? '改写意见（1–2000 字符）' : '本次要求')
+  }
+  mode.addEventListener('change', updateMode)
+  updateMode()
+  guidance.addEventListener('keydown', event => {
+    if (mode.value !== 'note' || event.isComposing || event.key !== 'Enter' || !(event.ctrlKey || event.metaKey)) return
+    event.preventDefault()
+    $('dialog-form').requestSubmit()
+  })
   const result = document.createElement('div')
   const options = () => ({ guidance: guidance.value, passage: { mode: mode.value, start, end, quote } })
   const preview = actionButton(ui("预览发送内容"), () => showContext(state, result, 'passage', options()))
@@ -1597,6 +1713,7 @@ function editPassage(defaultMode = 'continue') {
       }
     } catch (error) { result.textContent = error.message }
   }, ui("生成选段候选"))
+  if (defaultMode === 'note') guidance.focus()
 }
 
 async function listRuns() {
@@ -1933,7 +2050,7 @@ async function showModelSettings() {
   actions.className = 'tools'
   const test = actionButton(ui("测试所选写作模型"), () => diagnose('/diagnose', { id: select.value }))
   const semantic = actionButton(ui("测试语义模型"), () => diagnose('/diagnose-semantic', {}))
-  actions.append(test, semantic, actionButton(ui("返回设置"), showSettings))
+  actions.append(test, semantic, actionButton(ui("分工模型"), showStageModels), actionButton(ui("返回设置"), showSettings))
   let busy = false
   const showSelection = () => {
     const row = data.profiles.find(item => item.id === select.value)
@@ -1981,6 +2098,30 @@ async function showModelSettings() {
       showSelection()
     }
   }
+}
+
+async function showStageModels() {
+  const data = await api('/model-profiles')
+  const options = { '': ui("跟随默认模型"), ...Object.fromEntries(data.profiles.map(row => [row.id, row.label])) }
+  const controls = Object.entries(writingStages).map(([stage, label]) => {
+    const [field, select] = selectField(ui(label), options, data.stages[stage] ?? '')
+    return { stage, field, select }
+  })
+  const guide = document.createElement('p')
+  guide.textContent = ui("新任务使用所选环节的模型。继续任务使用原模型。定稿人物提取适用于手动发起的提取任务。")
+  const result = document.createElement('p')
+  result.setAttribute('role', 'status')
+  dialog(ui("分工模型"), [guide, ...controls.map(item => item.field), result, actionButton(ui("返回模型预设"), showModelSettings)],
+    data.profiles.length ? async () => {
+      try {
+        await api('/model-profiles/stages', 'PUT', { baseRev: data.stageRev,
+          stages: Object.fromEntries(controls.map(({ stage, select }) => [stage, select.value || null])) })
+        if (result.isConnected) await showModelSettings()
+      } catch (error) {
+        result.textContent = error.message
+        if (error.status === 409) result.append(actionButton(ui("重新读取预设"), showStageModels))
+      }
+    } : undefined, ui("保存分工模型"))
 }
 
 function setFocusWriting(enabled) {
@@ -2184,13 +2325,51 @@ async function showWritingSkills(pid) {
     }))
     dialog(details.title, [preview, ...controls])
   })))
-  dialog(ui("写作 Skill"), [help, ...labels, actionButton(ui("添加写作 Skill"), () => newWritingSkill(pid)), library, error], async () => {
+  dialog(ui("写作 Skill"), [help, ...labels, actionButton(ui("小说写作技能包"), () => showWritingSkillBundle(pid)),
+    actionButton(ui("添加写作 Skill"), () => newWritingSkill(pid)), library, error], async () => {
     try {
       await api(path + '/bindings', 'PUT', { baseRev: rev,
         bindings: Object.fromEntries([...selections].map(([kind, select]) => [kind, select.value || null])) })
       if (library.isConnected) $('dialog').close()
     } catch (failure) { error.textContent = failure.message }
   }, ui("保存阶段绑定"))
+}
+
+async function showWritingSkillBundle(pid) {
+  const path = `/projects/${pid}/writing-skills/bundle`
+  const entries = await api(path)
+  if (pid !== project) return
+  const list = document.createElement('div')
+  list.className = 'batch-list'
+  for (const skill of entries) {
+    const row = document.createElement('section')
+    const label = document.createElement('label')
+    const check = Object.assign(document.createElement('input'), { type: 'checkbox', value: skill.id, disabled: skill.installed })
+    label.append(check, skill.title + (skill.installed ? ' · ' + ui('已导入') : ''))
+    const detail = document.createElement('details')
+    const summary = document.createElement('summary')
+    summary.textContent = ui('查看提示词')
+    const content = document.createElement('pre')
+    content.textContent = skill.body
+    const source = document.createElement('small')
+    source.textContent = `v${skill.version} · ${skill.source}`
+    detail.append(summary, content, source)
+    row.append(label, detail)
+    list.append(row)
+  }
+  const feedback = document.createElement('p')
+  feedback.setAttribute('role', 'status')
+  const markAll = actionButton(ui('全选可导入 Skill'), () => { for (const input of list.querySelectorAll('input:not(:disabled)')) input.checked = true })
+  const pending = entries.some(entry => !entry.installed)
+  dialog(ui('小说写作技能包'), [actionButton(ui('返回 Skill 设置'), () => showWritingSkills(pid)),
+    ...(pending ? [markAll] : []), list, feedback], pending ? async () => {
+    const ids = [...list.querySelectorAll('input:checked')].map(input => input.value)
+    if (!ids.length) { feedback.textContent = ui('请选择有效的写作 Skill'); return }
+    try {
+      await api(path, 'POST', { ids })
+      if (pid === project && list.isConnected) await showWritingSkills(pid)
+    } catch (error) { feedback.textContent = error.message }
+  } : undefined, ui('导入选中 Skill'))
 }
 
 function newWritingSkill(pid, preset) {
@@ -2256,6 +2435,25 @@ click('library-menu', showLibrary)
 click('notice-close', () => note())
 click('workspace-settings', showSettings)
 click('workbench-overview', () => showOverview())
+const novelWorkbenchUi = openWorkbenchUi({ api, dialog, actionButton })
+function showNovelWorkbench() {
+  const pid = project
+  const draft = documents.filter(row => row.kind === 'chapter' && row.status === 'draft').sort((a, b) => b.updated.localeCompare(a.updated))[0]
+  return novelWorkbenchUi.project(pid, () => project === pid, [
+    [draft ? ui('继续写第 $1 章', draft.number) : ui('新建正文'), async () => {
+      if (!draft) return newDocument('', '', 'chapter')
+      $('dialog').close()
+      await openDocument(draft.id)
+    }],
+    [ui('故事架构'), structuredArchitecture], [ui('长篇进度'), () => showProgress()], [ui('写作 Skill'), () => showWritingSkills(pid)],
+  ])
+}
+click('novel-workbench', showNovelWorkbench)
+click('overview-workbench', showNovelWorkbench)
+click('chapter-workbench', () => {
+  const state = editor
+  if (state?.doc.number != null) return novelWorkbenchUi.chapter(state.doc.project_id, state.doc.number, () => state === editor)
+})
 click('project-progress', () => showProgress())
 click('project-goals', editProjectGoals)
 click('project-runs', showProjectRuns)
@@ -2666,7 +2864,7 @@ click('apply-run', async () => {
     if (editor === state && state.job?.id === job.id) chooseRevision(state, job, path + '/merge', plan)
     return
   }
-  dialog(ui("比较并确认 AI 候选"), [compare(ui("当前") + names[state.doc.kind], state.body, ui("候选内容"), job.output)],
+  dialog(ui("比较并确认 AI 候选"), [compare(ui("当前") + names[state.doc.kind], state.body, ui("候选内容"), job.candidateOutput ?? job.output)],
     () => applyCandidate(state, job, path + '/apply'), ui("应用为新版本"))
 })
 click('close-dialog', async () => { if (await screenplay.canClose()) $('dialog').close() })
@@ -2679,6 +2877,8 @@ click('paired-document', () => {
   return counterpart ? openDocument(counterpart.id) : newDocument('', title, kind, doc.number)
 })
 click('write-blueprint', writeBlueprintChapter)
+click('infer-manuscript', () => startInference())
+click('inference-candidates', () => showInferenceCandidates())
 click('find-back', () => locate(-1))
 click('find-next', () => locate(1))
 click('replace-one', replaceOne)

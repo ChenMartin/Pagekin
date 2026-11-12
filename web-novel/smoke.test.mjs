@@ -21,6 +21,7 @@ import { sampleEpub } from './epub-test-fixture.mjs'
 import { openModelProfiles } from './model-profiles.mjs'
 import { openWebDavBackup } from './webdav-backup.mjs'
 import { architectureSections, joinArchitecture, splitArchitecture } from './public/architecture.mjs'
+import { writingMessages } from './writing-context.mjs'
 
 const password = 'test-password-local-only'
 
@@ -215,6 +216,19 @@ test('novel workflow through HTTP across devices, generation, export and restart
     if (instruction.includes('生成当前人物卡')) output = '## 人物候选\n希望找到水手'
     if (instruction.includes('生成当前章的章节蓝图')) output = '## 蓝图候选\n调查失踪的船票'
     if (instruction.includes('只返回替换片段')) output = '替换选中的文字。'
+    if (lastPrompt.startsWith('【原稿反推】')) output = JSON.stringify({
+      architecture: [{ section: 'world', values: ['提议替换原时代', '港口自治', '', '夜航避风'] }],
+      characters: [{ name: '守夜人', body: '提议覆盖人物' }, { name: '领航员', body: '在夜航指引航路' }],
+      blueprints: [...lastPrompt.matchAll(/^第 (\d+) 章 · /gmu)].map(([, number]) => ({ number: Number(number), body: '夜航与灯塔。' })),
+    })
+    if (instruction.includes('根据作者本次改写意见') && lastPrompt.includes('保留钟声的语气')) {
+      if (!instruction.includes('当前为中断后续写')) {
+        res.write('data: ' + JSON.stringify({ choices: [{ delta: { content: '钟声仍在。残字' } }] }) + '\n\n')
+        setTimeout(() => res.destroy(), 70)
+        return
+      }
+      output = '她听见舷窗响。'
+    }
     if (instruction.includes('只返回插入的新文字')) output = '续写的文字。'
     if (instruction.includes('你是小说连载助手')) output = JSON.stringify({ changes: [
       { field: 'location', value: '船上', quote: '调查者登船。\n潮声阵阵。' },
@@ -842,8 +856,34 @@ test('novel workflow through HTTP across devices, generation, export and restart
     assert.equal(newProse.body, editedText)
     const insertion = await startFor(newProse, { kind: 'passage', passage: { mode: 'continue', start: 0, end: 4, quote: '同一句。' } })
     assert.equal((await request(insertion.jobPath + '/candidate')).result.candidate, '同一句。\n\n续写的文字。\r\n替换选中的文字。\r\n结尾。')
+    const stagePath = '/api/model-profiles/stages'
+    const initialStages = (await request('/api/model-profiles')).result
+    const stageModels = (await request(stagePath, { method: 'PUT', value: { baseRev: initialStages.stageRev, stages: { revision: 'alternate' } } })).result
+    assert.equal(stageModels.stages.revision, 'alternate')
+    await request(stagePath, { method: 'PUT', status: 409, value: { baseRev: initialStages.stageRev, stages: { draft: 'alternate' } } })
+    const noteRequest = { kind: 'passage', baseRev: newProse.rev, passage: { mode: 'note', start: 0, end: 4, quote: '同一句。' } }
+    await request(prosePath + '/context', { method: 'POST', status: 400, value: { ...noteRequest, guidance: ' ' } })
+    await request(prosePath + '/context', { method: 'POST', status: 400, value: { ...noteRequest, guidance: '长'.repeat(2001) } })
+    const noteValue = { ...noteRequest, guidance: '保留钟声的语气' }
+    assert.equal((await request(prosePath + '/context', { method: 'POST', value: noteValue })).result.limit, 12000)
+    const noteJob = (await request(prosePath + '/runs', { method: 'POST', status: 202, value: { ...noteValue, mutationId: randomUUID() } })).result
+    const notePath = projectPath + '/runs/' + noteJob.id
+    const stoppedNote = await awaitRun(notePath, row => row.status === 'failed')
+    assert.match(stoppedNote.error, /连接中断/u)
+    assert.equal(stoppedNote.passageNote, noteValue.guidance)
+    assert.equal(stoppedNote.canContinue, true)
+    assert.match(stoppedNote.model_ref, /^alternate:/)
+    await request(stagePath, { method: 'PUT', value: { baseRev: stageModels.stageRev, stages: { revision: null } } })
+    const continuedNote = (await request(notePath + '/continue', { method: 'POST', status: 202, value: { mutationId: randomUUID() } })).result
+    const continuedNotePath = projectPath + '/runs/' + continuedNote.id
+    const completedNote = await awaitRun(continuedNotePath, row => row.status === 'done')
+    assert.equal(completedNote.model_ref, stoppedNote.model_ref)
+    assert.equal(completedNote.passageNote, noteValue.guidance)
+    assert.match(lastPrompt, /保留钟声的语气/u)
+    assert.equal((await request(continuedNotePath + '/candidate')).result.passage.after, '钟声仍在。\n\n她听见舷窗响。')
     await request(prosePath, { method: 'PUT', cookie: b, value: { title: prose.title, body: '同一句。\r\n别处的新稿', baseRev: newProse.rev, mutationId: randomUUID() } })
     await request(insertion.jobPath + '/apply', { method: 'POST', status: 409 })
+    await request(continuedNotePath + '/apply', { method: 'POST', status: 409 })
     const batchPlanValue = { mutationId: randomUUID(), blueprintRange: { start: 2, end: 5 }, guidance: '保持情节连续' }
     await request(projectPath + '/batches', { method: 'POST', status: 400,
       value: { ...batchPlanValue, blueprintRange: { start: 2, end: 22 } } })
@@ -911,6 +951,12 @@ test('novel workflow through HTTP across devices, generation, export and restart
     const refBackup = (await request(projectPath + '/backup')).result
     const restoredReference = (await request('/api/import', { method: 'POST', status: 201, value: refBackup })).result
     const restoredPath = '/api/projects/' + restoredReference.id
+    const restoredNoteChapter = (await request(restoredPath + '/documents')).result.find(row => row.title === '正文选段')
+    const restoredNotes = (await request(restoredPath + '/documents/' + restoredNoteChapter.id + '/runs')).result
+    const restoredContinuation = restoredNotes.find(row => row.passage_mode === 'note' && row.continued_from)
+    const restoredNote = (await request(restoredPath + '/runs/' + restoredContinuation.id)).result
+    assert.equal(restoredNote.passageNote, noteValue.guidance)
+    assert.equal(restoredNote.canContinue, false)
     const [restoredBook] = (await request(restoredPath + '/reference-novels')).result
     assert.notEqual(restoredBook.id, book.id)
     const restoredJobs = (await request(restoredPath + '/reference-novels/' + restoredBook.id)).result.jobs
@@ -1224,6 +1270,67 @@ test('novel workflow through HTTP across devices, generation, export and restart
     assert.equal((await request('/api/model-profiles')).result.activeId, 'alternate')
     assert.equal((await request(oneOffPath + '/runs', { method: 'POST', status: 202, value: oneOff })).result.id, oneOffRun.id)
     await request(oneOffPath + '/runs', { method: 'POST', status: 409, value: { ...oneOff, modelProfileId: 'alternate' } })
+
+    const inferenceProject = (await request('/api/projects', { method: 'POST', status: 201, value: { title: '已定稿原稿反推' } })).result
+    const inferenceBase = '/api/projects/' + inferenceProject.id
+    const importRoute = inferenceBase + '/chapter-imports'
+    const importedValue = { mutationId: randomUUID(), finalize: true, chapters: [
+      { number: 10, title: '灯塔', body: '守夜人点灯。' }, { number: 11, title: '启航', body: '领航员指引夜航。' },
+    ] }
+    const importedFinals = (await request(importRoute, { method: 'POST', status: 201, value: importedValue })).result.chapters
+    assert.ok(importedFinals.every(row => row.status === 'final' && row.rev === 2))
+    assert.deepEqual((await request(importRoute, { method: 'POST', status: 201, value: importedValue })).result.chapters, importedFinals)
+    await request(importRoute, { method: 'POST', status: 422, value: { ...importedValue, finalize: false } })
+    const createInferenceDoc = async value => (await request(inferenceBase + '/documents', { method: 'POST', status: 201, value })).result
+    const protectedCharacter = await createInferenceDoc({ kind: 'character', title: '守夜人', body: '作者保存的角色档案。' })
+    const protectedBlueprint = await createInferenceDoc({ kind: 'blueprint', number: 10, title: '既有蓝图', body: '## 作者指导\n\n保护旧设定。\n\n## 章节要点\n\n作者保存的要点。' })
+    const world = (await request(inferenceBase + '/architecture/world', { method: 'PUT', value: { action: 'bind' } })).result
+    await request(inferenceBase + '/documents/' + world.document_id, { method: 'PUT', value: { title: '世界观', baseRev: world.rev, mutationId: randomUUID(),
+      body: '## 时空与环境\n\n作者设定的年代。\n\n## 社会与组织\n\n\n## 规则、限制与代价\n\n\n## 日常与冲突\n' } })
+    const [inferenceAnchor] = importedFinals
+    const inferDoc = inferenceBase + '/documents/' + inferenceAnchor.id
+    const inferRequest = { kind: 'infer', baseRev: inferenceAnchor.rev, inferenceChapters: importedFinals.map(({ id, rev }) => ({ id, rev })) }
+    const inferencePreview = (await request(inferDoc + '/context', { method: 'POST', value: inferRequest })).result
+    assert.match(inferencePreview.messages.at(-1).content, /守夜人点灯。[\s\S]*领航员指引夜航。/u)
+    const inferred = (await request(inferDoc + '/runs', { method: 'POST', status: 202, value: { ...inferRequest, mutationId: randomUUID() } })).result
+    const inferenceJob = inferenceBase + '/runs/' + inferred.id
+    await awaitRun(inferenceJob, row => row.status === 'done')
+    const candidatesPath = inferenceJob + '/inference'
+    const candidates = (await request(candidatesPath)).result.items
+    assert.deepEqual(candidates.map(row => [row.kind, row.available]), [
+      ['settings', true], ['character', false], ['character', true], ['blueprint', false], ['blueprint', true],
+    ])
+    const selectionRequest = { method: 'POST', value: { picks: [0, 1, 2, 3] } }
+    const adopted = (await request(candidatesPath, selectionRequest)).result
+    assert.deepEqual((await request(candidatesPath, selectionRequest)).result, adopted)
+    assert.ok(adopted.items[0].documentId && adopted.items[2].documentId)
+    assert.equal((await request(inferenceBase + '/documents/' + protectedCharacter.id)).result.body, protectedCharacter.body)
+    assert.equal((await request(inferenceBase + '/documents/' + protectedBlueprint.id)).result.body, protectedBlueprint.body)
+    const filledWorld = (await request(inferenceBase + '/documents/' + world.document_id)).result.body
+    assert.match(filledWorld, /作者设定的年代。[\s\S]*港口自治/u)
+    assert.doesNotMatch(filledWorld, /提议替换原时代/u)
+    const reopenedInfer = (await request(inferDoc + '/status', { method: 'POST', value: { action: 'reopen', baseRev: inferenceAnchor.rev } })).result
+    const finalizedAgain = (await request(inferDoc + '/status', { method: 'POST', value: { action: 'finalize', baseRev: reopenedInfer.rev } })).result
+    await request(candidatesPath, { method: 'POST', status: 409, value: { picks: [4] } })
+    const historySummary = (await request(inferDoc + '/history?summary=1')).result
+    assert.equal(historySummary.finalRev, finalizedAgain.rev)
+    assert.ok(historySummary.items.every(row => !Object.hasOwn(row, 'body')))
+    assert.equal((await request(inferDoc + '/history?rev=' + inferenceAnchor.rev)).result.body, '守夜人点灯。')
+    const planned = (await request(inferenceBase + '/documents/' + protectedBlueprint.id + '/runs', { method: 'POST', status: 202,
+      value: { kind: 'plan', baseRev: protectedBlueprint.rev, mutationId: randomUUID() } })).result
+    const protectedRun = inferenceBase + '/runs/' + planned.id
+    const plannedDetail = await awaitRun(protectedRun, row => row.status === 'done')
+    assert.match(plannedDetail.candidateOutput, /蓝图候选[\s\S]*保护旧设定。[\s\S]*作者保存的要点。/u)
+    assert.equal((await request(protectedRun + '/apply', { method: 'POST' })).result.body, plannedDetail.candidateOutput)
+    const inferenceSnapshot = join(directory, 'inference.sqlite')
+    const inferenceRestore = join(directory, 'inference-restore')
+    await backupDatabase(restoredDb, inferenceSnapshot)
+    await restoreDatabase(createReadStream(inferenceSnapshot), join(inferenceRestore, 'novels.sqlite'))
+    const restoredStore = openStore(inferenceRestore)
+    try {
+      assert.equal(restoredStore.inferenceReview(inferenceProject.id, inferred.id).items[2].documentId, adopted.items[2].documentId)
+      assert.equal(restoredStore.get('SELECT rev FROM model_stage_preferences WHERE id=1').rev, stageModels.stageRev + 1)
+    } finally { restoredStore.db.close() }
   } finally {
     await stop(server)
     upstream.closeAllConnections()
@@ -1600,6 +1707,65 @@ test('a 500-section reference queue can finish, resume and synthesize every posi
   } finally { store.db.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
+test('workbench preserves author decisions, pinned evidence and imported skill bindings', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'pagekin-workbench-'))
+  const store = openStore(directory)
+  try {
+    const { id: pid } = store.createProject('夜航')
+    const { id: other } = store.createProject('另一部作品')
+    const earlier = store.addDocument(pid, { kind: 'chapter', number: 1, title: '灯塔', body: '守塔人把船票锁进铜匣。' })
+    const final = store.transition(pid, earlier.id, { action: 'finalize', baseRev: earlier.rev })
+    const chapter = store.addDocument(pid, { kind: 'chapter', number: 2, title: '旧码头', body: '小雨抵达渡口。' })
+    const foreign = store.addDocument(other, { kind: 'chapter', number: 1, title: '别处', body: '外部作品。' })
+    const workbench = store.novelWorkbench
+    const brief = { approach: 'explore', hook: '港口疑案', boundaries: '保留人物关系', voice: '近距离第三人称',
+      sample: '海雾沉到脚踝。', unresolved: '未经确认的候选方向', next: '作者自己的私下备注' }
+    assert.equal(workbench.saveProject(pid, { baseRev: 0, data: brief }).rev, 1)
+    assert.throws(() => workbench.saveProject(pid, { baseRev: 0, data: { hook: '旧页面' } }), { status: 409 })
+    const task = { purpose: '查铜匣', viewpoint: '小雨', known: '只听过钟声', withheld: '铜匣的主人尚未揭晓', methods: ['mystery'],
+      evidence: [{ id: final.id, rev: final.rev, quote: '守塔人把船票锁进铜匣。' }] }
+    assert.throws(() => workbench.saveChapter(pid, 2, { baseRev: 0, data: { evidence: [{ id: foreign.id, rev: foreign.rev, quote: '外部作品。' }] } }), { status: 409 })
+    assert.throws(() => workbench.saveChapter(pid, 2, { baseRev: 0, data: { evidence: [{ ...task.evidence[0], quote: '没有原文' }] } }), { status: 422 })
+    assert.equal(workbench.saveChapter(pid, 2, { baseRev: 0, data: task }).rev, 1)
+    assert.equal(workbench.saveChapter(pid, 2, { baseRev: 0, data: task }).rev, 1)
+    const request = { kind: 'draft', baseRev: chapter.rev, mutationId: randomUUID() }
+    const prepare = (kind, context) => writingMessages(kind, context, 8000)
+    const preview = () => store.previewRun(pid, chapter.id, request, prepare).at(-1).content
+    assert.match(preview(), /探索优先[\s\S]*铜匣的主人尚未揭晓[\s\S]*作者选定的前文依据/u)
+    assert.match(preview(), /海雾沉到脚踝。[\s\S]*谜题与信息释放/u)
+    assert.doesNotMatch(preview(), /未经确认的候选方向|作者自己的私下备注/u)
+    const { job } = store.startRun(pid, chapter.id, request, prepare)
+    store.run("UPDATE runs SET status='done',output='候选正文。' WHERE id=?", job.id)
+    const reopened = store.transition(pid, final.id, { action: 'reopen', baseRev: final.rev })
+    assert.equal(workbench.chapter(pid, 2).evidence[0].stale, false)
+    const saved = store.save(pid, final.id, { title: final.title, body: '守塔人把船票交给了小雨。', baseRev: reopened.rev, mutationId: randomUUID() })
+    store.transition(pid, final.id, { action: 'finalize', baseRev: saved.rev })
+    assert.equal(workbench.chapter(pid, 2).evidence[0].stale, true)
+    assert.doesNotMatch(preview(), /作者选定的前文依据|锁进铜匣/u)
+    assert.throws(() => store.applyRun(pid, job.id), { status: 409 })
+    assert.equal(workbench.saveChapter(pid, 2, { baseRev: 1, data: { ...task, purpose: '修改本章目标' } }).evidence[0].stale, true)
+
+    const bundle = store.bundledSkills(pid)
+    assert.equal(bundle.length, 9)
+    const ids = bundle.map(item => item.id)
+    assert.equal(store.importBundledSkills(pid, { ids }).added, 9)
+    assert.equal(store.importBundledSkills(pid, { ids }).added, 0)
+    assert.equal(store.listSkills(other).skills.length, 0)
+    const skill = store.listSkills(pid).skills.find(row => row.title === '小说工作台')
+    assert.equal(store.listSkills(pid).bindings.draft, null)
+    store.bindSkills(pid, { baseRev: 0, bindings: { draft: skill.id } })
+    assert.match(preview(), /本阶段写作 Skill · 小说工作台/u)
+
+    const copy = store.importBackup(store.backup(pid))
+    const copiedEvidence = workbench.chapter(copy.id, 2).evidence[0]
+    assert.notEqual(copiedEvidence.id, final.id)
+    assert.equal(copiedEvidence.stale, true)
+    assert.deepEqual(workbench.project(copy.id).data, workbench.project(pid).data)
+    assert.equal(store.bundledSkills(copy.id).filter(item => item.installed).length, 9)
+    assert.ok(store.listSkills(copy.id).bindings.draft)
+  } finally { store.db.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
 test('opening an existing Web database migrates v1 and keeps chapter data', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'pagekin-web-migration-'))
   let store
@@ -1608,6 +1774,9 @@ test('opening an existing Web database migrates v1 and keeps chapter data', asyn
     const p = store.createProject('旧版本作品')
     const doc = store.addDocument(p.id, { kind: 'chapter', number: 1, title: '原章', body: '原文' })
     store.db.exec(`
+      DROP TABLE chapter_workbench; DROP TABLE novel_workbench;
+      DROP TABLE manuscript_inference_adoptions; DROP TABLE model_stage_preferences;
+      DROP INDEX document_catalog; DROP INDEX active_writing_runs;
       DROP TABLE media_generation_variants; DROP TABLE media_generations;
       DROP TABLE media_renders; DROP TABLE media_timeline_receipts; DROP TABLE media_timelines; DROP TABLE media_assets;
       DROP TABLE production_runs; DROP TABLE storyboard_receipts; DROP TABLE storyboard_history;
