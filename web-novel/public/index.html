@@ -22,6 +22,7 @@
       <h1>打开书房</h1>
       <label>访问密码 <input name="password" type="password" autocomplete="current-password" required></label>
       <button class="primary">登录</button>
+      <button id="login-language" type="button">English</button>
     </form>
     <p id="notice" role="status" hidden></p>
     <div id="workspace" hidden>
@@ -49,7 +50,7 @@
           </nav>
           <div class="tools catalog-controls">
             <button id="new-document">新建正文</button>
-            <button id="architecture-templates" hidden>架构模板</button>
+            <button id="architecture-templates" hidden>故事架构</button>
             <button id="batch-blueprints" hidden>批量生成蓝图</button>
             <label id="chapter-filter-label">章节状态
               <select id="chapter-filter">

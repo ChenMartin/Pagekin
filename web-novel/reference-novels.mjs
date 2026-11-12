@@ -37,7 +37,7 @@ export const referenceBatchSchema = `
 `
 
 const maxBooks = 24
-const maxAnalyses = 500
+const maxAnalyses = manuscriptChapterLimit * 4
 const maxRange = 20
 const statuses = ['running', 'done', 'failed', 'cancelled', 'interrupted']
 const modes = ['range', 'synthesis']
@@ -218,7 +218,7 @@ export function openReferenceNovels({ get, all, run, tx, hash, now, writingAvail
       '\n全部位置已拆解。以下摘要和区间分析可能按字数预算缩短。\n'
     const budget = limit - system.length - intro.length
     const chapterBudget = Math.floor(budget * 0.75 / choices.length)
-    if (chapterBudget < 28) throw new ApiError(422, '上下文不足以涵盖全书的拆解摘要，请提高 LLM_CONTEXT_CHARS')
+    if (chapterBudget < 28) throw new ApiError(422, '上下文不足以涵盖全书的拆解摘要，请切换到字符预算更高的模型预设')
     const lines = choices.map((id, index) => {
       const row = reports.get(id).chapters[index + 1 - reports.get(id).first]
       const prefix = '\n位置 ' + (index + 1) + ' · '

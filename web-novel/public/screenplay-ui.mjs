@@ -1,8 +1,9 @@
-const formats = { short: '短剧', comic: '漫剧' }
-const interiors = { interior: '内景', exterior: '外景', mixed: '内外景' }
-const types = { action: '动作', dialogue: '对白', parenthetical: '括注', transition: '转场', caption: '字幕', note: '注释' }
-const episodeLabel = episode => `第 ${episode.season} 季 · 第 ${episode.number} 集 · ${episode.title}`
-const sourceLabel = entry => `第 ${entry.number} 章 · ${entry.title} · v${entry.rev}`
+import { ui } from './locale.mjs'
+const formats = { short: ui("短剧"), comic: ui("漫剧") }
+const interiors = { interior: ui("内景"), exterior: ui("外景"), mixed: ui("内外景") }
+const types = { action: ui("动作"), dialogue: ui("对白"), parenthetical: ui("括注"), transition: ui("转场"), caption: ui("字幕"), note: ui("注释") }
+const episodeLabel = episode => ui("第 $1 季 · 第 $2 集 · $3", episode.season, episode.number, episode.title)
+const sourceLabel = entry => ui("第 $1 章 · $2 · v$3", entry.number, entry.title, entry.rev)
 const editable = value => ({ title: value.title, scenes: structuredClone(value.scenes) })
 
 function node(tag, text = '') {
@@ -22,7 +23,7 @@ function selectField(label, options, value) {
 
 function preview(value) {
   return [value.title, ...value.scenes.map((scene, index) => [
-    `${index + 1}. ${scene.title || '未命名场次'} · ${interiors[scene.interior]} · ${scene.location} · ${scene.time}`,
+    `${index + 1}. ${scene.title || ui("未命名场次")} · ${interiors[scene.interior]} · ${scene.location} · ${scene.time}`,
     ...scene.elements.map(item => `${item.speaker || types[item.type]} · ${item.text}`),
   ].join('\n'))].join('\n\n')
 }
@@ -51,45 +52,45 @@ export function screenplayWorkspace({ api, dialog, field, actionButton, localTra
   async function list(pid) {
     const rows = await api(`/projects/${pid}/adaptations`)
     if (!isCurrent(pid)) return
-    dialog('剧本改编', [actionButton('新建改编项目', () => newAdaptation(pid)),
-      ...rows.map(row => actionButton(`${row.title} · ${formats[row.format]} · ${row.episodes} 集`, () => adaptation(pid, row.id)))])
+    dialog(ui("剧本改编"), [actionButton(ui("新建改编项目"), () => newAdaptation(pid)),
+      ...rows.map(row => actionButton(ui("$1 · $2 · $3 集", row.title, formats[row.format], row.episodes), () => adaptation(pid, row.id)))])
   }
 
   function newAdaptation(pid) {
-    const [titleLabel, title] = field('改编项目名称', { maxLength: 160 })
-    const [formatLabel, format] = selectField('改编类型', formats, 'short')
-    const [aspectLabel, aspect] = selectField('画幅', { '9:16': '9:16', '16:9': '16:9', '1:1': '1:1' }, '9:16')
-    const [secondsLabel, seconds] = field('单集目标时长（秒）', { type: 'number', min: 15, max: 1800, value: '90' })
+    const [titleLabel, title] = field(ui("改编项目名称"), { maxLength: 160 })
+    const [formatLabel, format] = selectField(ui("改编类型"), formats, 'short')
+    const [aspectLabel, aspect] = selectField(ui("画幅"), { '9:16': '9:16', '16:9': '16:9', '1:1': '1:1' }, '9:16')
+    const [secondsLabel, seconds] = field(ui("单集目标时长（秒）"), { type: 'number', min: 15, max: 1800, value: '90' })
     const alert = node('p')
     alert.setAttribute('role', 'alert')
     const mutationId = uuid()
-    dialog('新建改编项目', [titleLabel, formatLabel, aspectLabel, secondsLabel, alert, actionButton('返回改编列表', () => list(pid))], async () => {
+    dialog(ui("新建改编项目"), [titleLabel, formatLabel, aspectLabel, secondsLabel, alert, actionButton(ui("返回改编列表"), () => list(pid))], async () => {
       try {
         const created = await api(`/projects/${pid}/adaptations`, 'POST', { mutationId, title: title.value,
           format: format.value, aspect: aspect.value, seconds: seconds.valueAsNumber })
         if (alert.isConnected && open()) await adaptation(pid, created.id)
       } catch (error) { alert.textContent = error.message }
-    }, '创建改编项目')
+    }, ui("创建改编项目"))
   }
 
   async function adaptation(pid, id) {
     const data = await api(`/projects/${pid}/adaptations/${id}`)
     if (!isCurrent(pid)) return
-    const label = node('p', `${formats[data.format]} · ${data.aspect} · 目标 ${data.seconds} 秒／集`)
-    dialog(data.title, [label, actionButton('新建剧本集', () => newEpisode(pid, data)),
-      ...data.episodes.map(row => actionButton(`${episodeLabel(row)} · ${row.status === 'confirmed' ? '已确认' : '草稿'}`, () => loadEpisode(pid, row.id))),
-      actionButton('返回改编列表', () => list(pid))])
+    const label = node('p', ui("$1 · $2 · 目标 $3 秒／集", formats[data.format], data.aspect, data.seconds))
+    dialog(data.title, [label, actionButton(ui("新建剧本集"), () => newEpisode(pid, data)),
+      ...data.episodes.map(row => actionButton(`${episodeLabel(row)} · ${row.status === 'confirmed' ? ui("已确认") : ui("草稿")}`, () => loadEpisode(pid, row.id))),
+      actionButton(ui("返回改编列表"), () => list(pid))])
   }
 
   async function newEpisode(pid, adaptationInfo) {
     const sources = await api(`/projects/${pid}/adaptations/eligible`)
     if (!isCurrent(pid)) return
-    const back = actionButton('返回改编项目', () => adaptation(pid, adaptationInfo.id))
-    if (!sources.length) return dialog('新建剧本集', [node('p', '先在小说工作区定稿至少一章，再为剧本集选定原文。'), back])
+    const back = actionButton(ui("返回改编项目"), () => adaptation(pid, adaptationInfo.id))
+    if (!sources.length) return dialog(ui("新建剧本集"), [node('p', ui("先在小说工作区定稿至少一章，再为剧本集选定原文。")), back])
     const last = adaptationInfo.episodes.at(-1)
-    const [titleLabel, title] = field('剧本集标题', { maxLength: 160 })
-    const [seasonLabel, season] = field('季号', { type: 'number', min: 1, max: 99, value: last?.season ?? 1 })
-    const [numberLabel, number] = field('集号', { type: 'number', min: 1, max: 9999, value: Math.min(9999, (last?.number ?? 0) + 1) })
+    const [titleLabel, title] = field(ui("剧本集标题"), { maxLength: 160 })
+    const [seasonLabel, season] = field(ui("季号"), { type: 'number', min: 1, max: 99, value: last?.season ?? 1 })
+    const [numberLabel, number] = field(ui("集号"), { type: 'number', min: 1, max: 9999, value: Math.min(9999, (last?.number ?? 0) + 1) })
     const choices = node('div')
     choices.className = 'batch-list'
     const checks = sources.map(entry => {
@@ -103,13 +104,13 @@ export function screenplayWorkspace({ api, dialog, field, actionButton, localTra
     const alert = node('p')
     alert.setAttribute('role', 'alert')
     const mutationId = uuid()
-    dialog('新建剧本集', [titleLabel, seasonLabel, numberLabel, node('p', '选择 1–20 章定稿作为本集来源。'), choices, alert, back], async () => {
+    dialog(ui("新建剧本集"), [titleLabel, seasonLabel, numberLabel, node('p', ui("选择 1–20 章定稿作为本集来源。")), choices, alert, back], async () => {
       try {
         const created = await api(`/projects/${pid}/adaptations/${adaptationInfo.id}/episodes`, 'POST', { mutationId, title: title.value,
           season: season.valueAsNumber, number: number.valueAsNumber, sources: checks.filter(({ check }) => check.checked).map(({ entry }) => ({ id: entry.id, rev: entry.rev })) })
         if (alert.isConnected && open()) await loadEpisode(pid, created.id)
       } catch (error) { alert.textContent = error.message }
-    }, '创建剧本集')
+    }, ui("创建剧本集"))
   }
 
   async function loadEpisode(pid, id) {
@@ -129,9 +130,9 @@ export function screenplayWorkspace({ api, dialog, field, actionButton, localTra
   }
 
   function paint(state) {
-    const server = `${state.base.status === 'confirmed' ? '已确认' : '已存 NAS'} · v${state.base.rev}`
-    state.status.textContent = state.dirty ? (state.localOk === true ? `本机草稿已保存 · NAS v${state.base.rev}`
-      : state.localOk === false ? '本机草稿保存失败，请先保存到 NAS' : '正在保存本机草稿…') : server
+    const server = `${state.base.status === 'confirmed' ? ui("已确认") : ui("已存 NAS")} · v${state.base.rev}`
+    state.status.textContent = state.dirty ? (state.localOk === true ? ui("本机草稿已保存 · NAS v$1", state.base.rev)
+      : state.localOk === false ? ui("本机草稿保存失败，请先保存到 NAS") : ui("正在保存本机草稿…")) : server
     if (state.confirm) state.confirm.disabled = state.dirty || state.busy
     state.form.disabled = state.base.status === 'confirmed' || state.busy
   }
@@ -159,7 +160,7 @@ export function screenplayWorkspace({ api, dialog, field, actionButton, localTra
     if (!state?.dirty) return true
     if (await state.localWrite) return true
     if (await persist(state)) return true
-    state.alert.textContent = '无法保存本机草稿。请先保存到 NAS，或复制当前编辑内容。'
+    state.alert.textContent = ui("无法保存本机草稿。请先保存到 NAS，或复制当前编辑内容。")
     return false
   }
 
@@ -192,7 +193,7 @@ export function screenplayWorkspace({ api, dialog, field, actionButton, localTra
       await persist(state)
     } catch (error) {
       if (error.status && error.status < 500) state.pending = null
-      state.alert.textContent = error.message + (error.current ? '。可重新读取 NAS 后比较并恢复本机稿。' : '')
+      state.alert.textContent = error.message + (error.current ? ui("。可重新读取 NAS 后比较并恢复本机稿。") : '')
       await persist(state)
     } finally {
       state.busy = false
@@ -222,9 +223,9 @@ export function screenplayWorkspace({ api, dialog, field, actionButton, localTra
   }
 
   function viewRecovery(state, record) {
-    const back = actionButton('返回剧本集', () => render(state))
-    dialog('对照本机稿与 NAS 剧本', [node('p', `NAS v${state.base.rev}`), node('pre', preview(state.base)),
-      node('p', `本机稿基于 v${record.baseRev}`), node('pre', preview(record.content)), back],
+    const back = actionButton(ui("返回剧本集"), () => render(state))
+    dialog(ui("对照本机稿与 NAS 剧本"), [node('p', `NAS v${state.base.rev}`), node('pre', preview(state.base)),
+      node('p', ui("本机稿基于 v$1", record.baseRev)), node('pre', preview(record.content)), back],
     state.base.status === 'draft' ? () => {
       if (state.dirty) state.key = 'screenplay:' + uuid()
       state.content = editable(record.content)
@@ -235,7 +236,7 @@ export function screenplayWorkspace({ api, dialog, field, actionButton, localTra
         state.pending = { ...record.pending, edit: same ? state.edit + 1 : -1 }
       }
       edited(state, true)
-    } : undefined, '加载本机稿到编辑器')
+    } : undefined, ui("加载本机稿到编辑器"))
   }
 
   async function history(state) {
@@ -250,10 +251,10 @@ export function screenplayWorkspace({ api, dialog, field, actionButton, localTra
       const detail = node('div')
       state.panel = detail
       state.alert = node('p')
-      detail.append(node('pre', preview(snapshot)), state.alert, actionButton('返回剧本集', () => render(state)))
-      dialog(`剧本历史 v${row.rev}`, [detail], state.base.status === 'draft' && !state.dirty ? () => operation(state, 'restore', row.rev) : undefined, '恢复为新版本')
+      detail.append(node('pre', preview(snapshot)), state.alert, actionButton(ui("返回剧本集"), () => render(state)))
+      dialog(ui("剧本历史 v$1", row.rev), [detail], state.base.status === 'draft' && !state.dirty ? () => operation(state, 'restore', row.rev) : undefined, ui("恢复为新版本"))
     })))
-    dialog('剧本历史版本', [versions, actionButton('返回剧本集', () => render(state))])
+    dialog(ui("剧本历史版本"), [versions, actionButton(ui("返回剧本集"), () => render(state))])
   }
 
   function bindText(state, label, value, maxLength, set, id, multiline = false) {
@@ -280,25 +281,25 @@ export function screenplayWorkspace({ api, dialog, field, actionButton, localTra
   function renderLine(state, scene, item, index) {
     const section = node('section')
     section.className = 'script-line'
-    const [typeLabel, type] = selectField(`元素 ${index + 1}`, types, item.type)
+    const [typeLabel, type] = selectField(ui("元素 $1", index + 1), types, item.type)
     type.addEventListener('change', () => { item.type = type.value; edited(state, true) })
     section.append(typeLabel)
     if (item.type === 'dialogue') {
-      const characters = Object.fromEntries([['', '手填说话人'], ...state.cast.map(row => [row.id, row.title])])
-      const [characterLabel, character] = selectField('关联人物卡', characters, item.characterId ?? '')
+      const characters = Object.fromEntries([['', ui("手填说话人")], ...state.cast.map(row => [row.id, row.title])])
+      const [characterLabel, character] = selectField(ui("关联人物卡"), characters, item.characterId ?? '')
       character.addEventListener('change', () => {
         item.characterId = character.value || null
         item.speaker = state.cast.find(row => row.id === item.characterId)?.title ?? item.speaker ?? ''
         edited(state, true)
       })
-      section.append(characterLabel, bindText(state, '说话人', item.speaker ?? '', 160, text => { item.speaker = text }))
+      section.append(characterLabel, bindText(state, ui("说话人"), item.speaker ?? '', 160, text => { item.speaker = text }))
     }
-    const up = actionButton('上移元素', () => reorder(state, scene.elements, index, -1))
-    const down = actionButton('下移元素', () => reorder(state, scene.elements, index, 1))
+    const up = actionButton(ui("上移元素"), () => reorder(state, scene.elements, index, -1))
+    const down = actionButton(ui("下移元素"), () => reorder(state, scene.elements, index, 1))
     up.disabled = index === 0
     down.disabled = index === scene.elements.length - 1
-    section.append(bindText(state, '正文', item.text, 6000, text => { item.text = text }, '', true), sceneButtons('tools', up, down,
-      actionButton('删除元素', () => { scene.elements.splice(index, 1); edited(state, true) })))
+    section.append(bindText(state, ui("正文"), item.text, 6000, text => { item.text = text }, '', true), sceneButtons('tools', up, down,
+      actionButton(ui("删除元素"), () => { scene.elements.splice(index, 1); edited(state, true) })))
     return section
   }
 
@@ -315,27 +316,27 @@ export function screenplayWorkspace({ api, dialog, field, actionButton, localTra
     state.form = node('fieldset')
     state.form.className = 'script-fields'
     const locked = state.base.status === 'confirmed'
-    const exportLink = node('a', '导出 Markdown')
+    const exportLink = node('a', ui("导出 Markdown"))
     exportLink.href = '/api' + state.path + '/export'
-    state.confirm = actionButton(locked ? '重开剧本' : '确认剧本', () => operation(state, locked ? 'reopen' : 'confirm'))
+    state.confirm = actionButton(locked ? ui("重开剧本") : ui("确认剧本"), () => operation(state, locked ? 'reopen' : 'confirm'))
     panel.append(state.status, state.alert, sceneButtons('tools', state.confirm, exportLink,
-      actionButton('剧本历史', () => history(state)), actionButton('重新读取 NAS', async () => { if (await canLeave(state)) await loadEpisode(state.pid, state.id) }),
-      actionButton('返回改编项目', async () => { if (await canLeave(state)) await adaptation(state.pid, state.base.adaptation_id) })))
+      actionButton(ui("剧本历史"), () => history(state)), actionButton(ui("重新读取 NAS"), async () => { if (await canLeave(state)) await loadEpisode(state.pid, state.id) }),
+      actionButton(ui("返回改编项目"), async () => { if (await canLeave(state)) await adaptation(state.pid, state.base.adaptation_id) })))
     for (const record of state.recovery.slice(0, 5)) {
-      panel.append(actionButton(`比较本机草稿 · v${record.baseRev} · ${new Date(record.updated).toLocaleString()}`, async () => {
+      panel.append(actionButton(ui("比较本机草稿 · v$1 · $2", record.baseRev, new Date(record.updated).toLocaleString()), async () => {
         if (await canLeave(state)) viewRecovery(state, record)
       }))
     }
-    if (state.base.sources.some(entry => entry.updated)) panel.append(node('p', '小说来源已更新。本集仍关联原来的定稿版本。'))
-    const sources = sceneButtons('tools', ...state.base.sources.map(entry => actionButton('读原文 · ' + sourceLabel(entry), async () => {
+    if (state.base.sources.some(entry => entry.updated)) panel.append(node('p', ui("小说来源已更新。本集仍关联原来的定稿版本。")))
+    const sources = sceneButtons('tools', ...state.base.sources.map(entry => actionButton(ui("读原文 · ") + sourceLabel(entry), async () => {
       if (!await canLeave(state)) return
       const data = await api(state.path + '/source?chapter=' + encodeURIComponent(entry.id))
-      if (visible(state, panel)) dialog('小说原文 · ' + sourceLabel(data), [node('pre', data.body), actionButton('返回剧本集', () => render(state))])
+      if (visible(state, panel)) dialog(ui("小说原文 · ") + sourceLabel(data), [node('pre', data.body), actionButton(ui("返回剧本集"), () => render(state))])
     })))
     panel.append(sources)
-    state.form.append(bindText(state, '剧本集标题', state.content.title, 160, text => { state.content.title = text }, 'script-episode-title'))
+    state.form.append(bindText(state, ui("剧本集标题"), state.content.title, 160, text => { state.content.title = text }, 'script-episode-title'))
     const scenes = state.content.scenes
-    const addScene = actionButton('添加场次', () => {
+    const addScene = actionButton(ui("添加场次"), () => {
       scenes.push({ id: uuid(), title: '', location: '', time: '', interior: 'interior', sourceIds: [], elements: [] })
       state.current = scenes.length - 1
       edited(state, true)
@@ -346,12 +347,12 @@ export function screenplayWorkspace({ api, dialog, field, actionButton, localTra
     if (scenes.length) {
       state.current = Math.min(state.current, scenes.length - 1)
       const scene = scenes[state.current]
-      const [sceneLabel, scenePicker] = selectField('切换场次', Object.fromEntries(scenes.map((row, index) => [index, `${index + 1}. ${row.title || '未命名场次'}`])), String(state.current))
+      const [sceneLabel, scenePicker] = selectField(ui("切换场次"), Object.fromEntries(scenes.map((row, index) => [index, `${index + 1}. ${row.title || ui("未命名场次")}`])), String(state.current))
       scenePicker.id = 'script-scenes'
       scenePicker.addEventListener('change', () => { state.current = Number(scenePicker.value); render(state) })
       // Keep scene navigation available for confirmed episodes.
       panel.append(sceneLabel)
-      const [interiorLabel, interior] = selectField('内外景', interiors, scene.interior)
+      const [interiorLabel, interior] = selectField(ui("内外景"), interiors, scene.interior)
       interior.addEventListener('change', () => { scene.interior = interior.value; edited(state) })
       const links = node('div')
       links.className = 'batch-list'
@@ -364,24 +365,24 @@ export function screenplayWorkspace({ api, dialog, field, actionButton, localTra
           scene.sourceIds = check.checked ? [...scene.sourceIds, entry.id] : scene.sourceIds.filter(id => id !== entry.id)
           edited(state)
         })
-        label.append(check, '关联 ' + sourceLabel(entry))
+        label.append(check, ui("关联 ") + sourceLabel(entry))
         links.append(label)
       }
-      const addLine = actionButton('添加剧本元素', () => { scene.elements.push({ id: uuid(), type: 'action', text: '' }); edited(state, true) })
+      const addLine = actionButton(ui("添加剧本元素"), () => { scene.elements.push({ id: uuid(), type: 'action', text: '' }); edited(state, true) })
       addLine.id = 'script-add-element'
       addLine.disabled = scene.elements.length >= 60
-      const up = actionButton('上移场次', () => reorder(state, scenes, state.current, -1))
-      const down = actionButton('下移场次', () => reorder(state, scenes, state.current, 1))
+      const up = actionButton(ui("上移场次"), () => reorder(state, scenes, state.current, -1))
+      const down = actionButton(ui("下移场次"), () => reorder(state, scenes, state.current, 1))
       up.disabled = state.current === 0
       down.disabled = state.current + 1 === scenes.length
-      state.form.append(bindText(state, '场次标题', scene.title, 160, text => { scene.title = text }, 'script-scene-title'),
-        bindText(state, '地点', scene.location, 120, text => { scene.location = text }, 'script-scene-location'),
-        bindText(state, '时间', scene.time, 80, text => { scene.time = text }, 'script-scene-time'), interiorLabel, links,
-        sceneButtons('tools', up, down, actionButton('删除场次', () => { scenes.splice(state.current, 1); edited(state, true) })),
+      state.form.append(bindText(state, ui("场次标题"), scene.title, 160, text => { scene.title = text }, 'script-scene-title'),
+        bindText(state, ui("地点"), scene.location, 120, text => { scene.location = text }, 'script-scene-location'),
+        bindText(state, ui("时间"), scene.time, 80, text => { scene.time = text }, 'script-scene-time'), interiorLabel, links,
+        sceneButtons('tools', up, down, actionButton(ui("删除场次"), () => { scenes.splice(state.current, 1); edited(state, true) })),
         ...scene.elements.map((item, index) => renderLine(state, scene, item, index)), addLine)
     }
     panel.append(state.form)
-    dialog(episodeLabel(state.base), [panel], locked ? undefined : () => save(state), '保存剧本到 NAS')
+    dialog(episodeLabel(state.base), [panel], locked ? undefined : () => save(state), ui("保存剧本到 NAS"))
     paint(state)
   }
 

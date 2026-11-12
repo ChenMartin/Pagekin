@@ -21,6 +21,9 @@
 !epub-preview-worker.mjs
 !version.mjs
 !maintenance.mjs
+!webdav-backup.mjs
+!architecture-store.mjs
+!thread-evidence.mjs
 !semantic.mjs
 !package.json
 !package-lock.json

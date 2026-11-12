@@ -25,6 +25,7 @@ def smoke(directory: Path, compose: str, previous_image: str | None = None) -> N
     env = {
         **os.environ, "APP_PASSWORD": password, "APP_SECURE_COOKIE": "0", "APP_ORIGIN": app_url,
         "PAGEKIN_BIND": "127.0.0.1", "PAGEKIN_PORT": str(port), "LLM_MODEL": "", "LLM_API_KEY": "",
+        "WEBDAV_BACKUP_URL": "",
     }
     client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
     temporary = TemporaryDirectory(prefix="pagekin-compose-")
@@ -84,7 +85,8 @@ def smoke(directory: Path, compose: str, previous_image: str | None = None) -> N
             assert request(path + "/history")[0]["body"] == "容器持久化"
             print(f"Compose upgrade v{old_version} -> v{version}, schema {old_schema} -> {upgraded_schema}: manuscript and history preserved")
         episode_path = None
-        if schema() >= 11:
+        current_schema = schema()
+        if current_schema >= 11:
             project_path = f"/api/projects/{project['id']}"
             final = request(path + "/status", {"action": "finalize", "baseRev": chapter["rev"]})
             adaptation = request(project_path + "/adaptations", {"mutationId": str(uuid4()), "title": "发布剧本",
@@ -98,6 +100,21 @@ def smoke(directory: Path, compose: str, previous_image: str | None = None) -> N
                 "scenes": [scene]}, "PUT")
             confirmed = request(episode_path + "/status", {"mutationId": str(uuid4()), "action": "confirm", "baseRev": saved["rev"]})
             assert confirmed["status"] == "confirmed"
+        if current_schema >= 21:
+            architecture_path = project_path + "/architecture"
+            architecture = request(architecture_path + "/world", {"action": "bind"}, "PUT")
+            setting = request(route + "/" + architecture["document_id"])
+            fields = "\n\n".join(f"## {key}\n\n{value}" for key, value in zip(
+                ["时空与环境", "社会与组织", "规则、限制与代价", "日常与冲突"], ["近未来", "港口自治", "禁火", "夜航"]))
+            setting_saved = request(route + "/" + setting["id"], {
+                "baseRev": setting["rev"], "mutationId": str(uuid4()), "title": setting["title"], "body": fields}, "PUT")
+            assert request(architecture_path + "/world", {"action": "confirm", "baseRev": setting_saved["rev"]}, "PUT")["status"] == "confirmed"
+            thread = request(project_path + "/threads", {
+                "title": "港口线索", "body": "", "kind": "foreshadow", "status": "open", "planted": 1})
+            evidence_path = project_path + f"/threads/{thread['id']}/evidence"
+            assert request(evidence_path, {"phase": "planted", "baseRev": thread["rev"],
+                "documentId": chapter["id"], "sourceRev": final["rev"], "start": 0, "quote": "容器持久化"}, "PUT")["current"]
+            assert not request("/api/webdav-backup")["enabled"]
         backup_path = "/data/backups/compose-test.sqlite"
         backup = stack("", "exec", "-T", "pagekin", "node", "maintenance.mjs", "backup", backup_path)
         assert json.loads(backup)["projects"] == 1
@@ -105,6 +122,9 @@ def smoke(directory: Path, compose: str, previous_image: str | None = None) -> N
         stack("", "restart", "pagekin")
         assert ready() == version
         assert request(path)["body"] == "容器持久化"
+        if current_schema >= 21:
+            assert request(architecture_path)[0]["status"] == "confirmed"
+            assert request(evidence_path + "?phase=planted")["evidence"]["quote"] == "容器持久化"
         if episode_path:
             assert request(episode_path)["status"] == "confirmed"
         stack("", "stop", "pagekin")
@@ -121,6 +141,10 @@ def smoke(directory: Path, compose: str, previous_image: str | None = None) -> N
             raise AssertionError("Old session survived database restore")
         request("/api/session", {"password": password})
         assert request(path)["body"] == "容器持久化"
+        if current_schema >= 21:
+            assert request(architecture_path)[0]["status"] == "confirmed"
+            assert request(evidence_path + "?phase=planted")["evidence"]["quote"] == "容器持久化"
+            print("Confirmed architecture and final-chapter evidence survived backup and restore")
         if episode_path:
             restored = request(episode_path)
             assert restored["status"] == "confirmed"

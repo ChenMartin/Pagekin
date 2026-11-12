@@ -1,5 +1,7 @@
 # 书童 Web 工作区 v0.2.0-rc.1
 
+本页对应 GitHub 上已发布的候选镜像。开发分支 `0.2.0-dev.11` 的构建、备份和 schema 21 升级见 [当前部署说明](README.md#fnos-部署)。
+
 此候选版面向 Intel J5005 / fnOS / Docker Compose。在小说工作区加入剧本改编，可按季、集和场次组织短剧或漫剧，编辑动作、对白、转场与字幕，确认剧本并导出 Markdown。分集关联明确的小说定稿版本，源章更新时仍可读原文。剧本编辑在浏览器自动暂存，由作者保存到 NAS。
 
 部署 ZIP 包括 Compose 配置、应用源码、桌面作品转换工具和整库维护命令。镜像名为 `pagekin-web-novel:0.2.0-rc.1`，平台为 `linux/amd64`，使用 Web SQLite schema 11。可用随包提供的 `SHA256SUMS.txt` 核对部署包和镜像。

@@ -9,18 +9,21 @@ export function novelProgress({ all, get }, pid, target, requested) {
     COUNT(*) FILTER (WHERE kind='chapter') chapters, COALESCE(MAX(number),0) highest,
     COUNT(*) FILTER (WHERE kind='chapter' AND status='final') locked
     FROM documents WHERE project_id=? AND kind IN ('chapter','blueprint')`, pid)
-  const finalized = all(`SELECT d.number FROM documents d WHERE d.project_id=? AND d.kind='chapter' AND ${finalExists}
-    ORDER BY d.number`, pid).map(row => row.number)
-  const finalNumbers = new Set(finalized)
-  const lastFinal = finalized.at(-1) ?? 0
+  const finalized = all(`SELECT d.id,d.number,(SELECT MAX(h.rev) FROM history h WHERE h.document_id=d.id AND h.status='final') rev
+    FROM documents d WHERE d.project_id=? AND d.kind='chapter' AND ${finalExists} ORDER BY d.number`, pid)
+  const finalNumbers = new Map(finalized.map(row => [row.number, row]))
+  const lastFinal = finalized.at(-1)?.number ?? 0
   let nextDraft = 1
-  for (const number of finalized) {
+  for (const { number } of finalized) {
     if (number !== nextDraft) break
     nextDraft++
   }
 
   const threads = all(`SELECT id,title,kind,status,planted,due,resolved FROM narrative_threads
     WHERE project_id=? AND status<>'archived' ORDER BY title,id`, pid)
+  const evidence = new Map(all(`SELECT e.thread_id,e.phase,e.document_id,e.rev,d.number FROM thread_evidence e
+    JOIN narrative_threads t ON t.id=e.thread_id JOIN documents d ON d.id=e.document_id WHERE t.project_id=? AND t.status<>'archived'`, pid)
+    .map(row => [row.thread_id + ':' + row.phase, row]))
   const limit = threads.reduce((max, row) => Math.max(max, row.planted ?? 0, row.due ?? 0, row.resolved ?? 0),
     Math.max(1, counts.highest, target ?? 0))
   const first = Math.min(requested, limit)
@@ -55,6 +58,15 @@ export function novelProgress({ all, get }, pid, target, requested) {
     }
     if (status === 'resolved' && resolved !== null && !finalNumbers.has(resolved)) {
       warnings.push({ ...identity, number: resolved, code: 'resolve-unfinalized' })
+    }
+    for (const [phase, number] of [['planted', planted], ['resolved', resolved]]) {
+      const record = evidence.get(id + ':' + phase)
+      const current = finalNumbers.get(number)
+      if (record && (record.document_id !== current?.id || record.rev !== current.rev)) {
+        warnings.push({ ...identity, number: number ?? record.number, code: 'evidence-outdated', phase })
+      } else if (!record && current && (phase === 'planted' ? ['open', 'resolved'].includes(status) : status === 'resolved')) {
+        warnings.push({ ...identity, number, code: 'evidence-missing', phase })
+      }
     }
   }
   warnings.sort((left, right) => left.number - right.number || left.code.localeCompare(right.code))

@@ -36,11 +36,19 @@ async function stageFile(destination, action) {
   } finally { await rm(stage, { recursive: true, force: true }) }
 }
 
-export async function backupDatabase(source, destination) {
+function clearSessions(path) {
+  const db = new DatabaseSync(path, { allowExtension: false })
+  try {
+    db.exec('PRAGMA trusted_schema=OFF; PRAGMA journal_mode=DELETE; PRAGMA secure_delete=ON; DELETE FROM sessions;')
+  } finally { db.close() }
+}
+
+export async function backupDatabase(source, destination, { omitSessions = false } = {}) {
   const db = new DatabaseSync(source, { readOnly: true, allowExtension: false })
   try {
     return await stageFile(destination, async path => {
       await backup(db, path)
+      if (omitSessions) clearSessions(path)
       return verifyDatabase(path)
     })
   } finally { db.close() }
@@ -55,10 +63,7 @@ export async function restoreDatabase(sourceStream, destination) {
   return stageFile(destination, async path => {
     await pipeline(sourceStream, createWriteStream(path, { flags: 'wx', mode: 0o600 }))
     const verified = verifyDatabase(path)
-    const db = new DatabaseSync(path, { allowExtension: false })
-    try {
-      db.exec('PRAGMA trusted_schema=OFF; PRAGMA journal_mode=DELETE; DELETE FROM sessions;')
-    } finally { db.close() }
+    clearSessions(path)
     return verified
   })
 }

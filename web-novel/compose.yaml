@@ -2,7 +2,7 @@ name: web-novel
 services:
   pagekin:
     build: .
-    image: pagekin-web-novel:0.2.0-dev.10
+    image: pagekin-web-novel:0.2.0-dev.11
     platform: linux/amd64
     init: true
     restart: unless-stopped
@@ -23,6 +23,11 @@ services:
       EMBEDDING_BASE_URL: "${EMBEDDING_BASE_URL:-}"
       EMBEDDING_MODEL: "${EMBEDDING_MODEL:-}"
       EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
+      WEBDAV_BACKUP_URL: "${WEBDAV_BACKUP_URL:-}"
+      WEBDAV_BACKUP_USERNAME: "${WEBDAV_BACKUP_USERNAME:-}"
+      WEBDAV_BACKUP_PASSWORD: "${WEBDAV_BACKUP_PASSWORD:-}"
+      WEBDAV_BACKUP_PASSWORD_FILE: "${WEBDAV_BACKUP_PASSWORD_FILE:-}"
+      WEBDAV_BACKUP_INTERVAL_HOURS: "${WEBDAV_BACKUP_INTERVAL_HOURS:-24}"
     volumes:
       - novels:/data
     read_only: true

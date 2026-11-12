@@ -17,11 +17,12 @@ def package(output: Path) -> Path:
         ".dockerignore", ".env.example", "Dockerfile", "compose.yaml", "README.md", "RELEASE.md",
         "server.mjs", "store.mjs", "writing-context.mjs", "review-report.mjs", "desktop-archive.mjs", "desktop-copy.mjs",
         "revision-merge.mjs", "continuation.mjs", "manuscript-export.mjs", "input.mjs", "screenplay-store.mjs", "public/screenplay-ui.mjs",
-        "version.mjs", "maintenance.mjs", "semantic.mjs", "reference-novels.mjs", "public/index.html", "public/app.mjs",
+        "version.mjs", "maintenance.mjs", "webdav-backup.mjs", "semantic.mjs", "reference-novels.mjs", "public/index.html", "public/app.mjs",
         "public/manuscript.mjs", "public/novel-goals.mjs", "public/architecture.mjs", "public/reference-novel-ui.mjs", "public/style.css",
+        "public/locale.mjs", "public/locale-en.mjs",
         "character-continuity.mjs", "continuity-report.mjs", "public/character-state.mjs", "public/character-continuity-ui.mjs",
-        "desktop-character-import.mjs", "desktop-continuity.mjs", "novel-progress.mjs", "model-profiles.mjs",
-        "epub-extraction.ts", "epub-preview-worker.mjs",
+        "desktop-character-import.mjs", "desktop-continuity.mjs", "novel-progress.mjs", "model-profiles.mjs", "architecture-store.mjs",
+        "epub-extraction.ts", "epub-preview-worker.mjs", "thread-evidence.mjs",
         "package.json", "package-lock.json", "build-editor.mjs", "editor/codemirror.mjs",
     ]
     sources = [(name, root / name) for name in files] + [("LICENSE", root.parent / "LICENSE")]

@@ -4,7 +4,7 @@ import { defaultHighlightStyle, syntaxHighlighting } from '@codemirror/language'
 import { Compartment, EditorState } from '@codemirror/state'
 import { EditorView, keymap, placeholder } from '@codemirror/view'
 
-export function createEditor(host, { value, maxLength, nonce, onEdit, onComposition, onLimit }) {
+export function createEditor(host, { value, maxLength, nonce, onEdit, onComposition, onLimit, label, hint }) {
   const access = new Compartment()
   const editable = new Compartment()
   const attributes = new Compartment()
@@ -13,7 +13,7 @@ export function createEditor(host, { value, maxLength, nonce, onEdit, onComposit
 
   function contentAttributes(readOnly) {
     return EditorView.contentAttributes.of({
-      'aria-label': '正文',
+      'aria-label': label,
       'aria-readonly': String(readOnly),
       spellcheck: 'false',
       tabindex: '0',
@@ -30,7 +30,7 @@ export function createEditor(host, { value, maxLength, nonce, onEdit, onComposit
         syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
         history(),
         keymap.of([...defaultKeymap, ...historyKeymap]),
-        placeholder('开始写作…'),
+        placeholder(hint),
         access.of(EditorState.readOnly.of(locked)),
         editable.of(EditorView.editable.of(!locked)),
         attributes.of(contentAttributes(locked)),

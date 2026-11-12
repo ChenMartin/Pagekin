@@ -1,19 +1,20 @@
+import { locale, rememberLocale, translateStatic, ui } from './locale.mjs'
 import { manuscriptRequestBytes, readManuscript } from './manuscript.mjs'
 import { screenplayWorkspace } from './screenplay-ui.mjs'
 import { novelGoals } from './novel-goals.mjs'
-import { architectureSections } from './architecture.mjs'
+import { architectureSections, joinArchitecture, splitArchitecture } from './architecture.mjs'
 import { referenceNovelWorkspace } from './reference-novel-ui.mjs'
 import { continuityWorkspace } from './character-continuity-ui.mjs'
 
 const $ = id => document.getElementById(id)
-const names = { settings: '设定与架构', character: '人物', blueprint: '章节蓝图', chapter: '正文', reference: '参考资料' }
+const names = { settings: ui("设定与架构"), character: ui("人物"), blueprint: ui("章节蓝图"), chapter: ui("正文"), reference: ui("参考资料") }
 const stages = ['settings', 'character', 'blueprint', 'chapter']
-const chapterRuns = { draft: '写稿', outline: '写前细纲', review: '审稿', revise: '修稿' }
-const runNames = { ...chapterRuns, plan: 'AI 规划', passage: '选段 AI', continuity: '人物变化提取' }
-const runStates = { running: '生成中', done: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断' }
-const batchStates = { running: '进行中', paused: '已暂停', done: '已结束', cancelled: '已取消' }
-const threadKinds = { plot: '剧情线索', foreshadow: '伏笔' }
-const threadStates = { planned: '计划埋设', open: '待回收', resolved: '已回收', archived: '已归档' }
+const chapterRuns = { draft: ui("写稿"), outline: ui("写前细纲"), review: ui("审稿"), revise: ui("修稿") }
+const runNames = { ...chapterRuns, plan: ui("AI 规划"), passage: ui("选段 AI"), continuity: ui("人物变化提取") }
+const runStates = { running: ui("生成中"), done: ui("已完成"), failed: ui("失败"), cancelled: ui("已取消"), interrupted: ui("已中断") }
+const batchStates = { running: ui("进行中"), paused: ui("已暂停"), done: ui("已结束"), cancelled: ui("已取消") }
+const threadKinds = { plot: ui("剧情线索"), foreshadow: ui("伏笔") }
+const threadStates = { planned: ui("计划埋设"), open: ui("待回收"), resolved: ui("已回收"), archived: ui("已归档") }
 let project = ''
 let editor
 let documents = []
@@ -24,7 +25,7 @@ let modelLabels = new Map()
 function modelName(ref) {
   if (!ref) return ''
   const id = ref.split(':', 1)[0]
-  return '模型预设 ' + (modelLabels.get(id) ?? id)
+  return ui("模型预设 ") + (modelLabels.get(id) ?? id)
 }
 let semanticEnabled = false
 let navigation = 0
@@ -58,13 +59,14 @@ async function enableEnhancedEditor() {
     enhancedBody = createEditor(host, {
       value: fallback.value, maxLength: fallback.maxLength,
       nonce: document.querySelector('meta[name="editor-style-nonce"]').content,
-      onEdit: edit, onComposition: setComposing, onLimit: () => note('正文超过长度限制'),
+      onEdit: edit, onComposition: setComposing, onLimit: () => note(ui("正文超过长度限制")),
+      label: ui('正文'), hint: ui('开始写作…'),
     })
     fallback.hidden = true
     host.hidden = false
     $('editor-notices').hidden = false
   } catch {
-    note('增强编辑器加载失败，已切换到普通文本编辑器')
+    note(ui("增强编辑器加载失败，已切换到普通文本编辑器"))
   }
 }
 
@@ -90,7 +92,7 @@ async function api(path, method = 'GET', data) {
       : path.endsWith('/semantic/search') || path.endsWith('/diagnose-semantic') ? 25_000 : 15_000),
   })
   const result = await response.json()
-  if (!response.ok) throw Object.assign(new Error(result.error || '请求失败'), { status: response.status, current: result.current })
+  if (!response.ok) throw Object.assign(new Error(result.error ? ui(result.error) : ui("请求失败")), { status: response.status, current: result.current })
   return result
 }
 
@@ -103,13 +105,13 @@ function localTransaction(mode, operation) {
     }
     request.onsuccess = () => resolve(request.result)
     request.onerror = () => reject(request.error)
-    request.onblocked = () => reject(new Error('本机草稿库被其他标签页占用'))
+    request.onblocked = () => reject(new Error(ui("本机草稿库被其他标签页占用")))
   })
   return draftDb.then(db => new Promise((resolve, reject) => {
     const transaction = db.transaction('drafts', mode)
     const request = operation(transaction.objectStore('drafts'))
     transaction.oncomplete = () => resolve(request.result)
-    transaction.onabort = () => reject(transaction.error || new Error('本机保存失败'))
+    transaction.onabort = () => reject(transaction.error || new Error(ui("本机保存失败")))
   }))
 }
 
@@ -151,32 +153,32 @@ function paint(state = editor) {
   $('next-chapter').disabled = !adjacentChapter(state, 1)
   const pairedKind = { chapter: 'blueprint', blueprint: 'chapter' }[state.doc.kind]
   $('paired-document').hidden = !pairedKind
-  if (pairedKind) $('paired-document').textContent = '本章' + (pairedKind === 'blueprint' ? '蓝图' : '正文')
+  if (pairedKind) $('paired-document').textContent = ui("本章") + (pairedKind === 'blueprint' ? ui("蓝图") : ui("正文"))
   $('recover').hidden = !state.recovered.length
   $('conflict').hidden = !state.conflict
   $('reload-remote').hidden = state.remoteRev <= state.doc.rev || Boolean(state.conflict)
   $('reload-remote').disabled = Boolean(state.saving || state.mutating || composing)
   $('status').hidden = state.doc.kind !== 'chapter'
   $('continuity-document').hidden = state.doc.kind !== 'character' && !(state.doc.kind === 'chapter' && locked)
-  $('status').textContent = locked ? '重新打开定稿' : '定稿'
+  $('status').textContent = locked ? ui("重新打开定稿") : ui("定稿")
   const planning = state.doc.kind !== 'chapter'
   $('ai-passage').hidden = planning || !model || locked
   $('ai-passage').disabled = state.job?.status === 'running'
   $('ai').hidden = false
-  $('ai-heading').textContent = planning ? 'AI ' + names[state.doc.kind] : 'AI 细纲、写稿、审稿与修稿'
+  $('ai-heading').textContent = planning ? 'AI ' + names[state.doc.kind] : ui("AI 细纲、写稿、审稿与修稿")
   $('outline-controls').hidden = planning
-  $('selected-outline').textContent = !state.outline ? '可先生成写前细纲，确认后用于写稿。'
-    : state.outline.baseRev !== state.doc.rev ? '正文已更新，请重新生成细纲或取消引用。' : '已选细纲，下一次写稿将引用。'
+  $('selected-outline').textContent = !state.outline ? ui("可先生成写前细纲，确认后用于写稿。")
+    : state.outline.baseRev !== state.doc.rev ? ui("正文已更新，请重新生成细纲或取消引用。") : ui("已选细纲，下一次写稿将引用。")
   $('clear-outline').hidden = !state.outline
   $('selected-references').textContent = state.references.size
-    ? '已选资料：' + [...state.references].map(([id, title]) => title + (state.referenceSpans.has(id) ? '（片段）' : '')).join('、')
-    : '可从参考资料库中选择本次生成所需的资料。'
+    ? ui("已选资料：") + [...state.references].map(([id, title]) => title + (state.referenceSpans.has(id) ? ui("（片段）") : '')).join('、')
+    : ui("可从参考资料库中选择本次生成所需的资料。")
   $('clear-references').hidden = state.references.size === 0
   $('reference-query-label').hidden = state.references.size === state.referenceSpans.size
   for (const btn of document.querySelectorAll('[data-run]')) {
     btn.hidden = planning !== (btn.dataset.run === 'plan')
     btn.disabled = !model || locked || state.job?.status === 'running'
-    if (btn.dataset.run === 'plan') btn.textContent = '生成' + names[state.doc.kind] + '候选'
+    if (btn.dataset.run === 'plan') btn.textContent = ui("生成") + names[state.doc.kind] + ui("候选")
   }
   $('preview-context').disabled = locked
   if (state.job?.reviewReport) {
@@ -184,16 +186,16 @@ function paint(state = editor) {
     $('review-issues').disabled = !current
     $('review-stale').hidden = !state.job.reviewReport.issues.length || current
   }
-  $('length').textContent = `${state.body.length.toLocaleString()} 字符`
-  $('document-label').textContent = [names[state.doc.kind], state.doc.number && `第 ${state.doc.number} 章`,
-    locked && '已定稿'].filter(Boolean).join(' · ')
-  $('save-state').textContent = state.conflict ? '发现版本冲突，请核对两份内容'
-    : state.saving ? '正在提交到 NAS…'
+  $('length').textContent = ui("$1 字符", state.body.length.toLocaleString())
+  $('document-label').textContent = [names[state.doc.kind], state.doc.number && ui("第 $1 章", state.doc.number),
+    locked && ui("已定稿")].filter(Boolean).join(' · ')
+  $('save-state').textContent = state.conflict ? ui("发现版本冲突，请核对两份内容")
+    : state.saving ? ui("正在提交到 NAS…")
       : dirty(state) ? [
-        state.localOk === true ? '已存本机，等待同步' : state.localOk === false ? '本机草稿写入失败' : '本机草稿保存中',
+        state.localOk === true ? ui("已存本机，等待同步") : state.localOk === false ? ui("本机草稿写入失败") : ui("本机草稿保存中"),
         state.error,
       ].filter(Boolean).join(' · ')
-        : `已保存到 NAS · v${state.doc.rev}`
+        : ui("已保存到 NAS · v$1", state.doc.rev)
 }
 
 function schedule(state) {
@@ -275,7 +277,7 @@ function locate(direction, reportOnly = false) {
     if (span.start === input.selectionStart && span.end === input.selectionEnd) current = span
   }
   const hit = reportOnly ? current : direction < 0 ? previous ?? last : next ?? first
-  $('find-result').textContent = count === 0 ? '没有找到匹配' : hit ? '第 ' + hit.ordinal + ' / ' + count + ' 处' : '找到 ' + count + ' 处'
+  $('find-result').textContent = count === 0 ? ui("没有找到匹配") : hit ? ui("第 ") + hit.ordinal + ' / ' + count + ui(" 处") : ui("找到 ") + count + ui(" 处")
   if (hit && !reportOnly) {
     input.focus({ preventScroll: true })
     input.setSelectionRange(hit.start, hit.end)
@@ -290,9 +292,9 @@ function editableForReplace(state) {
 }
 
 function replaceBody(state, next, start, end = start) {
-  if (!editableForReplace(state)) throw new Error('请在文档可编辑时替换')
+  if (!editableForReplace(state)) throw new Error(ui("请在文档可编辑时替换"))
   const input = bodyControl()
-  if (next.length > input.maxLength) throw new Error('替换后的正文超过长度限制')
+  if (next.length > input.maxLength) throw new Error(ui("替换后的正文超过长度限制"))
   if (input.value === next) return
   const previous = { body: input.value, start: input.selectionStart, end: input.selectionEnd }
   input.value = next
@@ -323,15 +325,15 @@ function replaceAll() {
   const value = bodyControl().value
   const replacement = $('replace-query').value
   if (value.length - matchedLength + count * replacement.length > bodyControl().maxLength) {
-    throw new Error('替换后的正文超过长度限制')
+    throw new Error(ui("替换后的正文超过长度限制"))
   }
   const summary = document.createElement('p')
-  summary.textContent = '将在当前文档中替换 ' + count + ' 处匹配。'
-  dialog('确认全部替换', [summary], () => {
-    if (!editableForReplace(state) || bodyControl().value !== value) throw new Error('正文已变化，请重新查找')
+  summary.textContent = ui("将在当前文档中替换 ") + count + ui(" 处匹配。")
+  dialog(ui("确认全部替换"), [summary], () => {
+    if (!editableForReplace(state) || bodyControl().value !== value) throw new Error(ui("正文已变化，请重新查找"))
     $('dialog').close()
     replaceBody(state, value.replace(pattern, () => replacement), 0)
-  }, '替换全部')
+  }, ui("替换全部"))
 }
 
 async function flush(state, checkpoint = false) {
@@ -342,7 +344,7 @@ async function flush(state, checkpoint = false) {
   }
   if (state.conflict || (composing && state === editor)) return false
   if (!dirty(state) && !checkpoint) return true
-  if (!state.title.trim()) { state.error = '请输入标题'; paint(state); return false }
+  if (!state.title.trim()) { state.error = ui("请输入标题"); paint(state); return false }
   if (!state.pending) {
     state.pending = {
       sequence: state.edit,
@@ -384,8 +386,8 @@ async function flush(state, checkpoint = false) {
       return true
     } catch (error) {
       if (error.status === 409 && error.current) state.conflict = error.current
-      state.error = error.status === 401 ? '会话已过期，请刷新后重新登录'
-        : error.status ? error.message : '连接失败，将重试'
+      state.error = error.status === 401 ? ui("会话已过期，请刷新后重新登录")
+        : error.status ? error.message : ui("连接失败，将重试")
       await persistLocal(state)
       return false
     }
@@ -399,17 +401,17 @@ async function leave() {
   const state = editor
   if (!dirty(state)) return
   if (await flush(state) && !dirty(state)) return
-  if (!await persistLocal(state)) throw new Error('无法保存本机草稿，请先复制正文或恢复连接')
-  note('未同步内容已保留在本机。重新打开该文档可查看草稿。')
+  if (!await persistLocal(state)) throw new Error(ui("无法保存本机草稿，请先复制正文或恢复连接"))
+  note(ui("未同步内容已保留在本机。重新打开该文档可查看草稿。"))
 }
 
 function remember() {
-  try { sessionStorage.setItem('pagekin-location', JSON.stringify([project, editor?.doc.id, stage])) }
+  try { sessionStorage.setItem('pagekin-location', JSON.stringify([project, editor?.doc.id, stage, Object.fromEntries(stageDocuments)])) }
   catch { /* Browser storage can be unavailable. */ }
 }
 
 function numberedTitle(doc) {
-  return [doc.number && `第 ${doc.number} 章`, doc.title, doc.status === 'final' && '（定稿）'].filter(Boolean).join(' ')
+  return [doc.number && ui("第 $1 章", doc.number), doc.title, doc.status === 'final' && ui("（定稿）")].filter(Boolean).join(' ')
 }
 
 function choices(element, rows, label, selected = '') {
@@ -424,27 +426,27 @@ function renderCatalog(selected = editor?.doc.id ?? '') {
   for (const button of $('stage-nav').querySelectorAll('[data-stage]')) {
     button.setAttribute('aria-pressed', String(button.dataset.stage === stage))
   }
-  $('new-document').textContent = '新建' + names[stage]
+  $('new-document').textContent = ui("新建") + names[stage]
   $('architecture-templates').hidden = stage !== 'settings'
   $('batch-blueprints').hidden = stage !== 'blueprint' || !model
-  $('catalog-label').textContent = '打开' + names[stage]
+  $('catalog-label').textContent = ui("打开") + names[stage]
   $('chapter-filter-label').hidden = stage !== 'chapter'
-  choices($('documents'), filtered.map(row => [row.id, numberedTitle(row)]), '选择文档', selected)
+  choices($('documents'), filtered.map(row => [row.id, numberedTitle(row)]), ui("选择文档"), selected)
 
   if ($('empty').hidden) return
-  $('overview-title').textContent = project ? $('projects').selectedOptions[0]?.textContent || '作品概览' : '书房'
+  $('overview-title').textContent = project ? $('projects').selectedOptions[0]?.textContent || ui("作品概览") : ui("书房")
   const counts = stages.map(kind => documents.filter(row => row.kind === kind).length)
   const finalized = documents.filter(row => row.kind === 'chapter' && row.status === 'final').length
   $('overview-summary').textContent = project
-    ? `设定与架构 ${counts[0]} 份 · 人物 ${counts[1]} 人 · 蓝图 ${counts[2]} 章 · 正文 ${counts[3]} 章（${finalized} 章已定稿）`
-    : '选择一部作品，或新建作品开始写作。'
+    ? ui("设定与架构 $1 份 · 人物 $2 人 · 蓝图 $3 章 · 正文 $4 章（$5 章已定稿）", counts[0], counts[1], counts[2], counts[3], finalized)
+    : ui("选择一部作品，或新建作品开始写作。")
   const list = $('overview-documents')
   list.replaceChildren()
   if (!project) return
   const title = document.createElement('h2')
   title.textContent = names[stage]
   list.append(title)
-  if (!filtered.length) list.append(document.createTextNode('此阶段没有符合条件的文档。'))
+  if (!filtered.length) list.append(document.createTextNode(ui("此阶段没有符合条件的文档。")))
   const latest = filtered.slice().sort((a, b) => b.updated.localeCompare(a.updated)).slice(0, 8)
   for (const row of latest) list.append(actionButton(numberedTitle(row), () => openDocument(row.id)))
 }
@@ -551,7 +553,7 @@ async function loadRecovery(state) {
   paint(state)
 }
 
-async function selectProject(id, selected, initialStage = 'chapter') {
+async function selectProject(id, selected, initialStage = 'chapter', savedStages) {
   const request = ++navigation
   await leave()
   if (request !== navigation) return
@@ -561,6 +563,10 @@ async function selectProject(id, selected, initialStage = 'chapter') {
   if (request !== navigation) return
   project = id
   stageDocuments.clear()
+  for (const kind of stages) {
+    const remembered = rows.find(row => row.kind === kind && row.id === savedStages?.[kind])
+    if (remembered) stageDocuments.set(kind, remembered.id)
+  }
   subscribeProject(id)
   documents = rows
   $('projects').value = id
@@ -573,13 +579,13 @@ async function selectProject(id, selected, initialStage = 'chapter') {
   if (doc) await openDocument(doc.id)
 }
 
-async function refreshProjects(selected = '', selectedDoc, initialStage) {
+async function refreshProjects(selected = '', selectedDoc, initialStage, savedStages) {
   const rows = await api('/projects')
-  choices($('projects'), rows.map(row => [row.id, row.title]), '选择作品', selected)
-  await selectProject(rows.some(row => row.id === selected) ? selected : '', selectedDoc, initialStage)
+  choices($('projects'), rows.map(row => [row.id, row.title]), ui("选择作品"), selected)
+  await selectProject(rows.some(row => row.id === selected) ? selected : '', selectedDoc, initialStage, savedStages)
 }
 
-function dialog(title, contents, action, submit = '确定') {
+function dialog(title, contents, action, submit = ui("确定")) {
   $('dialog-title').textContent = title
   $('dialog-body').replaceChildren(...contents)
   $('dialog-submit').hidden = !action
@@ -622,14 +628,14 @@ function actionButton(label, action) {
 function exportManuscript() {
   if (!project) return
   const path = `/api/projects/${project}/export`
-  const [scopeLabel, scope] = selectField('正文范围', {
-    final: '只导出最近定稿', all: '导出全部章节的 NAS 当前版本（含草稿）',
+  const [scopeLabel, scope] = selectField(ui("正文范围"), {
+    final: ui("只导出最近定稿"), all: ui("导出全部章节的 NAS 当前版本（含草稿）"),
   }, 'final')
-  const [formatLabel, format] = selectField('文件格式', {
-    md: '合并 Markdown', txt: '合并 TXT（UTF-8）', zip: '分章 Markdown（ZIP）',
+  const [formatLabel, format] = selectField(ui("文件格式"), {
+    md: ui("合并 Markdown"), txt: ui("合并 TXT（UTF-8）"), zip: ui("分章 Markdown（ZIP）"),
   }, 'md')
   const download = document.createElement('a')
-  download.textContent = '下载正文'
+  download.textContent = ui("下载正文")
   const update = () => {
     const query = new URLSearchParams({ format: format.value })
     if (scope.value === 'all') query.set('drafts', '1')
@@ -638,7 +644,7 @@ function exportManuscript() {
   scope.addEventListener('change', update)
   format.addEventListener('change', update)
   update()
-  dialog('导出正文', [scopeLabel, formatLabel, download])
+  dialog(ui("导出正文"), [scopeLabel, formatLabel, download])
 }
 
 async function editProjectGoals() {
@@ -646,15 +652,15 @@ async function editProjectGoals() {
   const path = `/projects/${pid}/goals`
   let current = await api(path)
   if (pid !== project) return
-  const fields = novelGoals.map(({ key, label, max, maxLength }) => field(label, {
+  const fields = novelGoals.map(({ key, label, max, maxLength }) => field(ui(label), {
     name: key, required: false, value: current.goals[key] ?? '',
     ...(max ? { type: 'number', min: 1, max, step: 1 } : { maxLength }),
   }))
   const feedback = document.createElement('div')
   feedback.setAttribute('role', 'status')
   const help = document.createElement('p')
-  help.textContent = '所填目标会随本作品的 AI 任务发送。各项均可留空。'
-  dialog('写作目标', [help, ...fields.map(([label]) => label), feedback], async () => {
+  help.textContent = ui("所填目标会随本作品的 AI 任务发送。各项均可留空。")
+  dialog(ui("写作目标"), [help, ...fields.map(([label]) => label), feedback], async () => {
     if (pid !== project) return
     const goals = Object.fromEntries(fields.map(([, input]) => [
       input.name, input.type === 'number' ? (input.value === '' ? null : input.valueAsNumber) : input.value,
@@ -666,21 +672,21 @@ async function editProjectGoals() {
       feedback.textContent = error.message
       if (error.status !== 409 || !error.current) return
       const comparison = document.createElement('p')
-      comparison.textContent = novelGoals.map(({ key, label }) => label + ' ' + (error.current.goals[key] ?? '未填写')).join(' · ')
-      feedback.append(comparison, actionButton('采用 NAS 版本并继续编辑', () => {
+      comparison.textContent = novelGoals.map(({ key, label }) => label + ' ' + (error.current.goals[key] ?? ui("未填写"))).join(' · ')
+      feedback.append(comparison, actionButton(ui("采用 NAS 版本并继续编辑"), () => {
         current = error.current
         for (const [, input] of fields) input.value = current.goals[input.name] ?? ''
         feedback.replaceChildren()
       }))
     }
-  }, '保存写作目标')
+  }, ui("保存写作目标"))
 }
 
 function searchProject() {
   const pid = project
-  const [label, query] = field('标题或正文关键词', { type: 'search', maxLength: 100 })
+  const [label, query] = field(ui("标题或正文关键词"), { type: 'search', maxLength: 100 })
   const results = document.createElement('div')
-  dialog('搜索作品', [label, results], async () => {
+  dialog(ui("搜索作品"), [label, results], async () => {
     const hits = await api(`/projects/${pid}/search?q=${encodeURIComponent(query.value)}`)
     if (pid !== project) return
     results.replaceChildren(...(hits.length ? hits.map(hit => {
@@ -696,8 +702,8 @@ function searchProject() {
         }
       }), excerpt)
       return row
-    }) : [document.createTextNode('没有找到匹配的内容')]))
-  }, '搜索')
+    }) : [document.createTextNode(ui("没有找到匹配的内容"))]))
+  }, ui("搜索"))
 }
 
 async function viewReference(pid, id, span) {
@@ -708,27 +714,27 @@ async function viewReference(pid, id, span) {
   const state = editor
   const canSelect = model && state && state.doc.status !== 'final'
   dialog(material.title, [body], canSelect ? () => {
-    if (state !== editor) throw new Error('当前章节已切换')
-    if (state.references.size >= 5 && !state.references.has(id)) throw new Error('最多可选择五份参考资料')
+    if (state !== editor) throw new Error(ui("当前章节已切换"))
+    if (state.references.size >= 5 && !state.references.has(id)) throw new Error(ui("最多可选择五份参考资料"))
     state.references.set(id, material.title)
     if (span) state.referenceSpans.set(id, { id, start: span.start, end: span.end })
     else state.referenceSpans.delete(id)
     paint(state)
     $('ai').open = true
     $('dialog').close()
-  } : undefined, span ? '引用这个片段' : '加入当前章节的 AI 上下文')
+  } : undefined, span ? ui("引用这个片段") : ui("加入当前章节的 AI 上下文"))
 }
 
 function semanticSearch() {
   const pid = project
   const path = '/projects/' + pid + '/semantic'
-  const [label, query] = field('用自然语言描述要找的资料', { maxLength: 400, type: 'search' })
+  const [label, query] = field(ui("用自然语言描述要找的资料"), { maxLength: 400, type: 'search' })
   const status = document.createElement('p')
   status.setAttribute('role', 'status')
   const results = document.createElement('div')
   const explanation = document.createElement('p')
-  explanation.textContent = '建立索引会将本作品的资料片段发送到配置的语义模型，每批最多 128 个片段。检索时也会发送查询词。'
-  const build = actionButton('建立或继续索引', async () => {
+  explanation.textContent = ui("建立索引会将本作品的资料片段发送到配置的语义模型，每批最多 128 个片段。检索时也会发送查询词。")
+  const build = actionButton(ui("建立或继续索引"), async () => {
     build.disabled = true
     try {
       await api(path + '/index', 'POST', {})
@@ -746,24 +752,24 @@ function semanticSearch() {
       const state = await api(path)
       if (!stillOpen()) return
       indexed = state.chunks > 0
-      status.textContent = '已完成 ' + state.indexed + ' / ' + state.count + ' 份资料，' + state.chunks + ' 个片段。'
-        + (state.state === 'running' ? '正在建立索引…' : state.message)
+      status.textContent = ui("已完成 ") + state.indexed + ' / ' + state.count + ui(" 份资料，") + state.chunks + ui(" 个片段。")
+        + (state.state === 'running' ? ui("正在建立索引…") : state.message)
       build.disabled = state.state === 'running' || state.count === state.indexed || state.chunks >= state.capacity
       if (state.state === 'running') setTimeout(() => { if (stillOpen()) void refresh() }, 1200)
     } catch (error) { if (stillOpen()) status.textContent = error.message }
   }
 
   build.disabled = true
-  dialog('参考资料语义检索', [explanation, build, status, label, results], async () => {
+  dialog(ui("参考资料语义检索"), [explanation, build, status, label, results], async () => {
     results.replaceChildren()
     if (!indexed) {
-      results.textContent = '请先为本作品建立索引。'
+      results.textContent = ui("请先为本作品建立索引。")
       return
     }
     try {
       const hits = await api(path + '/search', 'POST', { q: query.value })
       if (!stillOpen()) return
-      if (!hits.length) results.textContent = '未找到相关片段，可尝试换一种描述或使用关键词搜索。'
+      if (!hits.length) results.textContent = ui("未找到相关片段，可尝试换一种描述或使用关键词搜索。")
       for (const hit of hits) {
         const section = document.createElement('section')
         const excerpt = document.createElement('pre')
@@ -772,7 +778,7 @@ function semanticSearch() {
         results.append(section)
       }
     } catch (error) { if (stillOpen()) results.textContent = error.message }
-  }, '语义检索')
+  }, ui("语义检索"))
   void refresh()
 }
 
@@ -781,10 +787,10 @@ async function referenceLibrary() {
   const rows = await api(`/projects/${pid}/references`)
   if (pid !== project) return
   const message = document.createElement('p')
-  message.textContent = rows.length ? '打开资料后可查看，或加入当前章节的 AI 上下文。' : '导入 UTF-8 的 TXT 或 Markdown 资料。'
-  dialog('参考资料', [
+  message.textContent = rows.length ? ui("打开资料后可查看，或加入当前章节的 AI 上下文。") : ui("导入 UTF-8 的 TXT 或 Markdown 资料。")
+  dialog(ui("参考资料"), [
     message,
-    actionButton('导入 TXT / Markdown', () => $('reference-file').click()),
+    actionButton(ui("导入 TXT / Markdown"), () => $('reference-file').click()),
     ...rows.map(row => actionButton(row.title, () => viewReference(pid, row.id))),
   ])
 }
@@ -799,25 +805,25 @@ function selectField(label, options, value) {
 }
 
 function editThread(pid, thread, afterSave = threadList) {
-  const [titleLabel, title] = field('线索标题', { maxLength: 160, value: thread?.title ?? '' })
-  const [kindLabel, kind] = selectField('类型', threadKinds, thread?.kind ?? 'foreshadow')
-  const [statusLabel, status] = selectField('状态', threadStates, thread?.status ?? 'planned')
-  const [plantedLabel, planted] = field('埋设章号', { type: 'number', min: 1, max: 99999, required: false, value: thread?.planted ?? '' })
-  const [dueLabel, due] = field('预计回收章号', { type: 'number', min: 1, max: 99999, required: false, value: thread?.due ?? '' })
-  const [resolvedLabel, resolved] = field('实际回收章号', { type: 'number', min: 1, max: 99999, required: false, value: thread?.resolved ?? '' })
+  const [titleLabel, title] = field(ui("线索标题"), { maxLength: 160, value: thread?.title ?? '' })
+  const [kindLabel, kind] = selectField(ui("类型"), threadKinds, thread?.kind ?? 'foreshadow')
+  const [statusLabel, status] = selectField(ui("状态"), threadStates, thread?.status ?? 'planned')
+  const [plantedLabel, planted] = field(ui("埋设章号"), { type: 'number', min: 1, max: 99999, required: false, value: thread?.planted ?? '' })
+  const [dueLabel, due] = field(ui("预计回收章号"), { type: 'number', min: 1, max: 99999, required: false, value: thread?.due ?? '' })
+  const [resolvedLabel, resolved] = field(ui("实际回收章号"), { type: 'number', min: 1, max: 99999, required: false, value: thread?.resolved ?? '' })
   const description = document.createElement('label')
   const body = document.createElement('textarea')
   body.rows = 5
   body.maxLength = 6000
   body.value = thread?.body ?? ''
-  description.append('线索内容与回收计划', body)
+  description.append(ui("线索内容与回收计划"), body)
   const errorText = document.createElement('p')
   errorText.setAttribute('role', 'status')
   const toggleResolved = () => { resolved.required = status.value === 'resolved' }
   status.addEventListener('change', toggleResolved)
   toggleResolved()
   const chapterNumber = element => element.value === '' ? null : element.valueAsNumber
-  dialog(thread ? '编辑线索' : '新增线索', [titleLabel, kindLabel, statusLabel,
+  dialog(thread ? ui("编辑线索") : ui("新增线索"), [titleLabel, kindLabel, statusLabel,
     plantedLabel, dueLabel, resolvedLabel, description, errorText], async () => {
     if (project !== pid) return
     errorText.textContent = ''
@@ -832,19 +838,19 @@ function editThread(pid, thread, afterSave = threadList) {
     } catch (error) {
       errorText.textContent = error.message
       if (error.status === 409 && error.current) {
-        errorText.append('。NAS 版本：' + error.current.title + ' · ' + threadStates[error.current.status])
+        errorText.append(ui("。NAS 版本：") + error.current.title + ' · ' + threadStates[error.current.status])
       }
       return
     }
     if ($('dialog').open && title.isConnected && project === pid) await afterSave()
-  }, '保存线索')
+  }, ui("保存线索"))
 }
 
 async function threadList() {
   const pid = project
   const rows = await api('/projects/' + pid + '/threads')
   if (pid !== project) return
-  const [filterLabel, filter] = selectField('筛选状态', { all: '全部状态', ...threadStates }, 'all')
+  const [filterLabel, filter] = selectField(ui("筛选状态"), { all: ui("全部状态"), ...threadStates }, 'all')
   const list = document.createElement('div')
   list.className = 'manuscript-list'
   function render() {
@@ -853,25 +859,79 @@ async function threadList() {
       const section = document.createElement('section')
       const caption = document.createElement('p')
       caption.textContent = [threadKinds[row.kind], threadStates[row.status],
-        row.planted && '埋设第 ' + row.planted + ' 章',
-        row.due && '预计第 ' + row.due + ' 章',
-        row.resolved && '回收第 ' + row.resolved + ' 章'].filter(Boolean).join(' · ')
+        row.planted && ui("埋设第 ") + row.planted + ui(" 章"),
+        row.due && ui("预计第 ") + row.due + ui(" 章"),
+        row.resolved && ui("回收第 ") + row.resolved + ui(" 章")].filter(Boolean).join(' · ')
       section.append(actionButton(row.title, () => editThread(pid, row)), caption)
+      if (row.planted || row.resolved) section.append(actionButton(ui("核对定稿引文"), () =>
+        showThreadEvidence(pid, row.id, row.planted ? 'planted' : 'resolved', threadList)))
       return section
-    }) : [document.createTextNode('当前没有线索')]))
+    }) : [document.createTextNode(ui("当前没有线索"))]))
   }
   filter.addEventListener('change', render)
   render()
-  dialog('剧情线索与伏笔', [actionButton('新增线索', () => editThread(pid)), filterLabel, list])
+  dialog(ui("剧情线索与伏笔"), [actionButton(ui("新增线索"), () => editThread(pid)), filterLabel, list])
+}
+
+async function showThreadEvidence(pid, id, phase, back) {
+  const path = `/projects/${pid}/threads/${id}/evidence`
+  const [phaseLabel, picker] = selectField(ui("线索阶段"), { planted: ui("埋设"), resolved: ui("实际回收") }, phase)
+  const [queryLabel, query] = field(ui("定稿中的原文"), { maxLength: 500, type: 'search', required: false })
+  const summary = document.createElement('p')
+  const results = document.createElement('div')
+  results.className = 'manuscript-list'
+  const error = document.createElement('p')
+  error.setAttribute('role', 'status')
+  let request = 0
+  async function load(search = '') {
+    const seq = ++request
+    const selected = picker.value
+    error.textContent = ''
+    results.replaceChildren()
+    try {
+      const data = await api(path + '?' + new URLSearchParams({ phase: selected, q: search }))
+      if (seq !== request || pid !== project || !results.isConnected) return
+      query.disabled = !data.source
+      summary.textContent = data.source ? ui("第 $1 章 · $2 · 定稿 v$3", data.chapter, data.source.title, data.source.rev)
+        : data.chapter ? ui("第 $1 章还没有定稿", data.chapter) : ui("请先在线索中填写对应章号。")
+      const apply = async patch => {
+        try {
+          await api(path, 'PUT', { phase: selected, baseRev: data.threadRev, ...patch })
+          if (seq === request && results.isConnected) await load()
+        } catch (failure) { error.textContent = failure.message }
+      }
+      if (data.evidence) {
+        const quote = document.createElement('blockquote')
+        quote.textContent = data.evidence.quote
+        results.append(data.current ? ui("已确认引文") : ui("旧引文 · 定稿或章号已变化"), quote,
+          actionButton(ui("移除引文"), () => apply({ remove: true })))
+      }
+      if (search && !data.matches.length) results.append(ui("未找到完全匹配的引文。"))
+      for (const match of data.matches) {
+        const item = document.createElement('section')
+        const excerpt = document.createElement('p')
+        const marked = document.createElement('mark')
+        marked.textContent = match.quote
+        excerpt.append(match.before, marked, match.after)
+        item.append(excerpt, actionButton(ui("确认此引文"), () => apply({ documentId: data.source.id,
+          sourceRev: data.source.rev, start: match.start, quote: match.quote })))
+        results.append(item)
+      }
+    } catch (failure) { if (seq === request) error.textContent = failure.message }
+  }
+  picker.addEventListener('change', () => { query.value = ''; void load() })
+  dialog(ui("核对定稿引文"), [phaseLabel, summary, queryLabel, error, results, actionButton(ui("返回线索"), back)],
+    () => load(query.value.trim()), ui("查找引文"))
+  await load()
 }
 
 function newDocument(content = '', title = '', kind = stage, chapterNumber) {
   const pid = project
-  const [titleField, name] = field('标题', { maxLength: 160, value: title })
+  const [titleField, name] = field(ui("标题"), { maxLength: 160, value: title })
   const number = chapterNumber ?? Math.max(0, ...documents.filter(doc => doc.kind === kind).map(doc => doc.number ?? 0)) + 1
-  const [numberField, ordinal] = field('章节号', { type: 'number', min: 1, max: 99999, value: number })
+  const [numberField, ordinal] = field(ui("章节号"), { type: 'number', min: 1, max: 99999, value: number })
   const numbered = ['chapter', 'blueprint'].includes(kind)
-  dialog(`新建${names[kind]}`, [titleField, ...(numbered ? [numberField] : [])], async () => {
+  dialog(ui("新建$1", names[kind]), [titleField, ...(numbered ? [numberField] : [])], async () => {
     await leave()
     const doc = await api(`/projects/${pid}/documents`, 'POST', {
       kind, title: name.value, body: content, ...(numbered ? { number: Number(ordinal.value) } : {}),
@@ -886,13 +946,86 @@ function newDocument(content = '', title = '', kind = stage, chapterNumber) {
 function architectureTemplates() {
   const entries = Object.values(architectureSections).map(({ title, headings }) => {
     const existing = documents.find(doc => doc.kind === 'settings' && doc.title === title)
-    return actionButton(existing ? '打开' + title : '新建' + title, async () => {
+    return actionButton((existing ? ui("打开") : ui("新建")) + ui(title), async () => {
       if (!existing) return newDocument(headings.map(heading => '## ' + heading).join('\n\n') + '\n', title, 'settings')
       await openDocument(existing.id)
       if (editor?.doc.id === existing.id) $('dialog').close()
     })
   })
-  dialog('架构模板', entries)
+  dialog(ui("故事架构"), [actionButton(ui("管理字段与确认"), structuredArchitecture), ...entries])
+}
+
+async function structuredArchitecture() {
+  const pid = project
+  const path = `/projects/${pid}/architecture`
+  const rows = await api(path)
+  if (pid !== project) return
+  const bound = new Set(rows.map(row => row.document_id))
+  const controls = Object.entries(architectureSections).map(([key, section]) => {
+    const row = rows.find(item => item.section === key)
+    const state = row ? row.status === 'confirmed' ? ui("已确认") : ui("待确认") : ui("待建立")
+    return actionButton(`${ui(section.title)} · ${state}`, async () => {
+      if (row) return openFields(key, row)
+      const available = documents.filter(doc => doc.kind === 'settings' && !bound.has(doc.id))
+      const [label, select] = selectField(ui("设定文档"), { '': ui("建立新文档"),
+        ...Object.fromEntries(available.map(doc => [doc.id, doc.title])) }, available.find(doc => doc.title === section.title)?.id ?? '')
+      dialog(ui(section.title), [label, actionButton(ui("返回故事架构"), structuredArchitecture)], async () => {
+        await leave()
+        const linked = await api(`${path}/${key}`, 'PUT', { action: 'bind', documentId: select.value || null })
+        await refreshDocuments(linked.document_id)
+        await openFields(key, linked)
+      }, ui("打开架构字段"))
+    })
+  })
+  dialog(ui("结构化架构"), controls)
+
+  async function openFields(key, row) {
+    await openDocument(row.document_id)
+    if (pid !== project || editor?.doc.id !== row.document_id) return
+    const state = editor
+    const { title, headings } = architectureSections[key]
+    const parsed = splitArchitecture(state.body, headings)
+    const preamble = parsed?.preamble ?? state.body
+    let overLimit = false
+    let action = row.status === 'confirmed' && row.rev === state.doc.rev && !dirty(state) ? 'reopen' : 'confirm'
+    const inputs = headings.map((heading, index) => {
+      const label = document.createElement('label')
+      const area = document.createElement('textarea')
+      area.rows = 3
+      area.value = parsed?.values[index] ?? ''
+      label.append(ui(heading), area)
+      area.addEventListener('input', () => {
+        if (editor !== state) return
+        const next = joinArchitecture(preamble, headings, inputs.map(([, field]) => field.value))
+        overLimit = next.length > bodyControl().maxLength
+        if (overLimit) {
+          feedback.textContent = ui("架构内容超过文档字符上限，请缩短后保存。")
+          return
+        }
+        feedback.textContent = ''
+        bodyControl().value = next
+        edit()
+        action = 'confirm'
+        $('dialog-submit').textContent = ui("确认当前版本")
+      })
+      return [label, area]
+    })
+    const feedback = document.createElement('p')
+    feedback.setAttribute('role', 'status')
+    const explanation = document.createElement('p')
+    explanation.textContent = parsed ? ui("字段与设定正文共用自动保存和历史版本。") : ui("现有正文作为原稿保留，填写的字段附在原稿后面。")
+    dialog(ui(title), [explanation, ...inputs.map(([label]) => label), feedback,
+      actionButton(ui("编辑 Markdown"), () => { $('dialog').close(); bodyControl().focus() }),
+      actionButton(ui("返回故事架构"), structuredArchitecture)], async () => {
+      try {
+        if (overLimit || !await flush(state) || dirty(state)) {
+          throw new Error(ui("请先将当前架构同步到 NAS"))
+        }
+        await api(`${path}/${key}`, 'PUT', { action, baseRev: state.doc.rev })
+        await structuredArchitecture()
+      } catch (error) { feedback.textContent = error.message }
+    }, action === 'confirm' ? ui("确认当前版本") : ui("撤销确认"))
+  }
 }
 
 function manuscriptPreview(pid, parsed, existing) {
@@ -902,15 +1035,15 @@ function manuscriptPreview(pid, parsed, existing) {
   const preserveDefault = numbers.every(number => number !== null && !occupied.has(number)) && new Set(numbers).size === numbers.length
   const summary = document.createElement('p')
   summary.textContent = parsed.detected
-    ? '识别到 ' + parsed.chapters.length + ' 章，请检查标题与正文。' + (parsed.hasPreface ? ' 首章标题前的文字并入首章。' : '')
-    : '没有识别到章标题，将按一章预览。'
-  const [startLabel, start] = field('连续编号从第几章开始', { type: 'number', min: 1, max: 99999, value: Math.min(99999, last + 1) })
+    ? ui("识别到 ") + parsed.chapters.length + ui(" 章，请检查标题与正文。") + (parsed.hasPreface ? ui(" 首章标题前的文字并入首章。") : '')
+    : ui("没有识别到章标题，将按一章预览。")
+  const [startLabel, start] = field(ui("连续编号从第几章开始"), { type: 'number', min: 1, max: 99999, value: Math.min(99999, last + 1) })
   const preserve = document.createElement('input')
   preserve.type = 'checkbox'
   preserve.checked = preserveDefault
   const preserveLabel = document.createElement('label')
   preserveLabel.className = 'manuscript-check'
-  preserveLabel.append(preserve, ' 保留文件中的章号')
+  preserveLabel.append(preserve, ui(" 保留文件中的章号"))
   const status = document.createElement('p')
   status.setAttribute('role', 'status')
   const list = document.createElement('div')
@@ -926,9 +1059,9 @@ function manuscriptPreview(pid, parsed, existing) {
     label.append(checked, title)
     const details = document.createElement('details')
     const preview = document.createElement('summary')
-    preview.textContent = '查看正文片段'
+    preview.textContent = ui("查看正文片段")
     const excerpt = document.createElement('pre')
-    excerpt.textContent = chapter.body ? chapter.body.slice(0, 450) + (chapter.body.length > 450 ? '…' : '') : '（空章）'
+    excerpt.textContent = chapter.body ? chapter.body.slice(0, 450) + (chapter.body.length > 450 ? '…' : '') : ui("（空章）")
     details.append(preview, excerpt)
     row.append(label, details)
     list.append(row)
@@ -948,27 +1081,27 @@ function manuscriptPreview(pid, parsed, existing) {
     problems = []
     for (const [index, { chapter, checked, title }] of rows.entries()) {
       const number = preserve.checked ? chapter.number : next
-      const issue = !Number.isInteger(number) || number < 1 || number > 99999 ? '章号无效'
-        : occupied.has(number) ? '章号已占用'
-          : seen.has(number) ? '章号重复'
-            : chapter.body.length > 180_000 ? '正文超过单章上限' : ''
-      title.textContent = (checked.checked && Number.isInteger(number) ? '第 ' + number + ' 章 · ' : '')
-        + chapter.title + '（' + chapter.body.length.toLocaleString() + ' 字符）' + (checked.checked && issue ? ' · ' + issue : '')
+      const issue = !Number.isInteger(number) || number < 1 || number > 99999 ? ui("章号无效")
+        : occupied.has(number) ? ui("章号已占用")
+          : seen.has(number) ? ui("章号重复")
+            : chapter.body.length > 180_000 ? ui("正文超过单章上限") : ''
+      title.textContent = (checked.checked && Number.isInteger(number) ? ui("第 ") + number + ui(" 章 · ") : '')
+        + chapter.title + '（' + chapter.body.length.toLocaleString() + ui(" 字符）") + (checked.checked && issue ? ' · ' + issue : '')
       if (!checked.checked) continue
       if (!preserve.checked) next++
       seen.add(number)
       if (issue) problems.push(issue)
       plan.push({ index, number, title: chapter.title, body: chapter.body })
     }
-    status.textContent = problems.length ? '请取消选择有问题的章节或调整编号。'
-      : plan.length ? '已选择 ' + plan.length + ' 章，将作为草稿加入作品。' : '请选择至少一章。'
+    status.textContent = problems.length ? ui("请取消选择有问题的章节或调整编号。")
+      : plan.length ? ui("已选择 ") + plan.length + ui(" 章，将作为草稿加入作品。") : ui("请选择至少一章。")
   }
 
   preserve.addEventListener('change', update)
   start.addEventListener('input', update)
   list.addEventListener('change', update)
   update()
-  dialog('预览整稿导入', [summary, preserveLabel, startLabel, status, list], async () => {
+  dialog(ui("预览整稿导入"), [summary, preserveLabel, startLabel, status, list], async () => {
     if (submitted || pid !== project) return
     if (!plan.length || problems.length) return
     const requestNavigation = navigation
@@ -978,11 +1111,11 @@ function manuscriptPreview(pid, parsed, existing) {
     const chapters = selected.map(({ number, title, body }) => ({ number, title, body }))
     const data = { mutationId, chapters }
     if (new Blob([JSON.stringify(data)]).size > manuscriptRequestBytes) {
-      status.textContent = '选中的正文超过单次上传限制，请分批导入。'
+      status.textContent = ui("选中的正文超过单次上传限制，请分批导入。")
       return
     }
     attempts.set(key, mutationId)
-    status.textContent = '正在导入…'
+    status.textContent = ui("正在导入…")
     let receipt
     try {
       await leave()
@@ -992,34 +1125,34 @@ function manuscriptPreview(pid, parsed, existing) {
       if (error.status === 409) {
         for (const number of error.current?.occupied ?? []) occupied.add(number)
         update()
-        status.textContent = error.message + '。请检查最新章号后重试。'
+        status.textContent = error.message + ui("。请检查最新章号后重试。")
       } else {
-        status.textContent = error.status ? error.message : '连接中断。可以按同一选择重试，已提交的批次不会重复创建。'
+        status.textContent = error.status ? error.message : ui("连接中断。可以按同一选择重试，已提交的批次不会重复创建。")
       }
       return
     }
     submitted = true
     const stillPreviewing = $('dialog').open && list.isConnected && navigation === requestNavigation
     if (stillPreviewing) $('dialog').close()
-    note('已导入 ' + receipt.chapters.length + ' 章')
+    note(ui("已导入 ") + receipt.chapters.length + ui(" 章"))
     if (pid === project) {
       await refreshDocuments(editor?.doc.id)
       if (stillPreviewing && pid === project && navigation === requestNavigation) await openDocument(receipt.chapters[0].id)
     }
-  }, '导入选中章节')
+  }, ui("导入选中章节"))
 }
 
 async function recover() {
   const state = editor
   await loadRecovery(state)
   const buttons = state.recovered.map(draft => actionButton(
-    `${new Date(draft.updated).toLocaleString()} · ${draft.title} · 基于 v${draft.baseRev}`, () => {
-      dialog('比较本机草稿', [compare('当前编辑内容', state.body, '本机草稿', draft.body)], async () => {
-        if (state.doc.status === 'final') throw new Error('请先重新打开定稿再恢复草稿')
-        if (dirty(state)) throw new Error('请先保存或处理当前编辑中的内容')
+    ui("$1 · $2 · 基于 v$3", new Date(draft.updated).toLocaleString(), draft.title, draft.baseRev), () => {
+      dialog(ui("比较本机草稿"), [compare(ui("当前编辑内容"), state.body, ui("本机草稿"), draft.body)], async () => {
+        if (state.doc.status === 'final') throw new Error(ui("请先重新打开定稿再恢复草稿"))
+        if (dirty(state)) throw new Error(ui("请先保存或处理当前编辑中的内容"))
         const current = await api(docPath(state))
-        if (editor !== state || dirty(state)) throw new Error('当前文档已变化')
-        if (current.status === 'final') throw new Error('请先重新打开定稿再恢复草稿')
+        if (editor !== state || dirty(state)) throw new Error(ui("当前文档已变化"))
+        if (current.status === 'final') throw new Error(ui("请先重新打开定稿再恢复草稿"))
         state.recoverySource = draft
         state.doc = { ...current, rev: draft.baseRev }
         state.title = draft.title
@@ -1036,9 +1169,9 @@ async function recover() {
         paint(state)
         $('dialog').close()
         if (!state.conflict) void flush(state)
-      }, '恢复到编辑器')
+      }, ui("恢复到编辑器"))
     }))
-  dialog('本机未同步草稿', buttons.length ? buttons : [document.createTextNode('没有待恢复草稿')])
+  dialog(ui("本机未同步草稿"), buttons.length ? buttons : [document.createTextNode(ui("没有待恢复草稿"))])
 }
 
 async function conflict() {
@@ -1046,10 +1179,10 @@ async function conflict() {
   const current = await api(docPath(state))
   if (editor !== state) return
   state.conflict = current
-  dialog('比较并处理版本冲突', [
-    compare(`NAS v${current.rev} · ${current.title}`, current.body, `本机 · ${state.title}`, state.body),
-    actionButton('打开 NAS 版本，本机稿保留待恢复', async () => {
-      if (!await persistLocal(state)) throw new Error('本机草稿保存失败，请先复制正文')
+  dialog(ui("比较并处理版本冲突"), [
+    compare(`NAS v${current.rev} · ${current.title}`, current.body, ui("本机 · $1", state.title), state.body),
+    actionButton(ui("打开 NAS 版本，本机稿保留待恢复"), async () => {
+      if (!await persistLocal(state)) throw new Error(ui("本机草稿保存失败，请先复制正文"))
       const next = showEditor(current)
       await loadRecovery(next)
       $('dialog').close()
@@ -1061,17 +1194,17 @@ async function conflict() {
     state.edit++
     $('dialog').close()
     await flush(state, true)
-  }, '以本机稿保存为新版本')
+  }, ui("以本机稿保存为新版本"))
 }
 
 async function clean(state) {
-  if (!await flush(state) || dirty(state)) throw new Error('请先同步当前编辑内容或处理版本冲突')
-  if (state !== editor) throw new Error('当前文档已切换')
+  if (!await flush(state) || dirty(state)) throw new Error(ui("请先同步当前编辑内容或处理版本冲突"))
+  if (state !== editor) throw new Error(ui("当前文档已切换"))
 }
 
 async function mutateEditor(state, action) {
   await clean(state)
-  if (state.mutating) throw new Error('正在处理当前文档')
+  if (state.mutating) throw new Error(ui("正在处理当前文档"))
   state.mutating = true
   paint(state)
   try { return await action() }
@@ -1082,8 +1215,8 @@ async function showHistory() {
   const state = editor
   const items = await api(docPath(state) + '/history')
   if (editor !== state) return
-  dialog('历史版本', items.map(item => actionButton(`v${item.rev} · ${item.title} · ${new Date(item.created).toLocaleString()}`, () => {
-    dialog('查看历史正文', [compare('当前版本', state.body, `历史 v${item.rev}`, item.body)],
+  dialog(ui("历史版本"), items.map(item => actionButton(`v${item.rev} · ${item.title} · ${new Date(item.created).toLocaleString()}`, () => {
+    dialog(ui("查看历史正文"), [compare(ui("当前版本"), state.body, ui("历史 v$1", item.rev), item.body)],
       state.doc.status === 'final' ? undefined : () => mutateEditor(state, async () => {
         const updated = await api(docPath(state) + '/history', 'POST', { baseRev: state.doc.rev, rev: item.rev })
         if (editor === state) {
@@ -1091,7 +1224,7 @@ async function showHistory() {
           await loadRecovery(next)
         }
         $('dialog').close()
-      }), '恢复为新版本')
+      }), ui("恢复为新版本"))
   })))
 }
 
@@ -1106,37 +1239,37 @@ function renderReview(state) {
   $('review-list').replaceChildren()
   if (!report) return
   const { issues } = report
-  const version = `正文 v${state.job.base_rev}`
+  const version = ui("正文 v$1", state.job.base_rev)
   $('review-summary').textContent = issues.length
-    ? `${version} · 模型列出 ${issues.length} 条问题，请核对原文后选择。`
-    : `${version} · 模型未列出问题。`
+    ? ui("$1 · 模型列出 $2 条问题，请核对原文后选择。", version, issues.length)
+    : ui("$1 · 模型未列出问题。", version)
   $('review-issues').hidden = issues.length === 0
   $('use-review-issues').hidden = !issues.some(issue => issue.evidence === 'verified')
   $('use-review-issues').disabled = true
-  const evidence = { verified: '引文可唯一定位', ambiguous: '引文在原文中出现多次', missing: '在该版本未找到引文', unavailable: '缺少审稿版本的正文快照' }
+  const evidence = { verified: ui("引文可唯一定位"), ambiguous: ui("引文在原文中出现多次"), missing: ui("在该版本未找到引文"), unavailable: ui("缺少审稿版本的正文快照") }
   issues.forEach((issue, index) => {
     const item = document.createElement('article')
     const title = document.createElement('h3')
-    title.textContent = `${index + 1}. ${issue.title}（${issue.severity === 'major' ? '重要' : '一般'}）`
+    title.textContent = `${index + 1}. ${issue.title}（${issue.severity === 'major' ? ui("重要") : ui("一般")}）`
     const source = document.createElement('p')
     const quote = document.createElement('q')
     quote.textContent = issue.quote
     source.append(evidence[issue.evidence] + ' · ', quote)
     const reason = document.createElement('p')
-    reason.textContent = '原因 · ' + issue.reason
+    reason.textContent = ui("原因 · ") + issue.reason
     const suggestion = document.createElement('p')
-    suggestion.textContent = '改法 · ' + issue.suggestion
+    suggestion.textContent = ui("改法 · ") + issue.suggestion
     item.append(title, source, reason, suggestion)
     if (issue.evidence === 'verified') {
       const tools = document.createElement('div')
       tools.className = 'tools'
       const locate = document.createElement('button')
-      locate.textContent = '定位原文'
+      locate.textContent = ui("定位原文")
       locate.addEventListener('click', () => runAction(() => {
-        if (!currentReview(state)) throw new Error('请为当前版本重新审稿')
+        if (!currentReview(state)) throw new Error(ui("请为当前版本重新审稿"))
         const input = bodyControl()
         const start = input.value.indexOf(issue.quote)
-        if (start < 0 || input.value.indexOf(issue.quote, start + 1) >= 0) throw new Error('无法在当前编辑器中唯一定位该引文')
+        if (start < 0 || input.value.indexOf(issue.quote, start + 1) >= 0) throw new Error(ui("无法在当前编辑器中唯一定位该引文"))
         input.focus({ preventScroll: true })
         input.setSelectionRange(start, start + issue.quote.length)
         if (enhancedBody) enhancedBody.reveal(start)
@@ -1147,8 +1280,8 @@ function renderReview(state) {
       const check = document.createElement('input')
       check.type = 'checkbox'
       check.value = index
-      check.setAttribute('aria-label', `采纳第 ${index + 1} 条意见`)
-      label.append(check, '采纳这条意见')
+      check.setAttribute('aria-label', ui("采纳第 $1 条意见", index + 1))
+      label.append(check, ui("采纳这条意见"))
       tools.append(locate, label)
       item.append(tools)
     }
@@ -1164,7 +1297,7 @@ function renderJob(state) {
   $('run-output').hidden = Boolean(job?.reviewReport)
   renderReview(state)
   $('run-status').textContent = job ? [runNames[job.kind], runStates[job.status],
-    job.continued_from && '分段续跑', job.applied_rev !== null && '已应用', job.error, modelName(job.model_ref)].filter(Boolean).join(' · ') : ''
+    job.continued_from && ui("分段续跑"), job.applied_rev !== null && ui("已应用"), job.error, modelName(job.model_ref)].filter(Boolean).join(' · ') : ''
   $('cancel-run').hidden = job?.status !== 'running'
   $('continue-run').hidden = !job?.canContinue
   $('apply-run').hidden = !job || !['draft', 'revise', 'plan', 'passage'].includes(job.kind) ||
@@ -1206,7 +1339,7 @@ async function startRun(kind, extra) {
   if (state.jobRequest) {
     const { mutationId, ...previous } = state.jobRequest
     if (JSON.stringify(previous) !== JSON.stringify(request)) {
-      throw new Error('上次任务提交状态未知。请用相同操作重试，或查看任务历史。')
+      throw new Error(ui("上次任务提交状态未知。请用相同操作重试，或查看任务历史。"))
     }
   }
   state.jobRequest ??= { ...request, mutationId: uuid() }
@@ -1229,12 +1362,12 @@ async function showContext(state, result, kind, extra) {
     if (!result.isConnected || state !== editor) return
     const size = document.createElement('p')
     const length = data.messages.reduce((total, message) => total + message.content.length, 0)
-    size.textContent = length.toLocaleString() + ' / ' + data.limit.toLocaleString() + ' 字符。预览不会调用模型。'
+    size.textContent = length.toLocaleString() + ' / ' + data.limit.toLocaleString() + ui(" 字符。预览不会调用模型。")
     result.append(size)
     for (const { role, content } of data.messages) {
       const heading = document.createElement('h3')
       const text = document.createElement('pre')
-      heading.textContent = role === 'system' ? '写作指令' : '正文与资料'
+      heading.textContent = role === 'system' ? ui("写作指令") : ui("正文与资料")
       text.textContent = content
       result.append(heading, text)
     }
@@ -1245,33 +1378,37 @@ function previewContext() {
   const state = editor
   const picker = document.createElement('select')
   const label = document.createElement('label')
-  label.append('任务类型', picker)
-  const options = state.doc.kind === 'chapter' ? chapterRuns : { plan: '生成' + names[state.doc.kind] + '候选' }
+  label.append(ui("任务类型"), picker)
+  const options = state.doc.kind === 'chapter' ? chapterRuns : { plan: ui("生成") + names[state.doc.kind] + ui("候选") }
   for (const [kind, title] of Object.entries(options)) picker.append(new Option(title, kind))
   const result = document.createElement('div')
-  dialog('预览模型输入', [label, result], () => showContext(state, result, picker.value), '生成预览')
+  dialog(ui("预览模型输入"), [label, result], () => showContext(state, result, picker.value), ui("生成预览"))
 }
 
-function planArchitecture() {
+async function planArchitecture() {
   const state = editor
   const sections = Object.entries(architectureSections)
-  const suggested = sections.find(([, section]) => section.title === state.title)?.[0] ?? 'general'
-  const [label, scope] = selectField('规划范围', {
-    general: '整体设定与架构',
-    ...Object.fromEntries(sections.map(([key, section]) => [key, section.title])),
+  const rows = await api(`/projects/${project}/architecture`)
+  if (state !== editor) return
+  const bound = rows.find(row => row.document_id === state.doc.id)?.section
+  const suggested = bound ?? sections.find(([, section]) => section.title === state.title)?.[0] ?? 'general'
+  const [label, scope] = selectField(ui("规划范围"), {
+    general: ui("整体设定与架构"),
+    ...Object.fromEntries(sections.map(([key, section]) => [key, ui(section.title)])),
   }, suggested)
+  scope.disabled = Boolean(bound)
   const help = document.createElement('p')
-  help.textContent = '候选用于替换当前整份文档。建议为每个架构模块使用独立文档。'
+  help.textContent = ui("候选用于替换当前整份文档。建议为每个架构模块使用独立文档。")
   const result = document.createElement('div')
   const options = () => scope.value === 'general' ? undefined : { planSection: scope.value }
-  const preview = actionButton('预览发送内容', () => showContext(state, result, 'plan', options()))
-  dialog('生成架构候选', [label, help, preview, result], async () => {
+  const preview = actionButton(ui("预览发送内容"), () => showContext(state, result, 'plan', options()))
+  dialog(ui("生成架构候选"), [label, help, preview, result], async () => {
     if (state !== editor) return
     try {
       await startRun('plan', options())
       if (state === editor && result.isConnected) $('dialog').close()
     } catch (error) { result.textContent = error.message }
-  }, '生成候选')
+  }, ui("生成候选"))
 }
 
 function editPassage() {
@@ -1280,23 +1417,23 @@ function editPassage() {
   const start = input.selectionStart
   const end = input.selectionEnd
   const quote = input.value.slice(start, end)
-  if (!quote.trim() || quote.length > 6000) throw new Error('请先选中 1–6000 字符的正文')
+  if (!quote.trim() || quote.length > 6000) throw new Error(ui("请先选中 1–6000 字符的正文"))
   const label = document.createElement('label')
   const mode = document.createElement('select')
-  mode.append(new Option('在选段后续写', 'continue'), new Option('润色', 'polish'),
-    new Option('扩写', 'expand'), new Option('改成对话', 'dialogue'))
-  label.append('选段操作', mode)
+  mode.append(new Option(ui("在选段后续写"), 'continue'), new Option(ui("润色"), 'polish'),
+    new Option(ui("扩写"), 'expand'), new Option(ui("改成对话"), 'dialogue'))
+  label.append(ui("选段操作"), mode)
   const excerpt = document.createElement('pre')
   excerpt.textContent = quote
   const guidanceLabel = document.createElement('label')
   const guidance = document.createElement('textarea')
   guidance.rows = 3
   guidance.maxLength = 6000
-  guidanceLabel.append('本次要求', guidance)
+  guidanceLabel.append(ui("本次要求"), guidance)
   const result = document.createElement('div')
   const options = () => ({ guidance: guidance.value, passage: { mode: mode.value, start, end, quote } })
-  const preview = actionButton('预览发送内容', () => showContext(state, result, 'passage', options()))
-  dialog('选段 AI', [label, excerpt, guidanceLabel, preview, result], async () => {
+  const preview = actionButton(ui("预览发送内容"), () => showContext(state, result, 'passage', options()))
+  dialog(ui("选段 AI"), [label, excerpt, guidanceLabel, preview, result], async () => {
     if (state !== editor) return
     try {
       await startRun('passage', options())
@@ -1305,7 +1442,7 @@ function editPassage() {
         $('dialog').close()
       }
     } catch (error) { result.textContent = error.message }
-  }, '生成选段候选')
+  }, ui("生成选段候选"))
 }
 
 async function listRuns() {
@@ -1313,21 +1450,21 @@ async function listRuns() {
   const runs = await api(docPath(state) + '/runs')
   if (editor !== state) return
   if (runs.some(job => job.id === state.jobRequest?.mutationId)) state.jobRequest = null
-  dialog('任务历史', runs.length ? runs.map(run => actionButton(
+  dialog(ui("任务历史"), runs.length ? runs.map(run => actionButton(
     `${runNames[run.kind]} · ${runStates[run.status]} · ${new Date(run.created).toLocaleString()}`, async () => {
       await viewRun(state, run.id)
       $('dialog').close()
-    })) : [document.createTextNode('暂无任务')])
+    })) : [document.createTextNode(ui("暂无任务"))])
 }
 
 async function showLibrary() {
   const rows = await api('/projects')
-  const buttons = rows.map(row => actionButton(row.id === project ? '返回 · ' + row.title : row.title, async () => {
+  const buttons = rows.map(row => actionButton(row.id === project ? ui("返回 · ") + row.title : row.title, async () => {
     if (row.id !== project) await selectProject(row.id)
     if (row.id === project) $('dialog').close()
   }))
-  dialog('书房', [...buttons, actionButton('新建作品', () => $('new-project').click()),
-    actionButton('恢复备份', () => $('backup-file').click())])
+  dialog(ui("书房"), [...buttons, actionButton(ui("新建作品"), () => $('new-project').click()),
+    actionButton(ui("恢复备份"), () => $('backup-file').click())])
 }
 
 async function showOverview(next = stage) {
@@ -1346,13 +1483,13 @@ function showProgress(start = 1) {
   const counts = document.createElement('p')
   const feedback = document.createElement('p')
   feedback.setAttribute('role', 'status')
-  const [jumpLabel, jump] = field('起始章号', { type: 'number', min: 1, max: 99999, value: start, required: false })
+  const [jumpLabel, jump] = field(ui("起始章号"), { type: 'number', min: 1, max: 99999, value: start, required: false })
   const controls = document.createElement('div')
   controls.className = 'tools progress-navigation'
-  const previous = actionButton('上一页', () => load(page.previous))
-  const next = actionButton('下一页', () => load(page.next))
-  const unfinalized = actionButton('首个未定稿章', () => load(page.nextDraft))
-  const go = actionButton('跳转', jumpToChapter)
+  const previous = actionButton(ui("上一页"), () => load(page.previous))
+  const next = actionButton(ui("下一页"), () => load(page.next))
+  const unfinalized = actionButton(ui("首个未定稿章"), () => load(page.nextDraft))
+  const go = actionButton(ui("跳转"), jumpToChapter)
   controls.append(previous, next, jumpLabel, go, unfinalized)
   jump.addEventListener('keydown', event => {
     if (event.key !== 'Enter') return
@@ -1366,9 +1503,9 @@ function showProgress(start = 1) {
   warnings.append(warningTitle, warningList)
   const table = document.createElement('table')
   table.className = 'progress-table'
-  table.setAttribute('aria-label', '章节进度')
+  table.setAttribute('aria-label', ui("章节进度"))
   const header = table.createTHead().insertRow()
-  for (const title of ['章', '蓝图', '正文', '线索']) {
+  for (const title of [ui("章"), ui("蓝图"), ui("正文"), ui("线索")]) {
     const heading = document.createElement('th')
     heading.scope = 'col'
     heading.textContent = title
@@ -1379,20 +1516,22 @@ function showProgress(start = 1) {
   let page
   let request = 0
   const visible = element => element.isConnected && $('dialog').open && project === pid
-  const milestoneLabels = { planted: '埋设', due: '预计回收', resolved: '实际回收' }
+  const milestoneLabels = { planted: ui("埋设"), due: ui("预计回收"), resolved: ui("实际回收") }
   const warningLabels = {
-    'plant-confirm': '埋设章已定稿，待核对埋设',
-    'due-final': '预计回收章已定稿，待核对回收',
-    'due-passed': '已定稿章节越过预计回收章',
-    'resolve-unfinalized': '实际回收章待定稿',
+    'plant-confirm': ui("埋设章已定稿，待核对埋设"),
+    'due-final': ui("预计回收章已定稿，待核对回收"),
+    'due-passed': ui("已定稿章节越过预计回收章"),
+    'resolve-unfinalized': ui("实际回收章待定稿"),
+    'evidence-outdated': ui("原定稿引文待重新核对"),
+    'evidence-missing': ui("定稿待补引文"),
   }
-  dialog('长篇进度', [panel])
+  dialog(ui("长篇进度"), [panel])
   void load(start)
 
   function jumpToChapter() {
     const number = jump.valueAsNumber
     if (!Number.isInteger(number) || !jump.checkValidity()) {
-      feedback.textContent = '请输入 1–' + jump.max + ' 的章号'
+      feedback.textContent = ui("请输入 1–") + jump.max + ui(" 的章号")
       return
     }
     return load(number)
@@ -1402,7 +1541,7 @@ function showProgress(start = 1) {
     if (!number) return
     const seq = ++request
     previous.disabled = next.disabled = unfinalized.disabled = go.disabled = true
-    feedback.textContent = '正在读取章节进度…'
+    feedback.textContent = ui("正在读取章节进度…")
     try {
       const result = await api(path + '/progress?start=' + number)
       if (!visible(panel) || seq !== request) return
@@ -1431,7 +1570,7 @@ function showProgress(start = 1) {
     for (const entry of row.milestones) list.append(actionButton(
       milestoneLabels[entry.type] + ' · ' + entry.title + ' · ' + threadStates[entry.status],
       () => openThread(entry.id, list, first)))
-    dialog('第 ' + row.number + ' 章线索', [actionButton('返回长篇进度', () => showProgress(first)), list])
+    dialog(ui("第 ") + row.number + ui(" 章线索"), [actionButton(ui("返回长篇进度"), () => showProgress(first)), list])
   }
 
   function addDocumentCell(cell, doc, state) {
@@ -1449,16 +1588,16 @@ function showProgress(start = 1) {
     const { first, last, limit, counts: total, target, chapters, warningCount } = page
     jump.max = limit
     jump.value = first
-    counts.textContent = ['蓝图 ' + total.blueprints + ' 章', '正文 ' + total.chapters + ' 章',
-      '已有定稿 ' + total.finalized + ' 章' + (target ? '／目标 ' + target + ' 章' : ''),
-      total.reopened && '其中 ' + total.reopened + ' 章已重开'].filter(Boolean).join(' · ')
-    feedback.textContent = '第 ' + first + '–' + last + ' 章 · 至第 ' + limit + ' 章'
+    counts.textContent = [ui("蓝图 ") + total.blueprints + ui(" 章"), ui("正文 ") + total.chapters + ui(" 章"),
+      ui("已有定稿 ") + total.finalized + ui(" 章") + (target ? ui("／目标 ") + target + ui(" 章") : ''),
+      total.reopened && ui("其中 ") + total.reopened + ui(" 章已重开")].filter(Boolean).join(' · ')
+    feedback.textContent = ui("第 ") + first + '–' + last + ui(" 章 · 至第 ") + limit + ui(" 章")
     warnings.hidden = !warningCount
-    warningTitle.textContent = '线索待核对 · ' + warningCount + ' 项'
+    warningTitle.textContent = ui("线索待核对 · ") + warningCount + ui(" 项")
     warningList.replaceChildren(...page.warnings.map(entry => actionButton(
-      '第 ' + entry.number + ' 章 · ' + entry.title + ' · ' + warningLabels[entry.code],
-      () => openThread(entry.id, panel, first))))
-    if (warningCount > page.warnings.length) warningList.append('显示前 ' + page.warnings.length + ' 项。')
+      [ui("第 ") + entry.number + ui(" 章"), entry.title, milestoneLabels[entry.phase], warningLabels[entry.code]].filter(Boolean).join(' · '),
+      () => entry.phase ? showThreadEvidence(pid, entry.id, entry.phase, () => showProgress(first)) : openThread(entry.id, panel, first))))
+    if (warningCount > page.warnings.length) warningList.append(ui("显示前 ") + page.warnings.length + ui(" 项。"))
     body.replaceChildren()
     for (const row of chapters) {
       const tr = body.insertRow()
@@ -1466,12 +1605,12 @@ function showProgress(start = 1) {
       number.scope = 'row'
       number.textContent = row.number
       tr.append(number)
-      addDocumentCell(tr.insertCell(), row.blueprint, row.blueprint?.hasText ? '已写' : '空蓝图')
+      addDocumentCell(tr.insertCell(), row.blueprint, row.blueprint?.hasText ? ui("已写") : ui("空蓝图"))
       const prose = row.prose
-      addDocumentCell(tr.insertCell(), prose, prose?.status === 'final' ? '已定稿'
-        : prose?.hasFinal ? '定稿后重开' : prose?.hasText ? '草稿' : '空稿')
+      addDocumentCell(tr.insertCell(), prose, prose?.status === 'final' ? ui("已定稿")
+        : prose?.hasFinal ? ui("定稿后重开") : prose?.hasText ? ui("草稿") : ui("空稿"))
       const cell = tr.insertCell()
-      if (row.milestones.length) cell.append(actionButton(row.milestones.length + ' 项', () => showMilestones(row, first)))
+      if (row.milestones.length) cell.append(actionButton(row.milestones.length + ui(" 项"), () => showMilestones(row, first)))
       else cell.textContent = '—'
     }
   }
@@ -1484,7 +1623,7 @@ function showProjectRuns() {
   controls.className = 'tools'
   const list = document.createElement('div')
   list.className = 'batch-list'
-  list.setAttribute('aria-label', '任务列表')
+  list.setAttribute('aria-label', ui("任务列表"))
   const message = document.createElement('p')
   message.setAttribute('role', 'status')
   let scope = 'active'
@@ -1492,11 +1631,11 @@ function showProjectRuns() {
   let timer
   let previous
   const visible = () => panel.isConnected && $('dialog').open && project === pid
-  const active = actionButton('进行中', () => select('active'))
-  const history = actionButton('历史', () => select('history'))
-  controls.append(active, history, actionButton('批量任务记录', () => listBatches(pid)))
+  const active = actionButton(ui("进行中"), () => select('active'))
+  const history = actionButton(ui("历史"), () => select('history'))
+  controls.append(active, history, actionButton(ui("批量任务记录"), () => listBatches(pid)))
   panel.append(controls, message, list)
-  dialog('运行中心', [panel])
+  dialog(ui("运行中心"), [panel])
   select(scope)
 
   function select(next) {
@@ -1505,7 +1644,7 @@ function showProjectRuns() {
     active.setAttribute('aria-pressed', String(scope === 'active'))
     history.setAttribute('aria-pressed', String(scope === 'history'))
     list.replaceChildren()
-    message.textContent = '正在读取任务…'
+    message.textContent = ui("正在读取任务…")
     void refresh()
   }
 
@@ -1516,14 +1655,14 @@ function showProjectRuns() {
     try {
       const rows = await api(`/projects/${pid}/runs?scope=${scope}`)
       if (!visible() || seq !== request) return
-      message.textContent = rows.length ? '' : scope === 'active' ? '当前没有进行中的章节任务。' : '当前没有任务历史。'
+      message.textContent = rows.length ? '' : scope === 'active' ? ui("当前没有进行中的章节任务。") : ui("当前没有任务历史。")
       const snapshot = JSON.stringify(rows)
       if (snapshot === previous) return
       previous = snapshot
       list.replaceChildren(...rows.map(row => {
         const item = document.createElement('section')
         const summary = document.createElement('p')
-        summary.textContent = [new Date(row.created).toLocaleString(), row.applied_rev !== null && '已应用', row.error].filter(Boolean).join(' · ')
+        summary.textContent = [new Date(row.created).toLocaleString(), row.applied_rev !== null && ui("已应用"), row.error].filter(Boolean).join(' · ')
         item.append(actionButton(`${numberedTitle(row)} · ${runNames[row.kind]} · ${runStates[row.status]}`, async () => {
           if (row.kind === 'continuity') {
             const job = await api(`/projects/${pid}/runs/${row.id}`)
@@ -1545,8 +1684,8 @@ function showProjectRuns() {
   }
 }
 
-const themes = { system: '跟随系统', light: '浅色', dark: '深色' }
-const textSizes = { standard: '标准', large: '大字', extra: '特大字' }
+const themes = { system: ui("跟随系统"), light: ui("浅色"), dark: ui("深色") }
+const textSizes = { standard: ui("标准"), large: ui("大字"), extra: ui("特大字") }
 
 function applyAppearance() {
   let saved
@@ -1565,19 +1704,60 @@ function showSettings() {
     return [label, select]
   }
   const root = document.documentElement
-  const [themeLabel, theme] = preference('外观主题', themes, root.dataset.theme)
-  const [sizeLabel, size] = preference('正文字号', textSizes, root.dataset.textSize)
+  const [themeLabel, theme] = preference(ui("外观主题"), themes, root.dataset.theme)
+  const [sizeLabel, size] = preference(ui("正文字号"), textSizes, root.dataset.textSize)
+  const [languageLabel, language] = preference(ui("界面语言"), { 'zh-CN': '简体中文', 'en-US': 'English' }, locale)
   const services = document.createElement('p')
-  services.textContent = `写作模型${model ? '已配置' : '待配置'} · 语义检索${semanticEnabled ? '已配置' : '待配置'} · ${enhancedBody ? 'CodeMirror' : '普通编辑器'}`
+  const serviceStatus = enabled => ui(enabled ? '已配置' : '待配置')
+  services.textContent = ui("写作模型$1 · 语义检索$2 · $3", serviceStatus(model), serviceStatus(semanticEnabled), enhancedBody ? 'CodeMirror' : ui('普通编辑器'))
   const guide = document.createElement('p')
-  guide.textContent = '外观和字号保存在当前浏览器。'
-  dialog('设置', [themeLabel, sizeLabel, services, actionButton('模型预设与诊断', showModelSettings), guide], () => {
+  guide.textContent = ui("外观、字号和界面语言保存在当前浏览器。")
+  dialog(ui("设置"), [themeLabel, sizeLabel, languageLabel, services, actionButton(ui("模型预设与诊断"), showModelSettings),
+    actionButton(ui("WebDAV 备份"), showBackupSettings), guide], async () => {
     root.dataset.theme = theme.value
     root.dataset.textSize = size.value
     try { localStorage.setItem('pagekin-appearance', JSON.stringify({ theme: theme.value, textSize: size.value })) }
-    catch { note('浏览器无法保留外观设置，当前页面已应用。') }
+    catch { note(ui("浏览器无法保留外观设置，当前页面已应用。")) }
+    if (language.value !== locale) return changeLanguage(language.value)
     $('dialog').close()
-  }, '保存外观')
+  }, ui("保存设置"))
+}
+
+async function changeLanguage(value) {
+  await leave()
+  remember()
+  try { rememberLocale(value) }
+  catch { throw new Error(ui("浏览器无法保存界面语言设置。")) }
+  location.reload()
+}
+
+async function showBackupSettings() {
+  const initial = await api('/webdav-backup')
+  const status = document.createElement('p')
+  status.setAttribute('role', 'status')
+  const details = document.createElement('p')
+  const guide = document.createElement('p')
+  guide.textContent = ui("备份覆盖整个工作区。恢复时先从 WebDAV 下载快照，再按部署说明恢复到独立的数据卷。")
+  const time = value => new Date(value).toLocaleString()
+  const backup = actionButton(ui("立即备份"), async () => {
+    backup.disabled = true
+    try { render(await api('/webdav-backup', 'POST')) }
+    catch (error) { status.textContent = error.message; backup.disabled = false }
+  })
+  function render(state) {
+    backup.disabled = !state.enabled || state.running
+    status.textContent = state.running ? ui("正在备份…") : state.configError || state.error ||
+      (state.enabled ? state.succeeded ? ui("最近一次备份成功") : ui("等待首次备份") : ui("请先在 NAS 配置 WebDAV 备份。"))
+    details.textContent = [state.succeeded && ui("成功时间 $1", time(state.succeeded)), state.file,
+      state.size && ui("$1 字节", state.size.toLocaleString()), state.next && !state.running && ui("下次备份 $1", time(state.next))].filter(Boolean).join(' · ')
+    if (state.running) setTimeout(async () => {
+      if (!$('dialog').open || !status.isConnected) return
+      try { render(await api('/webdav-backup')) }
+      catch (error) { status.textContent = error.message; backup.disabled = false }
+    }, 1500)
+  }
+  dialog(ui("WebDAV 备份"), [status, details, guide, backup, actionButton(ui("返回设置"), showSettings)])
+  render(initial)
 }
 
 async function showModelSettings() {
@@ -1585,26 +1765,26 @@ async function showModelSettings() {
   modelLabels = new Map(data.profiles.map(row => [row.id, row.label]))
   const select = document.createElement('select')
   select.required = data.profiles.length > 0
-  select.append(new Option('选择预设', ''), ...data.profiles.map(row => new Option(row.label + ' · ' + row.model, row.id)))
+  select.append(new Option(ui("选择预设"), ''), ...data.profiles.map(row => new Option(row.label + ' · ' + row.model, row.id)))
   select.value = data.available ? data.activeId : ''
   select.disabled = !data.profiles.length
   const label = document.createElement('label')
-  label.append('写作模型预设', select)
+  label.append(ui("写作模型预设"), select)
   const info = document.createElement('p')
   const result = document.createElement('p')
   result.setAttribute('role', 'status')
   const actions = document.createElement('div')
   actions.className = 'tools'
-  const test = actionButton('测试所选写作模型', () => diagnose('/diagnose', { id: select.value }))
-  const semantic = actionButton('测试语义模型', () => diagnose('/diagnose-semantic', {}))
-  actions.append(test, semantic, actionButton('返回设置', showSettings))
+  const test = actionButton(ui("测试所选写作模型"), () => diagnose('/diagnose', { id: select.value }))
+  const semantic = actionButton(ui("测试语义模型"), () => diagnose('/diagnose-semantic', {}))
+  actions.append(test, semantic, actionButton(ui("返回设置"), showSettings))
   let busy = false
   const showSelection = () => {
     const row = data.profiles.find(item => item.id === select.value)
     test.disabled = busy || !row
     semantic.disabled = busy || !data.semantic
-    info.textContent = row ? '上下文字符预算 ' + row.contextLimit.toLocaleString()
-      : data.activeId ? '原预设已移除，请重新选择。' : '在 NAS 配置写作模型后，此处可选择预设。'
+    info.textContent = row ? ui("上下文字符预算 ") + row.contextLimit.toLocaleString()
+      : data.activeId ? ui("原预设已移除，请重新选择。") : ui("在 NAS 配置写作模型后，此处可选择预设。")
   }
   select.addEventListener('change', () => {
     result.textContent = ''
@@ -1612,8 +1792,8 @@ async function showModelSettings() {
   })
   showSelection()
   const guide = document.createElement('p')
-  guide.textContent = '预设由 NAS 管理。保存后适用于此工作区的新任务。测试会发送固定的测试文本。'
-  dialog('模型预设与诊断', [label, info, guide, actions, result], data.profiles.length ? async () => {
+  guide.textContent = ui("预设由 NAS 管理。保存后适用于此工作区的新任务。测试会发送固定的测试文本。")
+  dialog(ui("模型预设与诊断"), [label, info, guide, actions, result], data.profiles.length ? async () => {
     if (busy) return
     try {
       const saved = await api('/model-profiles', 'PUT', { id: select.value, baseRev: data.rev })
@@ -1624,20 +1804,20 @@ async function showModelSettings() {
       if (result.isConnected) await showModelSettings()
     } catch (error) {
       result.textContent = error.message
-      if (error.status === 409) result.append(actionButton('重新读取预设', showModelSettings))
+      if (error.status === 409) result.append(actionButton(ui("重新读取预设"), showModelSettings))
     }
-  } : undefined, '保存预设')
+  } : undefined, ui("保存预设"))
 
   async function diagnose(action, value) {
     if (busy) return
     busy = true
     showSelection()
     select.disabled = true
-    result.textContent = '正在测试连接…'
+    result.textContent = ui("正在测试连接…")
     try {
       const response = await api('/model-profiles' + action, 'POST', value)
-      result.textContent = '连接成功 · ' + response.elapsedMs + ' 毫秒' +
-        (response.dimensions ? ' · 向量维度 ' + response.dimensions : '')
+      result.textContent = ui("连接成功 · ") + response.elapsedMs + ui(" 毫秒") +
+        (response.dimensions ? ui(" · 向量维度 ") + response.dimensions : '')
     } catch (error) { result.textContent = error.message }
     finally {
       select.disabled = !data.profiles.length
@@ -1650,37 +1830,37 @@ async function showModelSettings() {
 function setFocusWriting(enabled) {
   document.body.classList.toggle('focus-writing', enabled)
   $('focus-writing').setAttribute('aria-pressed', String(enabled))
-  $('focus-writing').textContent = enabled ? '退出专注' : '专注写作'
+  $('focus-writing').textContent = enabled ? ui("退出专注") : ui("专注写作")
 }
 
 async function listBatches(pid) {
   const batches = await api(`/projects/${pid}/batches`)
   if (pid !== project) return
   const rows = batches.map(batch => actionButton(
-    `${batch.operation === 'plan' ? '蓝图' : '正文'} · ${batchStates[batch.status]} · 已生成 ${batch.completed} / ${batch.total} 章 · ${new Date(batch.created).toLocaleString()}`, async () => {
+    ui("$1 · $2 · 已生成 $3 / $4 章 · $5", ui(batch.operation === 'plan' ? '蓝图' : '正文'), batchStates[batch.status], batch.completed, batch.total, new Date(batch.created).toLocaleString()), async () => {
       const current = await api(`/projects/${pid}/batches/${batch.id}`)
       if (pid === project) showBatch(pid, current)
     }))
-  dialog('批量任务', [...(model ? [actionButton('新建写作批次', () => newBatch(pid)),
-    actionButton('批量生成蓝图', () => newBlueprintBatch(pid))] : []),
-    ...(rows.length ? rows : [document.createTextNode('当前没有批量任务记录。')])])
+  dialog(ui("批量任务"), [...(model ? [actionButton(ui("新建写作批次"), () => newBatch(pid)),
+    actionButton(ui("批量生成蓝图"), () => newBlueprintBatch(pid))] : []),
+    ...(rows.length ? rows : [document.createTextNode(ui("当前没有批量任务记录。"))])])
 }
 
 function newBlueprintBatch(pid) {
   const next = Math.min(99999, Math.max(0, ...documents.filter(row => row.kind === 'blueprint').map(row => row.number)) + 1)
-  const [startLabel, start] = field('起始章号', { type: 'number', min: 1, max: 99999, value: next })
-  const [endLabel, end] = field('结束章号', { type: 'number', min: 1, max: 99999, value: next })
+  const [startLabel, start] = field(ui("起始章号"), { type: 'number', min: 1, max: 99999, value: next })
+  const [endLabel, end] = field(ui("结束章号"), { type: 'number', min: 1, max: 99999, value: next })
   const label = document.createElement('label')
   const guidance = document.createElement('textarea')
   guidance.maxLength = 6000
   guidance.rows = 3
-  label.append('本批规划要求', guidance)
+  label.append(ui("本批规划要求"), guidance)
   const help = document.createElement('p')
-  help.textContent = '每批最多 20 章。缺失的蓝图会建立空白文档，已有内容的蓝图会跳过。'
+  help.textContent = ui("每批最多 20 章。缺失的蓝图会建立空白文档，已有内容的蓝图会跳过。")
   const error = document.createElement('p')
   error.setAttribute('role', 'alert')
   const mutationId = uuid()
-  dialog('批量生成蓝图', [help, startLabel, endLabel, label, error], async () => {
+  dialog(ui("批量生成蓝图"), [help, startLabel, endLabel, label, error], async () => {
     try {
       if (editor) await clean(editor)
       if (project !== pid || !error.isConnected) return
@@ -1688,7 +1868,7 @@ function newBlueprintBatch(pid) {
         blueprintRange: { start: start.valueAsNumber, end: end.valueAsNumber } })
       if (project === pid && error.isConnected && $('dialog').open) showBatch(pid, batch)
     } catch (failure) { error.textContent = failure.message }
-  }, '开始生成蓝图候选')
+  }, ui("开始生成蓝图候选"))
 }
 
 async function newBatch(pid) {
@@ -1696,10 +1876,10 @@ async function newBatch(pid) {
   const chapters = await api(`/projects/${pid}/batches/eligible`)
   if (pid !== project) return
   const help = document.createElement('p')
-  help.textContent = chapters.length ? '每批可选 1–20 个空白章节，按章号依次生成待确认候选。'
-    : '暂无空白且未定稿的章节。请先新建正文章节。'
-  const back = actionButton('返回批次列表', () => listBatches(pid))
-  if (!chapters.length) return dialog('新建写作批次', [help, back])
+  help.textContent = chapters.length ? ui("每批可选 1–20 个空白章节，按章号依次生成待确认候选。")
+    : ui("暂无空白且未定稿的章节。请先新建正文章节。")
+  const back = actionButton(ui("返回批次列表"), () => listBatches(pid))
+  if (!chapters.length) return dialog(ui("新建写作批次"), [help, back])
   const list = document.createElement('div')
   list.className = 'batch-list'
   for (const chapter of chapters) {
@@ -1714,16 +1894,16 @@ async function newBatch(pid) {
   const guidance = document.createElement('textarea')
   guidance.maxLength = 6000
   guidance.rows = 3
-  label.append('本批通用写作要求（可选）', guidance)
+  label.append(ui("本批通用写作要求（可选）"), guidance)
   const error = document.createElement('p')
   error.setAttribute('role', 'alert')
   let pending
-  dialog('新建写作批次', [help, list, label, error, back], async () => {
+  dialog(ui("新建写作批次"), [help, list, label, error, back], async () => {
     const checked = new Set([...list.querySelectorAll('input:checked')].map(check => check.value))
-    if (!checked.size || checked.size > 20) { error.textContent = '请选择 1–20 个空白章节。'; return }
+    if (!checked.size || checked.size > 20) { error.textContent = ui("请选择 1–20 个空白章节。"); return }
     const request = { chapters: chapters.filter(row => checked.has(row.id)).map(row => ({ id: row.id, baseRev: row.rev })), guidance: guidance.value }
     const fingerprint = JSON.stringify(request)
-    if (pending && pending.fingerprint !== fingerprint) { error.textContent = '上次提交结果未知。请按原选择重试，或查看批次列表。'; return }
+    if (pending && pending.fingerprint !== fingerprint) { error.textContent = ui("上次提交结果未知。请按原选择重试，或查看批次列表。"); return }
     pending ??= { fingerprint, value: { ...request, mutationId: uuid() } }
     error.textContent = ''
     try {
@@ -1733,7 +1913,7 @@ async function newBatch(pid) {
       if (failure.status && failure.status < 500) pending = null
       error.textContent = failure.message
     }
-  }, '开始生成候选')
+  }, ui("开始生成候选"))
 }
 
 function showBatch(pid, first) {
@@ -1786,21 +1966,21 @@ function showBatch(pid, first) {
       batch = next
       const active = batch.items.some(item => item.status === 'running')
       const complete = batch.items.filter(item => item.status === 'done').length
-      status.textContent = [`${batchStates[batch.status]} · 已生成 ${complete} / ${batch.items.length} 章`, batch.error,
+      status.textContent = [ui("$1 · 已生成 $2 / $3 章", batchStates[batch.status], complete, batch.items.length), batch.error,
         modelName(batch.model_ref)].filter(Boolean).join(' · ')
-      controls.replaceChildren(actionButton('返回批次列表', () => listBatches(pid)))
-      if (batch.status === 'running') controls.append(actionButton('暂停批次', () => change('pause')))
+      controls.replaceChildren(actionButton(ui("返回批次列表"), () => listBatches(pid)))
+      if (batch.status === 'running') controls.append(actionButton(ui("暂停批次"), () => change('pause')))
       if (batch.status === 'paused') {
-        const resume = actionButton('继续批次', () => change('resume'))
+        const resume = actionButton(ui("继续批次"), () => change('resume'))
         resume.disabled = active
         controls.append(resume)
       }
-      if (['running', 'paused'].includes(batch.status)) controls.append(actionButton('取消批次', () => change('cancel')))
+      if (['running', 'paused'].includes(batch.status)) controls.append(actionButton(ui("取消批次"), () => change('cancel')))
       list.replaceChildren(...batch.items.map(item => {
         const row = document.createElement('section')
-        const state = item.status === 'queued' ? '待生成' : item.status === 'skipped' ? '已跳过' : runStates[item.status]
+        const state = item.status === 'queued' ? ui("待生成") : item.status === 'skipped' ? ui("已跳过") : runStates[item.status]
         row.textContent = [numberedTitle(item), state, item.error].filter(Boolean).join(' · ')
-        if (item.run_id) row.append(actionButton(item.status === 'done' ? '查看候选' : '查看任务', async () => {
+        if (item.run_id) row.append(actionButton(item.status === 'done' ? ui("查看候选") : ui("查看任务"), async () => {
           await openDocument(item.id)
           if (editor?.doc.id !== item.id || project !== pid) return
           await viewRun(editor, item.run_id)
@@ -1812,7 +1992,7 @@ function showBatch(pid, first) {
     schedule()
   }
 
-  dialog(first.operation === 'plan' ? '批量蓝图进度' : '批量写作进度', [panel])
+  dialog(first.operation === 'plan' ? ui("批量蓝图进度") : ui("批量写作进度"), [panel])
   render(first)
 }
 
@@ -1821,72 +2001,72 @@ async function showWritingSkills(pid) {
   const { skills, bindings, rev } = await api(path)
   if (pid !== project) return
   const help = document.createElement('p')
-  help.textContent = '可分别设置规划与细纲、写稿、审稿和修稿的提示词。实际内容可在模型输入预览中查看。'
+  help.textContent = ui("可分别设置规划与细纲、写稿、审稿和修稿的提示词。实际内容可在模型输入预览中查看。")
   const error = document.createElement('p')
   error.setAttribute('role', 'alert')
   const selections = new Map()
   const labels = Object.entries(chapterRuns).map(([kind, title]) => {
     const label = document.createElement('label')
     const select = document.createElement('select')
-    choices(select, skills.map(skill => [skill.id, skill.title]), '无 Skill', bindings[kind] ?? '')
+    choices(select, skills.map(skill => [skill.id, skill.title]), ui("无 Skill"), bindings[kind] ?? '')
     select.dataset.skillStage = kind
     selections.set(kind, select)
-    label.append(kind === 'outline' ? '规划与细纲' : title, select)
+    label.append(kind === 'outline' ? ui("规划与细纲") : title, select)
     return label
   })
   const library = document.createElement('div')
   library.className = 'batch-list'
-  library.append(...skills.map(skill => actionButton('查看 · ' + skill.title, async () => {
+  library.append(...skills.map(skill => actionButton(ui("查看 · ") + skill.title, async () => {
     const details = await api(path + '/' + skill.id)
     if (pid !== project || !library.isConnected) return
     const preview = document.createElement('pre')
     preview.textContent = details.body
-    const controls = [actionButton('返回 Skill 设置', () => showWritingSkills(pid))]
-    if (!Object.values(bindings).includes(skill.id)) controls.push(actionButton('删除此 Skill', async () => {
+    const controls = [actionButton(ui("返回 Skill 设置"), () => showWritingSkills(pid))]
+    if (!Object.values(bindings).includes(skill.id)) controls.push(actionButton(ui("删除此 Skill"), async () => {
       await api(path + '/' + skill.id, 'DELETE')
       await showWritingSkills(pid)
     }))
     dialog(details.title, [preview, ...controls])
   })))
-  dialog('写作 Skill', [help, ...labels, actionButton('添加写作 Skill', () => newWritingSkill(pid)), library, error], async () => {
+  dialog(ui("写作 Skill"), [help, ...labels, actionButton(ui("添加写作 Skill"), () => newWritingSkill(pid)), library, error], async () => {
     try {
       await api(path + '/bindings', 'PUT', { baseRev: rev,
         bindings: Object.fromEntries([...selections].map(([kind, select]) => [kind, select.value || null])) })
       if (library.isConnected) $('dialog').close()
     } catch (failure) { error.textContent = failure.message }
-  }, '保存阶段绑定')
+  }, ui("保存阶段绑定"))
 }
 
 function newWritingSkill(pid, preset) {
-  const [titleLabel, title] = field('Skill 名称', { maxLength: 120, value: preset?.title.slice(0, 120).toWellFormed() ?? '' })
-  const [fileLabel, file] = field('从本机载入 UTF-8 文本（可选）', { type: 'file', accept: '.md,.markdown,.txt,text/plain,text/markdown', required: false })
+  const [titleLabel, title] = field(ui("Skill 名称"), { maxLength: 120, value: preset?.title.slice(0, 120).toWellFormed() ?? '' })
+  const [fileLabel, file] = field(ui("从本机载入 UTF-8 文本（可选）"), { type: 'file', accept: '.md,.markdown,.txt,text/plain,text/markdown', required: false })
   const label = document.createElement('label')
   const content = document.createElement('textarea')
   content.required = true
   content.maxLength = 8000
   content.rows = 8
   content.value = preset?.body ?? ''
-  label.append('写作提示词内容 · 核对后安装', content)
+  label.append(ui("写作提示词内容 · 核对后安装"), content)
   const error = document.createElement('p')
   error.setAttribute('role', 'alert')
   file.addEventListener('change', async () => {
     const source = file.files[0]
     if (!source) return
     try {
-      if (source.size > 32_000) throw new Error('Skill 文件过大')
+      if (source.size > 32_000) throw new Error(ui("Skill 文件过大"))
       const text = new TextDecoder('utf-8', { fatal: true }).decode(await source.arrayBuffer())
       if (file.files[0] !== source || !file.isConnected) return
-      if (text.length > content.maxLength) throw new Error('Skill 最多 8000 字符')
+      if (text.length > content.maxLength) throw new Error(ui("Skill 最多 8000 字符"))
       title.value ||= source.name.replace(/\.[^.]+$/, '').slice(0, title.maxLength)
       content.value = text
       error.textContent = ''
     } catch (failure) { error.textContent = failure.message }
   })
   let pending
-  dialog('添加写作 Skill', [titleLabel, fileLabel, label, error, actionButton('返回 Skill 设置', () => showWritingSkills(pid))], async () => {
+  dialog(ui("添加写作 Skill"), [titleLabel, fileLabel, label, error, actionButton(ui("返回 Skill 设置"), () => showWritingSkills(pid))], async () => {
     const next = { title: title.value, body: content.value }
     if (pending && (pending.title !== next.title || pending.body !== next.body)) {
-      error.textContent = '上次提交结果未知。请用原内容重试，或查看已安装列表。'
+      error.textContent = ui("上次提交结果未知。请用原内容重试，或查看已安装列表。")
       return
     }
     pending ??= { ...next, mutationId: uuid() }
@@ -1897,7 +2077,7 @@ function newWritingSkill(pid, preset) {
       if (failure.status && failure.status < 500) pending = null
       error.textContent = failure.message
     }
-  }, '安装提示词')
+  }, ui("安装提示词"))
 }
 
 function runAction(action) {
@@ -1938,8 +2118,8 @@ click('writing-skills', () => showWritingSkills(project))
 const screenplay = screenplayWorkspace({ api, dialog, field, actionButton, localTransaction, uuid, isCurrent: pid => project === pid })
 click('screenplay-workspace', () => screenplay.list(project))
 click('new-project', () => {
-  const [label, title] = field('作品名称', { maxLength: 160 })
-  dialog('新建作品', [label], async () => {
+  const [label, title] = field(ui("作品名称"), { maxLength: 160 })
+  dialog(ui("新建作品"), [label], async () => {
     await leave()
     const created = await api('/projects', 'POST', { title: title.value })
     await refreshProjects(created.id)
@@ -1950,10 +2130,10 @@ click('rename-project', () => {
   const pid = project
   const option = $('projects').selectedOptions[0]
   let baseTitle = option.textContent
-  const [label, title] = field('书名', { maxLength: 160, value: baseTitle })
+  const [label, title] = field(ui("书名"), { maxLength: 160, value: baseTitle })
   const result = document.createElement('p')
   result.setAttribute('role', 'status')
-  dialog('修改书名', [label, result], async () => {
+  dialog(ui("修改书名"), [label, result], async () => {
     if (pid !== project) return
     try {
       const updated = await api('/projects/' + pid, 'PATCH', { title: title.value, baseTitle })
@@ -1966,10 +2146,10 @@ click('rename-project', () => {
         baseTitle = error.current.title
         option.textContent = baseTitle
         if (project === pid) renderCatalog()
-        result.append('。当前书名为“' + baseTitle + '”。再次保存将使用输入框中的书名。')
+        result.append(ui("。当前书名为“") + baseTitle + ui("”。再次保存将使用输入框中的书名。"))
       }
     }
-  }, '保存书名')
+  }, ui("保存书名"))
 })
 click('new-document', () => newDocument())
 click('architecture-templates', architectureTemplates)
@@ -1997,9 +2177,9 @@ $('reference-file').addEventListener('change', event => runAction(async () => {
   const file = event.target.files[0]
   event.target.value = ''
   if (!file) return
-  if (file.size > 720_000) throw new Error('资料文件过大，请拆成多份导入')
+  if (file.size > 720_000) throw new Error(ui("资料文件过大，请拆成多份导入"))
   const body = await file.text()
-  if (body.length > 180_000) throw new Error('单份资料最多 180000 字符')
+  if (body.length > 180_000) throw new Error(ui("单份资料最多 180000 字符"))
   const title = (file.name.replace(/\.[^.]+$/, '').trim() || file.name).slice(0, 160)
   await api(`/projects/${pid}/references`, 'POST', { title, body })
   if (pid === project) await referenceLibrary()
@@ -2014,7 +2194,7 @@ $('manuscript-file').addEventListener('change', event => runAction(async () => {
   const pid = project
   if (!file || !pid) return
   const selection = ++manuscriptSelection
-  const title = (file.name.replace(/\.[^.]+$/, '').trim() || '导入正文').slice(0, 160)
+  const title = (file.name.replace(/\.[^.]+$/, '').trim() || ui("导入正文")).slice(0, 160)
   const { parsed } = await readManuscript(file, title, bytes => api('/projects/' + pid + '/epub-preview', 'POST', bytes))
   const existing = await api('/projects/' + pid + '/documents')
   if (pid === project && selection === manuscriptSelection) manuscriptPreview(pid, parsed, existing)
@@ -2025,10 +2205,10 @@ $('backup-file').addEventListener('change', event => runAction(async () => {
   if (!file) return
   const desktop = file.name.toLowerCase().endsWith('.ainovel')
   const limit = desktop ? 48_000_000 : 24_000_000
-  if (file.size > limit) throw new Error(`备份超过 ${limit / 1_000_000} MB`)
+  if (file.size > limit) throw new Error(ui("备份超过 $1 MB", limit / 1_000_000))
   await leave()
   $('import-backup').disabled = true
-  note('正在读取备份并创建作品副本…')
+  note(ui("正在读取备份并创建作品副本…"))
   try {
     let created
     if (desktop) {
@@ -2036,21 +2216,21 @@ $('backup-file').addEventListener('change', event => runAction(async () => {
         method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file,
       })
       created = await response.json()
-      if (!response.ok) throw new Error(created.error || '无法导入桌面归档')
+      if (!response.ok) throw new Error(created.error || ui("无法导入桌面归档"))
     } else {
       created = await api('/import', 'POST', JSON.parse(await file.text()))
     }
     await refreshProjects(created.id)
-    note('已恢复为一部新作品')
+    note(ui("已恢复为一部新作品"))
   } finally { $('import-backup').disabled = false }
 }))
 $('text-file').addEventListener('change', event => runAction(async () => {
   const file = event.target.files[0]
   event.target.value = ''
   if (!file) return
-  if (file.size > 720_000) throw new Error('正文文件过大，请按章节导入')
+  if (file.size > 720_000) throw new Error(ui("正文文件过大，请按章节导入"))
   const content = await file.text()
-  if (content.length > 180_000) throw new Error('单个文档最多 180000 字符')
+  if (content.length > 180_000) throw new Error(ui("单个文档最多 180000 字符"))
   await refreshDocuments()
   newDocument(content, file.name.replace(/\.[^.]+$/, '').slice(0, 160), 'chapter')
 }))
@@ -2130,16 +2310,16 @@ $('use-review').addEventListener('pointerdown', event => event.preventDefault())
 function addRevisionGuidance(text) {
   const guidance = $('guidance')
   const next = [guidance.value.trim(), text].filter(Boolean).join('\n\n')
-  if (next.length > guidance.maxLength) throw new Error('修稿要求过长，请缩小选择范围')
+  if (next.length > guidance.maxLength) throw new Error(ui("修稿要求过长，请缩小选择范围"))
   guidance.value = next
   guidance.focus()
-  note('已加入修稿要求，确认后点击“修稿”')
+  note(ui("已加入修稿要求，确认后点击“修稿”"))
 }
 click('use-review', () => {
   const selection = window.getSelection()
   const output = $('run-output')
   if (!selection || !output.contains(selection.anchorNode) || !output.contains(selection.focusNode) || !selection.toString().trim()) {
-    throw new Error('请先在审稿结果里选中要处理的文字')
+    throw new Error(ui("请先在审稿结果里选中要处理的文字"))
   }
   addRevisionGuidance(selection.toString().trim())
 })
@@ -2147,12 +2327,12 @@ $('review-list').addEventListener('change', () => {
   $('use-review-issues').disabled = !$('review-list').querySelector('input:checked')
 })
 click('use-review-issues', () => {
-  if (!currentReview(editor)) throw new Error('请为当前版本重新审稿')
+  if (!currentReview(editor)) throw new Error(ui("请为当前版本重新审稿"))
   const selected = [...$('review-list').querySelectorAll('input:checked')]
   if (!selected.length) return
   addRevisionGuidance(selected.map(check => {
     const issue = editor.job.reviewReport.issues[check.value]
-    return [issue.title, `原文「${issue.quote}」`, `原因 · ${issue.reason}`, `改法 · ${issue.suggestion}`].join('\n')
+    return [issue.title, ui("原文「$1」", issue.quote), ui("原因 · $1", issue.reason), ui("改法 · $1", issue.suggestion)].join('\n')
   }).join('\n\n'))
   for (const check of selected) check.checked = false
   $('use-review-issues').disabled = true
@@ -2191,7 +2371,7 @@ async function applyCandidate(state, job, path, value) {
     if (editor === state) {
       const next = showEditor(updated)
       await loadRecovery(next)
-      await viewRun(next, job.id).catch(() => note('正文已保存，任务状态暂未刷新。'))
+      await viewRun(next, job.id).catch(() => note(ui("正文已保存，任务状态暂未刷新。")))
     }
   })
 }
@@ -2199,8 +2379,8 @@ async function applyCandidate(state, job, path, value) {
 function chooseRevision(state, job, path, { plan, changes }) {
   if (!changes.length) {
     const message = document.createElement('p')
-    message.textContent = '修稿候选与当前正文没有可应用的改动。'
-    return dialog('比较修稿候选', [message])
+    message.textContent = ui("修稿候选与当前正文没有可应用的改动。")
+    return dialog(ui("比较修稿候选"), [message])
   }
   const selected = new Set()
   const pageSize = 12
@@ -2214,15 +2394,15 @@ function chooseRevision(state, job, path, { plan, changes }) {
   list.className = 'revision-list'
   const controls = document.createElement('div')
   controls.className = 'tools'
-  const previous = actionButton('上一页', () => { page--; renderPage() })
-  const next = actionButton('下一页', () => { page++; renderPage() })
+  const previous = actionButton(ui("上一页"), () => { page--; renderPage() })
+  const next = actionButton(ui("下一页"), () => { page++; renderPage() })
   previous.hidden = next.hidden = pageCount === 1
-  const selectAll = actionButton('全选改动', () => { changes.forEach((_, i) => selected.add(i)); renderPage() })
-  const clear = actionButton('清空选择', () => { selected.clear(); renderPage() })
+  const selectAll = actionButton(ui("全选改动"), () => { changes.forEach((_, i) => selected.add(i)); renderPage() })
+  const clear = actionButton(ui("清空选择"), () => { selected.clear(); renderPage() })
   controls.append(previous, next, selectAll, clear)
 
   function summarize() {
-    status.textContent = `已选 ${selected.size} / ${changes.length} 处 · 第 ${page + 1} / ${pageCount} 页`
+    status.textContent = ui("已选 $1 / $2 处 · 第 $3 / $4 页", selected.size, changes.length, page + 1, pageCount)
   }
 
   function renderPage() {
@@ -2241,15 +2421,15 @@ function chooseRevision(state, job, path, { plan, changes }) {
         else selected.delete(i)
         summarize()
       })
-      const kind = !before ? '插入' : !after ? '删除' : '替换'
-      label.append(check, `采纳改动 ${i + 1} · 第 ${line} 行 · ${kind}`)
+      const kind = !before ? ui("插入") : !after ? ui("删除") : ui("替换")
+      label.append(check, ui("采纳改动 $1 · 第 $2 行 · $3", i + 1, line, kind))
       const lineEndingOnly = before.replace(/\r?\n$|\r$/, '') === after.replace(/\r?\n$|\r$/, '')
       const display = text => {
-        if (!text) return '（无）'
-        if (lineEndingOnly) return text + (/[\r\n]$/.test(text) ? '（末尾有换行）' : '\n（末尾无换行）')
-        return text.trim() ? text : '（空行或空白）'
+        if (!text) return ui("（无）")
+        if (lineEndingOnly) return text + (/[\r\n]$/.test(text) ? ui("（末尾有换行）") : ui("\n（末尾无换行）"))
+        return text.trim() ? text : ui("（空行或空白）")
       }
-      item.append(label, compare('原稿', display(before), '修稿', display(after)))
+      item.append(label, compare(ui("原稿"), display(before), ui("修稿"), display(after)))
       return item
     }))
     list.scrollTop = 0
@@ -2257,12 +2437,12 @@ function chooseRevision(state, job, path, { plan, changes }) {
   }
 
   renderPage()
-  dialog('选择要接受的修稿改动', [status, controls, list, errorMessage], async () => {
+  dialog(ui("选择要接受的修稿改动"), [status, controls, list, errorMessage], async () => {
     errorMessage.textContent = ''
-    if (!selected.size) { errorMessage.textContent = '请至少勾选一处改动。'; return }
+    if (!selected.size) { errorMessage.textContent = ui("请至少勾选一处改动。"); return }
     try { await applyCandidate(state, job, path, { plan, picks: [...selected] }) }
     catch (error) { errorMessage.textContent = error.message }
-  }, '应用选中的改动')
+  }, ui("应用选中的改动"))
 }
 
 click('apply-run', async () => {
@@ -2273,8 +2453,8 @@ click('apply-run', async () => {
     await clean(state)
     const { current, candidate } = await api(path + '/candidate')
     if (editor === state && state.job?.id === job.id) {
-      dialog('比较并确认选段候选', [compare('当前正文', current, '应用后正文', candidate)],
-        () => applyCandidate(state, job, path + '/apply'), '应用选段改动')
+      dialog(ui("比较并确认选段候选"), [compare(ui("当前正文"), current, ui("应用后正文"), candidate)],
+        () => applyCandidate(state, job, path + '/apply'), ui("应用选段改动"))
     }
     return
   }
@@ -2284,8 +2464,8 @@ click('apply-run', async () => {
     if (editor === state && state.job?.id === job.id) chooseRevision(state, job, path + '/merge', plan)
     return
   }
-  dialog('比较并确认 AI 候选', [compare('当前' + names[state.doc.kind], state.body, '候选内容', job.output)],
-    () => applyCandidate(state, job, path + '/apply'), '应用为新版本')
+  dialog(ui("比较并确认 AI 候选"), [compare(ui("当前") + names[state.doc.kind], state.body, ui("候选内容"), job.output)],
+    () => applyCandidate(state, job, path + '/apply'), ui("应用为新版本"))
 })
 click('close-dialog', async () => { if (await screenplay.canClose()) $('dialog').close() })
 click('open-find', () => findPanel($('find-panel').hidden))
@@ -2387,7 +2567,10 @@ async function boot() {
   $('workspace-menu').hidden = false
   let saved
   try { saved = JSON.parse(sessionStorage.getItem('pagekin-location')) } catch { /* Optional. */ }
-  await refreshProjects(saved?.[0], saved?.[1], stages.includes(saved?.[2]) ? saved[2] : 'chapter')
+  await refreshProjects(saved?.[0], saved?.[1], stages.includes(saved?.[2]) ? saved[2] : 'chapter', saved?.[3])
 }
+translateStatic(document)
+$('login-language').textContent = locale === 'en-US' ? '简体中文' : 'English'
+click('login-language', () => changeLanguage(locale === 'en-US' ? 'zh-CN' : 'en-US'))
 applyAppearance()
 runAction(boot)

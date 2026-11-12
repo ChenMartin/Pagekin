@@ -19,6 +19,8 @@ import { backupDatabase, restoreDatabase, verifyDatabase } from './maintenance.m
 import { releaseVersion, schemaVersion } from './version.mjs'
 import { sampleEpub } from './epub-test-fixture.mjs'
 import { openModelProfiles } from './model-profiles.mjs'
+import { openWebDavBackup } from './webdav-backup.mjs'
+import { architectureSections, joinArchitecture, splitArchitecture } from './public/architecture.mjs'
 
 const password = 'test-password-local-only'
 
@@ -1215,6 +1217,200 @@ test('novel workflow through HTTP across devices, generation, export and restart
   }
 })
 
+test('scheduled WebDAV publishes verified snapshots and retries without duplicates', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'pagekin-webdav-'))
+  const store = openStore(directory)
+  const remote = new Map()
+  const methods = []
+  let fail = false
+  const server = createServer(async (req, res) => {
+    methods.push(req.method)
+    if (req.method === 'PUT') {
+      const chunks = []
+      for await (const chunk of req) chunks.push(chunk)
+      const snapshot = Buffer.concat(chunks)
+      assert.equal(snapshot.length, Number(req.headers['content-length']))
+      assert.equal(req.headers['if-none-match'], '*')
+      remote.set(req.url, snapshot)
+      res.writeHead(201).end()
+    } else if (req.method === 'MOVE') {
+      if (fail) return res.writeHead(507).end('provider body must stay private')
+      assert.equal(req.headers.overwrite, 'F')
+      remote.set(new URL(req.headers.destination).pathname, remote.get(req.url))
+      remote.delete(req.url)
+      res.writeHead(201).end()
+    } else if (req.method === 'DELETE') {
+      remote.delete(req.url)
+      res.writeHead(204).end()
+    } else res.writeHead(405).end()
+  })
+  let backup
+  try {
+    server.listen(0, '127.0.0.1')
+    await once(server, 'listening')
+    const project = store.createProject('异地备份')
+    store.addDocument(project.id, { kind: 'chapter', number: 1, title: '第一章', body: '这是备份里的正文。' })
+    store.run('INSERT INTO sessions VALUES (?,?)', 'backup-session-marker', Date.now() + 10_000)
+    const env = { WEBDAV_BACKUP_URL: `http://127.0.0.1:${server.address().port}/backups`, WEBDAV_BACKUP_INTERVAL_HOURS: '2' }
+    assert.equal(openWebDavBackup(store, directory, { ...env, WEBDAV_BACKUP_USERNAME: 'account', WEBDAV_BACKUP_PASSWORD: 'secret' }).status().enabled, false)
+    let now = Date.UTC(2026, 0, 1)
+    t.mock.timers.enable({ apis: ['setInterval'] })
+    backup = openWebDavBackup(store, directory, env, () => now)
+    backup.schedule()
+    t.mock.timers.tick(60_000)
+    assert.equal(backup.start().running, true)
+    assert.equal(backup.start().running, true)
+    for (let i = 0; i < 200 && backup.status().running; i++) await delay(20)
+    const first = backup.status()
+    assert.equal(first.error, '')
+    assert.equal(first.succeeded, now)
+    assert.deepEqual(methods, ['PUT', 'MOVE'])
+    const snapshot = join(directory, 'download.sqlite')
+    await writeFile(snapshot, remote.get('/backups/' + first.file))
+    assert.deepEqual(verifyDatabase(snapshot), { schema: schemaVersion, projects: 1 })
+    const downloaded = new DatabaseSync(snapshot, { readOnly: true })
+    try { assert.equal(downloaded.prepare('SELECT count(*) n FROM sessions').get().n, 0) }
+    finally { downloaded.close() }
+    await restoreDatabase(createReadStream(snapshot), join(directory, 'restored', 'novels.sqlite'))
+    const restored = openStore(join(directory, 'restored'))
+    try { assert.equal(restored.get('SELECT body FROM documents').body, '这是备份里的正文。') }
+    finally { restored.db.close() }
+
+    await backup.close()
+    backup = openWebDavBackup(store, directory, env, () => now)
+    backup.schedule()
+    t.mock.timers.tick(60_000)
+    assert.equal(methods.length, 2)
+    fail = true
+    now = first.next
+    t.mock.timers.tick(60_000)
+    for (let i = 0; i < 200 && backup.status().running; i++) await delay(20)
+    assert.equal(backup.status().succeeded, first.succeeded)
+    assert.equal(backup.status().file, first.file)
+    assert.match(backup.status().error, /HTTP 507/)
+    assert.equal(remote.size, 1)
+    assert.deepEqual(methods, ['PUT', 'MOVE', 'PUT', 'MOVE', 'DELETE'])
+    fail = false
+    now = backup.status().next
+    t.mock.timers.tick(60_000)
+    for (let i = 0; i < 200 && backup.status().running; i++) await delay(20)
+    assert.equal(backup.status().error, '')
+    assert.equal(backup.status().succeeded, now)
+    assert.equal(remote.size, 2)
+  } finally {
+    await backup?.close()
+    t.mock.timers.reset()
+    server.closeAllConnections()
+    await new Promise(resolve => server.close(resolve))
+    store.db.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('structured architecture and story evidence preserve versioned sources across restore', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'pagekin-authoring-'))
+  const store = openStore(directory)
+  try {
+    const pid = store.createProject('试写').id
+    const other = store.createProject('隔离').id
+    const settings = store.addDocument(pid, { kind: 'settings', title: '旧世界观', body: '原稿。' })
+    const headings = architectureSections.world.headings
+    const body = joinArchitecture('原稿。', headings, ['第一纪元', '海港自治', '禁用明火', '夜航受限'])
+    assert.equal(splitArchitecture(body, headings).preamble, '原稿。\n\n')
+    assert.equal(splitArchitecture('```md\n' + body + '```', headings), null)
+    const module = store.architecture.change(pid, 'world', { action: 'bind', documentId: settings.id })
+    assert.equal(module.document_id, settings.id)
+    assert.throws(() => store.architecture.change(other, 'world', { action: 'bind', documentId: settings.id }), { status: 404 })
+    assert.throws(() => store.architecture.change(pid, 'world', { action: 'confirm', baseRev: settings.rev }), { status: 422 })
+    const edited = store.save(pid, settings.id, { baseRev: settings.rev, mutationId: randomUUID(), title: settings.title, body })
+    assert.throws(() => store.architecture.change(pid, 'world', { action: 'confirm', baseRev: settings.rev }), { status: 409 })
+    assert.equal(store.architecture.change(pid, 'world', { action: 'confirm', baseRev: edited.rev }).status, 'confirmed')
+    const context = store.previewRun(pid, settings.id, { kind: 'plan', baseRev: edited.rev }, (_, prepared) => prepared)
+    assert.equal(context.planSection, 'world')
+    assert.equal(context.structuredArchitecture, true)
+    const patch = store.save(pid, settings.id, { baseRev: edited.rev, mutationId: randomUUID(), title: settings.title, body: body.replace('夜航受限', '禁止夜航') })
+    assert.equal(store.architecture.list(pid)[0].status, 'draft')
+    store.architecture.change(pid, 'world', { action: 'confirm', baseRev: patch.rev })
+
+    const chapter = (number, body) => {
+      const doc = store.addDocument(pid, { kind: 'chapter', number, title: `第 ${number} 章`, body })
+      return store.transition(pid, doc.id, { action: 'finalize', baseRev: doc.rev })
+    }
+    const planted = chapter(1, '红灯从未熄灭。他望向红灯。')
+    const resolved = chapter(4, '他终于推开门，红灯在身后熄灭。')
+    const thread = store.saveThread(pid, null, { kind: 'foreshadow', status: 'resolved', title: '红灯', body: '', planted: 1, resolved: 4 })
+    const first = store.threadEvidence.inspect(pid, thread.id, 'planted', '红灯')
+    assert.equal(first.matches.length, 2)
+    assert.throws(() => store.threadEvidence.inspect(other, thread.id, 'planted', '红灯'), { status: 404 })
+    assert.deepEqual(store.progress(pid, 1).warnings.filter(row => row.code === 'evidence-missing').map(row => row.phase), ['planted', 'resolved'])
+    const evidence = { phase: 'planted', baseRev: first.threadRev, documentId: planted.id, sourceRev: planted.rev, ...first.matches[1] }
+    assert.throws(() => store.threadEvidence.change(pid, thread.id, { ...evidence, quote: '错误引文' }), { status: 422 })
+    assert.equal(store.threadEvidence.change(pid, thread.id, evidence).current, true)
+    assert.throws(() => store.threadEvidence.change(pid, thread.id, evidence), { status: 409 })
+    const last = store.threadEvidence.inspect(pid, thread.id, 'resolved', '红灯在身后熄灭')
+    const recovery = { phase: 'resolved', baseRev: last.threadRev, documentId: resolved.id, sourceRev: resolved.rev, ...last.matches[0] }
+    store.threadEvidence.change(pid, thread.id, recovery)
+    const reopened = store.transition(pid, resolved.id, { action: 'reopen', baseRev: resolved.rev })
+    assert.equal(store.threadEvidence.inspect(pid, thread.id, 'resolved').current, true)
+    store.transition(pid, resolved.id, { action: 'finalize', baseRev: reopened.rev })
+    assert.equal(store.threadEvidence.inspect(pid, thread.id, 'resolved').current, false)
+    assert.ok(store.progress(pid, 1).warnings.some(row => row.code === 'evidence-outdated' && row.phase === 'resolved'))
+
+    const copy = store.importBackup(store.backup(pid))
+    const copiedArchitecture = store.architecture.list(copy.id)[0]
+    assert.notEqual(copiedArchitecture.document_id, settings.id)
+    assert.equal(copiedArchitecture.status, 'confirmed')
+    const copiedThread = store.threads(copy.id)[0]
+    const copiedEvidence = store.threadEvidence.inspect(copy.id, copiedThread.id, 'resolved')
+    assert.notEqual(copiedEvidence.evidence.document_id, resolved.id)
+    assert.equal(copiedEvidence.evidence.quote, '红灯在身后熄灭')
+    assert.equal(copiedEvidence.current, false)
+    assert.equal(store.get('PRAGMA foreign_key_check'), undefined)
+  } finally { store.db.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('a 500-section reference queue can finish, resume and synthesize every position', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'pagekin-long-reference-'))
+  let store = openStore(directory)
+  try {
+    const pid = store.createProject('长篇归纳').id
+    const id = store.referenceNovels.importText(pid, { title: '五百节参考书', mutationId: randomUUID(),
+      chapters: Array.from({ length: 500 }, (_, i) => ({ title: '参考位置 ' + (i + 1), body: '用动作推进情节。'.repeat(40) })),
+    }).id
+    const batch = store.referenceNovels.startBatch(pid, id, { chunkSize: 1, mutationId: randomUUID() })
+    assert.throws(() => store.referenceNovels.prepare(pid, id, { mode: 'synthesis' }, 64_000), { status: 422 })
+    for (let position = 1; position <= 500; position++) {
+      let next = store.referenceNovels.nextBatch(batch.id, 8000)
+      assert.equal(next.job.first, position)
+      assert.equal(next.job.last, position)
+      if (position === 247) {
+        store.db.close()
+        store = openStore(directory)
+        assert.equal(store.referenceNovels.batch(pid, batch.id).completed, 246)
+        assert.equal(store.referenceNovels.batch(pid, batch.id).status, 'paused')
+        store.referenceNovels.changeBatch(pid, batch.id, 'resume')
+        next = store.referenceNovels.nextBatch(batch.id, 8000)
+        assert.equal(next.job.first, position)
+      }
+      const output = JSON.stringify({ structure: '场景相接', style: '动作短句', constraints: '让结果影响下一场',
+        chapters: [{ position, summary: '节奏'.repeat(90), blueprint: '任务结果'.repeat(40) }],
+      })
+      assert.equal(store.referenceNovels.update(next.job.id, { output, status: 'done', error: '' }), 'done')
+    }
+    assert.equal(store.referenceNovels.nextBatch(batch.id, 8000), null)
+    assert.equal(store.referenceNovels.batch(pid, batch.id).completed, 500)
+    assert.throws(() => store.referenceNovels.prepare(pid, id, { mode: 'synthesis' }, 8000), { status: 422 })
+    const prepared = store.referenceNovels.prepare(pid, id, { mode: 'synthesis' }, 64_000)
+    assert.equal(prepared.sources.length, 500)
+    assert.equal(prepared.messages[1].content.match(/^位置 \d+ · /gmu).length, 500)
+    assert.ok(prepared.messages.reduce((sum, item) => sum + item.content.length, 0) <= 64_000)
+    const summary = store.referenceNovels.start(pid, id, { mode: 'synthesis', mutationId: randomUUID() }, 64_000)
+    assert.equal(store.referenceNovels.update(summary.job.id, { status: 'done', error: '',
+      output: JSON.stringify({ structure: '因果递进', style: '短句', constraints: '动作产生后果' }),
+    }), 'done')
+  } finally { store.db.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
 test('opening an existing Web database migrates v1 and keeps chapter data', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'pagekin-web-migration-'))
   let store
@@ -1223,6 +1419,9 @@ test('opening an existing Web database migrates v1 and keeps chapter data', asyn
     const p = store.createProject('旧版本作品')
     const doc = store.addDocument(p.id, { kind: 'chapter', number: 1, title: '原章', body: '原文' })
     store.db.exec(`
+      DROP TABLE thread_evidence;
+      DROP TABLE architecture_sections;
+      DROP TABLE webdav_backup;
       DROP TABLE model_preference;
       ALTER TABLE runs DROP COLUMN model_ref;
       DROP TABLE desktop_character_events;

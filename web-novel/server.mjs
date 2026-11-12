@@ -16,6 +16,7 @@ import { openSemantic } from './semantic.mjs'
 import { continuationAddition } from './continuation.mjs'
 import { manuscriptExport } from './manuscript-export.mjs'
 import { fetchChat, openModelProfiles } from './model-profiles.mjs'
+import { openWebDavBackup } from './webdav-backup.mjs'
 
 const password = process.env.APP_PASSWORD_FILE
   ? readFileSync(process.env.APP_PASSWORD_FILE, 'utf8').replace(/\r?\n$/, '')
@@ -24,9 +25,11 @@ if (password.length < 12 || password.length > 512) throw new Error('APP_PASSWORD
 const passwordHash = hash(password)
 const safeCookie = process.env.APP_SECURE_COOKIE !== '0'
 const origin = process.env.APP_ORIGIN ? new URL(process.env.APP_ORIGIN).origin : ''
-const storage = openStore(process.env.APP_DATA_DIR || fileURLToPath(new URL('./data', import.meta.url)))
+const directory = process.env.APP_DATA_DIR || fileURLToPath(new URL('./data', import.meta.url))
+const storage = openStore(directory)
 const semantic = openSemantic(storage)
 const models = openModelProfiles(storage)
+const webdav = openWebDavBackup(storage, directory)
 const sessionSeconds = 7 * 86400
 const attempts = new Map()
 const active = new Map()
@@ -41,6 +44,8 @@ const previewBudget = () => models.current()?.contextLimit ?? models.defaultBudg
 const files = new Map([
   ['/', ['index.html', 'text/html']],
   ['/app.mjs', ['app.mjs', 'text/javascript']],
+  ['/locale.mjs', ['locale.mjs', 'text/javascript']],
+  ['/locale-en.mjs', ['locale-en.mjs', 'text/javascript']],
   ['/manuscript.mjs', ['manuscript.mjs', 'text/javascript']],
   ['/novel-goals.mjs', ['novel-goals.mjs', 'text/javascript']],
   ['/architecture.mjs', ['architecture.mjs', 'text/javascript']],
@@ -419,6 +424,8 @@ async function route(req, res) {
     if (!semantic) throw new ApiError(422, '尚未配置语义模型')
     return json(res, await semantic.diagnose())
   }
+  if (path === '/api/webdav-backup' && method === 'GET') return json(res, webdav.status())
+  if (path === '/api/webdav-backup' && method === 'POST') return json(res, webdav.start(), 202)
   if (path === '/api/projects' && method === 'GET') {
     return json(res, storage.all('SELECT * FROM projects ORDER BY created DESC'))
   }
@@ -505,11 +512,19 @@ async function route(req, res) {
   }
   if (method === 'PATCH' && resource === undefined) return json(res, storage.renameProject(pid, await body(req)))
   if (method === 'GET' && id === undefined && resource === 'events') return subscribe(req, res, pid, token)
+  if (resource === 'architecture' && action === undefined) {
+    if (method === 'GET' && id === undefined) return json(res, storage.architecture.list(pid))
+    if (method === 'PUT' && id) return json(res, storage.architecture.change(pid, id, await body(req, 4096)))
+  }
   if (resource === 'threads' && action === undefined) {
     if (method === 'GET' && id === undefined) return json(res, storage.threads(pid))
     if (method === 'GET' && id) return json(res, storage.thread(pid, id))
     if (method === 'POST' && id === undefined) return json(res, storage.saveThread(pid, null, await body(req)), 201)
     if (method === 'PUT' && id) return json(res, storage.saveThread(pid, id, await body(req)))
+  }
+  if (resource === 'threads' && id && action === 'evidence') {
+    if (method === 'GET') return json(res, storage.threadEvidence.inspect(pid, id, url.searchParams.get('phase'), url.searchParams.get('q')))
+    if (method === 'PUT') return json(res, storage.threadEvidence.change(pid, id, await body(req, 4096)))
   }
   if (resource === 'progress' && id === undefined && method === 'GET') {
     return json(res, storage.progress(pid, Number(url.searchParams.get('start') ?? '1')))
@@ -679,19 +694,24 @@ const server = createServer({ requestTimeout: 60_000 }, (req, res) => {
   })
 })
 server.listen(Number(process.env.PORT || '3100'), process.env.APP_HOST || '127.0.0.1',
-  () => console.log(`Pagekin Web listening on ${JSON.stringify(server.address())}`))
+  () => {
+    webdav.schedule()
+    console.log(`Pagekin Web listening on ${JSON.stringify(server.address())}`)
+  })
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.once(signal, () => {
     stopping = true
     semantic?.close()
+    let backingUp = Boolean(webdav.status().running)
+    Promise.resolve(webdav.close()).finally(() => { backingUp = false })
     clearInterval(eventTimer)
     for (const client of eventClients) client.res.end()
     for (const controller of active.values()) controller.abort('shutdown')
     server.close(() => {
       const deadline = Date.now() + 5000
       const wait = setInterval(() => {
-        if ((active.size || batchWorkers.size) && Date.now() < deadline) return
+        if ((active.size || batchWorkers.size || backingUp) && Date.now() < deadline) return
         clearInterval(wait)
         storage.db.close()
       }, 50)

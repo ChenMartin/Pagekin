@@ -1,2 +1,2 @@
-export const releaseVersion = '0.2.0-dev.10'
-export const schemaVersion = 18
+export const releaseVersion = '0.2.0-dev.11'
+export const schemaVersion = 21

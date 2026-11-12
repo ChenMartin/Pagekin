@@ -20,3 +20,27 @@ export const architectureSections = {
     instruction: '按因果链组织开篇、冲突升级、主要转折、高潮和结局，注明重要伏笔与计划回收。把未发生的事件标为规划。',
   },
 }
+
+export function splitArchitecture(body, headings) {
+  const matches = []
+  let fence = ''
+  for (const line of body.matchAll(/^([^\r\n]*)(?:\r?\n|$)/gmu)) {
+    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/u.exec(line[1])
+    if (marker && (!fence || (marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()))) {
+      fence = fence ? '' : marker[1]
+      continue
+    }
+    if (fence) continue
+    const title = /^ {0,3}##[ \t]+(.+?)[ \t]*$/u.exec(line[1])?.[1]
+    if (headings.includes(title)) matches.push({ title, start: line.index, end: line.index + line[0].length })
+  }
+  const fields = matches.slice(-headings.length)
+  if (fields.length !== headings.length || fields.some((field, index) => field.title !== headings[index])) return null
+  return { preamble: body.slice(0, fields[0].start), values: fields.map((field, index) =>
+    body.slice(field.end, fields[index + 1]?.start).replace(/^\r?\n|(?:\r?\n)+$/gu, '')) }
+}
+
+export function joinArchitecture(preamble, headings, values = []) {
+  const separator = !preamble || preamble.endsWith('\n\n') ? '' : preamble.endsWith('\n') ? '\n' : '\n\n'
+  return preamble + separator + headings.map((heading, index) => '## ' + heading + '\n\n' + (values[index] ?? '')).join('\n\n') + '\n'
+}

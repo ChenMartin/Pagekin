@@ -8,6 +8,9 @@ import { novelGoals } from './public/novel-goals.mjs'
 import { architectureSections } from './public/architecture.mjs'
 import { openReferenceNovels, referenceBatchSchema, referenceNovelSchema } from './reference-novels.mjs'
 import { importedModelRef, modelProfileSchema } from './model-profiles.mjs'
+import { webdavBackupSchema } from './webdav-backup.mjs'
+import { architectureSchema, openArchitecture } from './architecture-store.mjs'
+import { openThreadEvidence, threadEvidenceSchema } from './thread-evidence.mjs'
 import { characterContinuity, continuitySchema } from './character-continuity.mjs'
 import { desktopContinuity, desktopContinuitySchema } from './desktop-continuity.mjs'
 import { novelProgress } from './novel-progress.mjs'
@@ -289,6 +292,30 @@ export function openStore(directory) {
       BEGIN IMMEDIATE;
       ${modelProfileSchema}
       PRAGMA user_version=18;
+      COMMIT;
+    `)
+  }
+  if (version < 19) {
+    db.exec(`
+      BEGIN IMMEDIATE;
+      ${webdavBackupSchema}
+      PRAGMA user_version=19;
+      COMMIT;
+    `)
+  }
+  if (version < 20) {
+    db.exec(`
+      BEGIN IMMEDIATE;
+      ${architectureSchema}
+      PRAGMA user_version=20;
+      COMMIT;
+    `)
+  }
+  if (version < 21) {
+    db.exec(`
+      BEGIN IMMEDIATE;
+      ${threadEvidenceSchema}
+      PRAGMA user_version=21;
       COMMIT;
     `)
   }
@@ -763,12 +790,15 @@ export function openStore(directory) {
       throw new ApiError(422, '请选择与当前文档匹配的 AI 操作')
     }
     if (request.planSection && doc.kind !== 'settings') throw new ApiError(422, '架构模块只用于设定与架构文档')
+    const boundSection = doc.kind === 'settings' ? architecture.sectionFor(doc.id) : undefined
+    if (boundSection && request.planSection && boundSection !== request.planSection) throw new ApiError(422, '此文档已绑定其他架构模块')
     if (['review', 'revise'].includes(request.kind) && !doc.body.trim()) throw new ApiError(422, '请先填写正文')
     if (request.passage) passageRange(doc, request.passage)
     const source = sources(doc, request.refs, request.spans, planning, batch)
     const skill = requestSkill(doc.project_id, request.kind, request.passage)
     const context = { doc, ...source, skill, sourceHash: skillSource(source.sourceHash, skill), guidance: request.guidance,
-      referenceQuery: request.referenceQuery, passage: request.passage, planSection: request.planSection }
+      referenceQuery: request.referenceQuery, passage: request.passage, planSection: boundSection ?? request.planSection,
+      structuredArchitecture: Boolean(boundSection) }
     if (!request.outlineId) return context
     const outline = completedOutline(doc, request.outlineId)
     const expected = requestFingerprint(doc.id, { ...request, kind: 'outline', outlineId: null })
@@ -993,9 +1023,10 @@ export function openStore(directory) {
 
   function sources(doc, refs, spans = [], planning = false, batch = null) {
     const materials = all(`
-      SELECT id, rev, kind, title, body, number FROM documents WHERE project_id=? AND
+      SELECT id, rev, kind, title, body, number, a.section architectureSection, a.confirmed_rev=rev architectureConfirmed
+      FROM documents d LEFT JOIN architecture_sections a ON a.document_id=d.id WHERE d.project_id=? AND
         (kind IN ('settings','character') OR (kind='blueprint' AND number=?))
-      ORDER BY CASE kind WHEN 'blueprint' THEN 0 WHEN 'settings' THEN 1 ELSE 2 END, created, id LIMIT 100`,
+      ORDER BY CASE WHEN kind='blueprint' THEN 0 WHEN a.confirmed_rev=rev THEN 1 WHEN kind='settings' THEN 2 ELSE 3 END, created, id LIMIT 100`,
       doc.project_id, doc.number)
     if (planning) {
       const own = materials.findIndex(entry => entry.id === doc.id)
@@ -1024,6 +1055,7 @@ export function openStore(directory) {
       ORDER BY CASE WHEN due=? OR resolved=? THEN 0 WHEN status='open' THEN 1 ELSE 2 END, updated DESC,id
       LIMIT 12`, doc.project_id, doc.number, doc.number, Math.max(1, doc.number - 2), doc.number, doc.number, doc.number)
     const dependencies = [...materials, ...selected, ...(previous ? [previous] : [])].map(({ id, rev }) => [id, rev])
+    for (const entry of materials) if (entry.architectureSection) dependencies.push([entry.architectureSection, Boolean(entry.architectureConfirmed)])
     const { goals, rev } = projectGoals(doc.project_id)
     if (rev) dependencies.push(['project-goals', rev])
     const characters = materials.filter(row => row.kind === 'character').map(row => row.id)
@@ -1249,11 +1281,14 @@ export function openStore(directory) {
       goals: projectGoals(pid).goals,
       documents: all('SELECT * FROM documents WHERE project_id=? ORDER BY created', pid)
         .map(doc => ({ ...doc, history: history(pid, doc.id) })),
+      architecture: architecture.list(pid).map(({ section, document_id, confirmed_rev }) => ({ section, document_id, confirmed_rev })),
       references: all('SELECT title,body FROM reference_material WHERE project_id=? ORDER BY created,id', pid),
       referenceNovels: referenceNovels.backup(pid),
       characterContinuity: continuity.backup(pid),
       desktopContinuity: desktopHistory.backup(pid),
-      threads: threads(pid).map(({ title, body, kind, status, planted, due, resolved }) => ({ title, body, kind, status, planted, due, resolved })),
+      threads: threads(pid).map(({ id, title, body, kind, status, planted, due, resolved }) => ({
+        title, body, kind, status, planted, due, resolved, evidence: threadEvidence.records(id),
+      })),
       writingSkills: { library: all('SELECT id,title,body FROM writing_skills WHERE project_id=? ORDER BY created,id', pid), bindings: skillProfile(pid).bindings },
       adaptations: screenplay.backup(pid),
       runs: all('SELECT r.* FROM runs r JOIN documents d ON r.document_id=d.id WHERE d.project_id=?', pid)
@@ -1295,7 +1330,6 @@ export function openStore(directory) {
       if (data.writingSkills !== undefined) importSkills(p.id, data.writingSkills)
       for (const source of data.references ?? []) addReference(p.id, source)
       if (data.referenceNovels !== undefined) referenceNovels.importBackup(p.id, data.referenceNovels)
-      for (const source of data.threads ?? []) saveThread(p.id, null, source)
       const mapping = new Map()
       for (const source of data.documents) {
         object(source)
@@ -1322,6 +1356,11 @@ export function openStore(directory) {
         }
         checkpoint(document(p.id, doc.id), 'import')
       }
+      for (const source of data.threads ?? []) {
+        const thread = saveThread(p.id, null, source)
+        if (source.evidence !== undefined) threadEvidence.importBackup(p.id, thread.id, source.evidence, mapping)
+      }
+      if (data.architecture !== undefined) architecture.importBackup(p.id, data.architecture, mapping)
       if (data.characterContinuity !== undefined) continuity.importBackup(p.id, data.characterContinuity, mapping)
       if (data.desktopContinuity !== undefined) desktopHistory.importBackup(p.id, data.desktopContinuity, mapping)
       const importedRuns = new Map()
@@ -1370,9 +1409,12 @@ export function openStore(directory) {
     })
   }
 
-  return { db, get, all, run, tx, project, document, createProject, renameProject, addDocument, importChapters, eventHead, projectEvents, pruneEvents, screenplay,
+  const architecture = openArchitecture({ all, get, run, tx, document, addDocument })
+  const threadEvidence = openThreadEvidence({ all, get, run, tx, thread, now,
+    finalized: (pid, number) => get(finalizedSelect + ' AND d.number=?', pid, number) })
+  return { db, get, all, run, tx, project, document, createProject, renameProject, addDocument, importChapters, eventHead, projectEvents, pruneEvents, screenplay, architecture,
     projectGoals, saveProjectGoals, referenceNovels, continuity, continuityRuns, desktopHistory,
-    save, chapters, search, addReference, reference, threads, thread, saveThread, progress,
+    save, chapters, search, addReference, reference, threads, thread, saveThread, threadEvidence, progress,
     transition, history, restore, getRun, runDetail, startRun, previewRun, continueRun, applyRun, previewPassage, previewRevision, applyRevision, backup, importBackup,
     listBatches, batchChapters, getBatch, createBatch, changeBatch, nextBatchRun, pauseBatch,
     listSkills, writingSkill, installSkill, bindSkills, deleteSkill }
