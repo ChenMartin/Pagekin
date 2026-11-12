@@ -1,4 +1,4 @@
-import { manuscriptBytes, manuscriptRequestBytes, splitManuscript } from './manuscript.mjs'
+import { manuscriptRequestBytes, readManuscript } from './manuscript.mjs'
 import { screenplayWorkspace } from './screenplay-ui.mjs'
 import { novelGoals } from './novel-goals.mjs'
 import { architectureSections } from './architecture.mjs'
@@ -76,10 +76,11 @@ function note(message = '') {
 }
 
 async function api(path, method = 'GET', data) {
+  const upload = data instanceof Blob
   const response = await fetch('/api' + path, {
-    method, headers: data === undefined ? {} : { 'Content-Type': 'application/json' },
-    body: data === undefined ? undefined : JSON.stringify(data),
-    signal: AbortSignal.timeout(path === '/import' || path.endsWith('/chapter-imports') ? 60_000
+    method, headers: data === undefined ? {} : { 'Content-Type': upload ? 'application/epub+zip' : 'application/json' },
+    body: upload ? data : data === undefined ? undefined : JSON.stringify(data),
+    signal: AbortSignal.timeout(path === '/import' || path.endsWith('/chapter-imports') || upload ? 60_000
       : path.endsWith('/semantic/search') ? 25_000 : 15_000),
   })
   const result = await response.json()
@@ -1932,19 +1933,17 @@ $('reference-file').addEventListener('change', event => runAction(async () => {
 click('import-backup', () => $('backup-file').click())
 click('import-text', () => $('text-file').click())
 click('import-manuscript', () => $('manuscript-file').click())
+let manuscriptSelection = 0
 $('manuscript-file').addEventListener('change', event => runAction(async () => {
   const file = event.target.files[0]
   event.target.value = ''
   const pid = project
   if (!file || !pid) return
-  if (file.size > manuscriptBytes) throw new Error('整稿文件超过 8 MB，请分批导入')
-  let content
-  try { content = new TextDecoder('utf-8', { fatal: true }).decode(await file.arrayBuffer()) }
-  catch { throw new Error('请将整稿保存为 UTF-8 的 TXT 或 Markdown 文件') }
+  const selection = ++manuscriptSelection
   const title = (file.name.replace(/\.[^.]+$/, '').trim() || '导入正文').slice(0, 160)
-  const parsed = splitManuscript(content, title)
+  const { parsed } = await readManuscript(file, title, bytes => api('/projects/' + pid + '/epub-preview', 'POST', bytes))
   const existing = await api('/projects/' + pid + '/documents')
-  if (pid === project) manuscriptPreview(pid, parsed, existing)
+  if (pid === project && selection === manuscriptSelection) manuscriptPreview(pid, parsed, existing)
 }))
 $('backup-file').addEventListener('change', event => runAction(async () => {
   const file = event.target.files[0]

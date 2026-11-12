@@ -17,6 +17,7 @@ import { hash, openStore } from './store.mjs'
 import { splitManuscript } from './public/manuscript.mjs'
 import { backupDatabase, restoreDatabase, verifyDatabase } from './maintenance.mjs'
 import { releaseVersion, schemaVersion } from './version.mjs'
+import { sampleEpub } from './epub-test-fixture.mjs'
 
 const password = 'test-password-local-only'
 
@@ -1032,6 +1033,36 @@ test('novel workflow through HTTP across devices, generation, export and restart
     await request(progressPath + '/progress?start=0', { status: 400 })
     assert.equal((await request(progressPath + '/threads/' + dueThread.id)).result.title, '到期已定稿')
     await request(projectPath + '/threads/' + dueThread.id, { status: 404 })
+    const epubRequest = (bytes, type = 'application/epub+zip', cookie = a) => fetch(server.base + progressPath + '/epub-preview', {
+      method: 'POST', headers: { Cookie: cookie, 'Content-Type': type }, body: bytes,
+    })
+    assert.equal((await epubRequest(sampleEpub(), 'application/epub+zip', '')).status, 401)
+    assert.equal((await epubRequest(sampleEpub(), 'text/plain')).status, 415)
+    const badEpub = await epubRequest(sampleEpub().subarray(0, 100))
+    assert.equal(badEpub.status, 422)
+    assert.match((await badEpub.json()).error, /阅读顺序/)
+    const encryptedEpub = await epubRequest(sampleEpub({ encrypted: true }))
+    assert.equal(encryptedEpub.status, 422)
+    assert.match((await encryptedEpub.json()).error, /加密/)
+    const expandedEpub = await epubRequest(sampleEpub({ expansion: true }))
+    assert.equal(expandedEpub.status, 422)
+    assert.match((await expandedEpub.json()).error, /解压/)
+    const previewEpub = await epubRequest(sampleEpub())
+    assert.equal(previewEpub.status, 200)
+    const epub = await previewEpub.json()
+    assert.deepEqual(epub.chapters.map(row => [row.number, row.title]), [[2, '风起'], [3, 'Return'], [null, '海上番外']])
+    assert.match(epub.chapters[0].body, /开篇引子。[\s\S]*远处的灯塔&船。/)
+    assert.doesNotMatch(JSON.stringify(epub), /目录文字不导入|隐藏脚本内容|不导入样式/)
+    assert.equal((await request(progressPath + '/reference-novels')).result.length, 0)
+    assert.equal((await request(progressPath + '/progress')).result.counts.chapters, 3)
+    const importedEpub = await request(progressPath + '/reference-novels', {
+      method: 'POST', status: 201, value: { mutationId: randomUUID(), title: '海上参考书', chapters: epub.chapters },
+    })
+    assert.deepEqual(importedEpub.result.chapters.map(row => row.title), ['风起', 'Return', '海上番外'])
+    const importedProse = await request(progressPath + '/chapter-imports', {
+      method: 'POST', status: 201, value: { mutationId: randomUUID(), chapters: epub.chapters.map((row, index) => ({ ...row, number: index + 66 })) },
+    })
+    assert.deepEqual(importedProse.result.chapters.map(row => row.number), [66, 67, 68])
   } finally {
     await stop(server)
     upstream.closeAllConnections()

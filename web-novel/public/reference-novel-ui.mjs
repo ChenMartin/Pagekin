@@ -1,4 +1,4 @@
-import { manuscriptBytes, manuscriptRequestBytes, splitManuscript } from './manuscript.mjs'
+import { manuscriptRequestBytes, readManuscript } from './manuscript.mjs'
 
 const states = { running: '拆解中', done: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断' }
 const node = (tag, text) => {
@@ -39,7 +39,7 @@ export function referenceNovelWorkspace({ api, dialog, field, actionButton, uuid
     const [name, title] = field('参考小说书名', { maxLength: 160 })
     const file = node('input')
     file.type = 'file'
-    file.accept = '.txt,.md,text/plain,text/markdown'
+    file.accept = '.txt,.md,.epub,text/plain,text/markdown,application/epub+zip'
     file.required = true
     const preview = node('div')
     const feedback = status()
@@ -52,19 +52,22 @@ export function referenceNovelWorkspace({ api, dialog, field, actionButton, uuid
       feedback.textContent = ''
       if (!selected) return
       try {
-        if (selected.size > manuscriptBytes) throw new Error('参考小说文件超过 8 MB')
-        const text = new TextDecoder('utf-8', { fatal: true }).decode(await selected.arrayBuffer())
+        const fallback = (selected.name.replace(/\.[^.]+$/, '').trim() || '参考小说').slice(0, 160)
+        feedback.textContent = '正在读取文件…'
+        const { text, parsed: { chapters } } = await readManuscript(selected, fallback,
+          bytes => api('/projects/' + pid + '/epub-preview', 'POST', bytes))
         if (file.files[0] !== selected || !open(preview)) return
-        const fallback = selected.name.replace(/\.[^.]+$/, '').slice(0, 160)
-        const { chapters } = splitManuscript(text, fallback)
         if (chapters.some(row => row.body.length > 180_000)) throw new Error('单节超过 180,000 字符，请补充章节标题后重试')
         title.value ||= fallback
         preview.append(node('p', '预览 ' + chapters.length + ' 节'),
           node('p', chapters.slice(0, 6).map(row => row.title).join(' · ')))
-        source = { selected, text }
-      } catch (error) { feedback.textContent = error.message }
+        source = { selected, content: text === undefined ? { chapters } : { text } }
+        feedback.textContent = ''
+      } catch (error) {
+        if (file.files[0] === selected && open(preview)) feedback.textContent = error.message
+      }
     })
-    dialog('导入参考小说', [name, label('TXT 或 Markdown（UTF-8）', file), preview, feedback, back(pid)], async () => {
+    dialog('导入参考小说', [name, label('TXT、Markdown 或 EPUB', file), preview, feedback, back(pid)], async () => {
       if (!isCurrent(pid) || !source) {
         feedback.textContent ||= '请先选择并读取参考文件'
         return
@@ -75,7 +78,7 @@ export function referenceNovelWorkspace({ api, dialog, field, actionButton, uuid
         return
       }
       pending ??= { name, source: source.selected, id: uuid() }
-      const request = { title: name, text: source.text, mutationId: pending.id }
+      const request = { title: name, ...source.content, mutationId: pending.id }
       if (new TextEncoder().encode(JSON.stringify(request)).byteLength > manuscriptRequestBytes) {
         pending = undefined
         feedback.textContent = '文件编码后的请求超过限制，请分成多个参考文件'

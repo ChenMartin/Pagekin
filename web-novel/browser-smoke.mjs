@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { createServer } from 'node:http'
+import { sampleEpub } from './epub-test-fixture.mjs'
 
 const executable = process.env.BROWSER_EXE
 if (!executable) throw new Error('Set BROWSER_EXE to a Chromium executable')
@@ -670,6 +671,25 @@ try {
   await visible('.progress-table tbody td:nth-child(3) button')
   await click('.progress-table tbody td:nth-child(3) button')
   await until(() => evaluate("document.querySelector('#title').value === '出航' && !document.querySelector('#dialog').open"), 'Progress did not open the chosen chapter')
+  const pickEpub = selector => evaluate(`(() => {
+    const input = document.querySelector(${JSON.stringify(selector)});
+    const files = new DataTransfer();
+    const archive = Uint8Array.from(atob(${JSON.stringify(sampleEpub().toString('base64'))}), char => char.charCodeAt(0));
+    files.items.add(new File([archive], '海上样稿.epub', { type: 'application/epub+zip' }));
+    input.files = files.files;
+    input.dispatchEvent(new Event('change'));
+  })()`)
+  await pickEpub('#manuscript-file')
+  await until(() => evaluate("document.querySelector('#dialog-title').textContent === '预览整稿导入' && document.querySelectorAll('.manuscript-list section').length === 3"), 'EPUB manuscript preview did not display 3 chapters')
+  assert.match(await evaluate("document.querySelector('.manuscript-list').textContent"), /风起[\s\S]*Return[\s\S]*海上番外/)
+  await click('#close-dialog')
+  await click('#reference-novel-library')
+  await dialogButton('导入参考小说')
+  await visible('#dialog-body input[type=file]')
+  await pickEpub('#dialog-body input[type=file]')
+  await until(() => evaluate("document.querySelector('#dialog-body').textContent.includes('预览 3 节')"), 'EPUB reference preview did not display 3 chapters')
+  await click('#dialog-submit')
+  await until(() => evaluate("document.querySelector('#dialog-title').textContent === '海上样稿' && document.querySelector('#dialog-body select')?.options.length === 3"), 'EPUB did not enter the reference bookshelf')
   console.log('Browser workflow passed (' + (enhanced ? 'CodeMirror' : 'plain') + '): writing, screenplay, desktop continuity and novel progress')
 } finally {
   socket?.close()

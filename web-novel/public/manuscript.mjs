@@ -2,6 +2,15 @@ export const manuscriptBytes = 8_000_000
 export const manuscriptRequestBytes = 12_000_000
 export const manuscriptChapterLimit = 500
 
+export async function readManuscript(file, title, previewEpub) {
+  if (file.size > manuscriptBytes) throw new Error('文件超过 8 MB，请分批导入')
+  if (/\.epub$/iu.test(file.name)) return { parsed: await previewEpub(file) }
+  let text
+  try { text = new TextDecoder('utf-8', { fatal: true }).decode(await file.arrayBuffer()) }
+  catch { throw new Error('请使用 UTF-8 的 TXT、Markdown 或 EPUB 文件') }
+  return { text, parsed: splitManuscript(text, title) }
+}
+
 const digits = new Map(Array.from('零一二三四五六七八九', (char, value) => [char, value]))
 digits.set('〇', 0)
 digits.set('两', 2)

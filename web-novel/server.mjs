@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { Worker } from 'node:worker_threads'
 import { ApiError, hash, object, openStore, outlineMaxChars } from './store.mjs'
 import { archiveLimit } from './desktop-archive.mjs'
-import { manuscriptRequestBytes } from './public/manuscript.mjs'
+import { manuscriptBytes, manuscriptRequestBytes } from './public/manuscript.mjs'
 import { writingMessages } from './writing-context.mjs'
 import { continuityMessages } from './continuity-report.mjs'
 import { releaseVersion } from './version.mjs'
@@ -124,6 +124,32 @@ async function importArchive(req, res) {
       await worker?.terminate()
       if (directory) await rm(directory, { recursive: true, force: true }).catch(() => console.error('无法清理归档临时目录'))
     } finally { archiveImporting = false }
+  }
+}
+
+let epubPreviewing = false
+async function previewEpub(req) {
+  const mime = req.headers['content-type']?.split(';')[0]
+  if (!['application/epub+zip', 'application/octet-stream'].includes(mime)) throw new ApiError(415, '请选择 EPUB 文件')
+  if (epubPreviewing) throw new ApiError(409, '已有 EPUB 正在解析，请稍后重试')
+  epubPreviewing = true
+  let worker, timer
+  try {
+    const bytes = Uint8Array.from(await readBytes(req, manuscriptBytes))
+    worker = new Worker(new URL('./epub-preview-worker.mjs', import.meta.url), {
+      workerData: bytes, transferList: [bytes.buffer], resourceLimits: { maxOldGenerationSizeMb: 128 },
+    })
+    const result = await new Promise((resolve, reject) => {
+      worker.once('message', resolve)
+      worker.once('error', () => reject(new ApiError(422, '无法解析 EPUB，请检查文件和服务依赖')))
+      worker.once('exit', () => reject(new ApiError(422, 'EPUB 解析任务已退出')))
+      timer = setTimeout(() => reject(new ApiError(422, 'EPUB 解析超时，请分批导入')), 20_000)
+    })
+    if (result.error) throw new ApiError(422, result.error)
+    return result.parsed
+  } finally {
+    clearTimeout(timer)
+    try { await worker?.terminate() } finally { epubPreviewing = false }
   }
 }
 
@@ -487,6 +513,9 @@ async function route(req, res) {
   }
   if (method === 'POST' && id === undefined && resource === 'chapter-imports') {
     return json(res, storage.importChapters(pid, await body(req, manuscriptRequestBytes)), 201)
+  }
+  if (method === 'POST' && id === undefined && resource === 'epub-preview') {
+    return json(res, await previewEpub(req))
   }
   if (method === 'GET' && id === undefined && resource === 'search') {
     return json(res, storage.search(pid, url.searchParams.get('q')))

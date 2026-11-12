@@ -124,6 +124,11 @@ export function openReferenceNovels({ get, all, run, tx, hash, now, writingAvail
     object(value)
     const id = identifier(value.mutationId)
     const title = string(value.title, 160, true).trim()
+    if (value.chapters !== undefined) {
+      if (value.text !== undefined) throw new ApiError(400, '每次请选择一种参考小说导入内容')
+      const chapters = validateChapters(value.chapters)
+      return tx(() => insertBook(pid, id, title, chapters))
+    }
     const text = string(value.text, manuscriptBytes, true)
     if (Buffer.byteLength(text) > manuscriptBytes) throw new ApiError(413, '参考小说文件超过 8 MB')
     let parsed
