@@ -24,7 +24,7 @@ def package(output: Path) -> Path:
         "public/storyboard-ui.mjs", "public/production-ui.mjs",
         "version.mjs", "maintenance.mjs", "webdav-backup.mjs", "semantic.mjs", "reference-novels.mjs", "public/index.html", "public/app.mjs",
         "public/manuscript.mjs", "public/novel-goals.mjs", "public/architecture.mjs", "public/reference-novel-ui.mjs", "public/style.css",
-        "public/locale.mjs", "public/locale-en.mjs",
+        "public/locale.mjs", "public/locale-en.mjs", "public/settings-ui.mjs",
         "character-continuity.mjs", "continuity-report.mjs", "public/character-state.mjs", "public/character-continuity-ui.mjs",
         "desktop-character-import.mjs", "desktop-continuity.mjs", "novel-progress.mjs", "model-profiles.mjs", "architecture-store.mjs",
         "epub-extraction.ts", "epub-preview-worker.mjs", "thread-evidence.mjs",

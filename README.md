@@ -32,6 +32,7 @@
 | 外部素材生成 | 用 Replicate 生成图像、视频和配音，预览候选并选择入库 |
 | 资料与文件 | 参考小说整书排队拆解、关键词与语义检索、TXT／Markdown／EPUB 整稿、桌面 `.ainovel` 与人物历史导入、正文导出 |
 | NAS 运维 | `linux/amd64` Docker Compose、整库在线备份、WebDAV 定时备份、恢复到独立数据卷 |
+| 设置中心 | 本机外观和编辑器、默认与分工模型、语义检索诊断、作品配置和备份恢复 |
 
 在安装 Docker Compose 的 NAS 上，可从此分支构建。
 
@@ -45,7 +46,7 @@ docker compose up -d --build
 
 默认端口为 3100，默认绑定 NAS 宿主机的回环地址。配置 HTTPS 或局域网联调参数后再从其他设备访问。手写可直接使用，AI 和语义检索分别配置自己的模型服务。 [部署、使用与升级](web-novel/README.md)
 
-GitHub 已发布的 `v0.2.0-rc.1` 离线镜像使用 Web SQLite schema 11，包含小说与手工剧本改编。当前分支源码构建为 `0.2.0-dev.18`，使用 schema 27。升级前请备份数据卷。 [部署与升级](web-novel/README.md#fnos-部署) · [小说写作工作台](docs/research/nas-web/15-writing-workbench.md) · [小说到成片设计](docs/research/nas-web/06-novel-to-film.md)
+GitHub 已发布的 `v0.2.0-rc.1` 离线镜像使用 Web SQLite schema 11，包含小说与手工剧本改编。当前分支源码构建为 `0.2.0-dev.19`，使用 schema 27。升级前请备份数据卷。 [部署与升级](web-novel/README.md#fnos-部署) · [小说写作工作台](docs/research/nas-web/15-writing-workbench.md) · [小说到成片设计](docs/research/nas-web/06-novel-to-film.md)
 
 ## 上游桌面版
 

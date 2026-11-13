@@ -126,7 +126,7 @@ def smoke(directory: Path, compose: str, previous_image: str | None = None) -> N
             version = ready()
             upgraded_schema = schema()
             assert version != old_version
-            assert upgraded_schema > old_schema
+            assert upgraded_schema >= old_schema
             assert request(path)["body"] == "容器持久化"
             assert request(path + "/history")[0]["body"] == "容器持久化"
             if legacy_episode:
@@ -134,8 +134,12 @@ def smoke(directory: Path, compose: str, previous_image: str | None = None) -> N
             if legacy_timeline:
                 updated = request(legacy_path)
                 assert updated["rev"] == legacy_timeline["rev"]
-                assert updated["clips"] == [{"motion": "none", **clip} for clip in legacy_timeline["clips"]]
-                assert updated["subtitleCues"] is None and updated["subtitleOutput"] == "soft" and updated["audioClips"] == []
+                if old_schema < 25:
+                    assert updated["clips"] == [{"motion": "none", **clip} for clip in legacy_timeline["clips"]]
+                    assert updated["subtitleCues"] is None and updated["subtitleOutput"] == "soft" and updated["audioClips"] == []
+                else:
+                    for key in ("clips", "subtitleCues", "subtitleOutput", "audioClips"):
+                        assert updated[key] == legacy_timeline[key]
             print(f"Compose upgrade v{old_version} -> v{version}, schema {old_schema} -> {upgraded_schema}: manuscript and history preserved")
         episode_path = None
         current_schema = schema()

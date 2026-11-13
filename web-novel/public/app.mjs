@@ -6,13 +6,13 @@ import { architectureSections, joinArchitecture, splitArchitecture } from './arc
 import { referenceNovelWorkspace } from './reference-novel-ui.mjs'
 import { continuityWorkspace } from './character-continuity-ui.mjs'
 import { openWorkbenchUi } from './workbench-ui.mjs'
+import { applyAppearance, prefersPlainEditor, settingsWorkspace } from './settings-ui.mjs'
 
 const $ = id => document.getElementById(id)
 const names = { settings: ui("设定与架构"), character: ui("人物"), blueprint: ui("章节蓝图"), chapter: ui("正文"), reference: ui("参考资料") }
 const stages = ['settings', 'character', 'blueprint', 'chapter']
 const chapterRuns = { draft: ui("写稿"), outline: ui("写前细纲"), review: ui("审稿"), revise: ui("修稿") }
 const passageActions = { continue: '在选段后续写', polish: '润色', expand: '扩写', dialogue: '改成对话', note: '按意见改' }
-const writingStages = { planning: '规划', draft: '写稿', review: '审稿', revision: '修稿', continuity: '定稿人物提取' }
 const runNames = { ...chapterRuns, plan: ui("AI 规划"), passage: ui("选段 AI"), continuity: ui("人物变化提取"), infer: ui("原稿反推") }
 const runStates = { running: ui("生成中"), done: ui("已完成"), failed: ui("失败"), cancelled: ui("已取消"), interrupted: ui("已中断") }
 const batchStates = { running: ui("进行中"), paused: ui("已暂停"), done: ui("已结束"), cancelled: ui("已取消") }
@@ -1956,172 +1956,18 @@ function showProjectRuns() {
   }
 }
 
-const themes = { system: ui("跟随系统"), light: ui("浅色"), dark: ui("深色") }
-const textSizes = { standard: ui("标准"), large: ui("大字"), extra: ui("特大字") }
-
-function applyAppearance() {
-  let saved
-  try { saved = JSON.parse(localStorage.getItem('pagekin-appearance')) } catch { /* Optional browser preferences. */ }
-  document.documentElement.dataset.theme = typeof saved?.theme === 'string' && Object.hasOwn(themes, saved.theme) ? saved.theme : 'system'
-  document.documentElement.dataset.textSize = typeof saved?.textSize === 'string' && Object.hasOwn(textSizes, saved.textSize) ? saved.textSize : 'standard'
-}
-
-function showSettings() {
-  const preference = (title, values, selected) => {
-    const label = document.createElement('label')
-    const select = document.createElement('select')
-    select.append(...Object.entries(values).map(([key, value]) => new Option(value, key)))
-    select.value = selected
-    label.append(title, select)
-    return [label, select]
-  }
-  const root = document.documentElement
-  const [themeLabel, theme] = preference(ui("外观主题"), themes, root.dataset.theme)
-  const [sizeLabel, size] = preference(ui("正文字号"), textSizes, root.dataset.textSize)
-  const [languageLabel, language] = preference(ui("界面语言"), { 'zh-CN': '简体中文', 'en-US': 'English' }, locale)
-  const services = document.createElement('p')
-  const serviceStatus = enabled => ui(enabled ? '已配置' : '待配置')
-  services.textContent = [ui("写作模型$1 · 语义检索$2 · $3", serviceStatus(model), serviceStatus(semanticEnabled),
-    enhancedBody ? 'CodeMirror' : ui('普通编辑器')), $('release-version').textContent].filter(Boolean).join(' · ')
-  const guide = document.createElement('p')
-  guide.textContent = ui("外观、字号和界面语言保存在当前浏览器。")
-  dialog(ui("设置"), [themeLabel, sizeLabel, languageLabel, services, actionButton(ui("模型预设与诊断"), showModelSettings),
-    actionButton(ui("WebDAV 备份"), showBackupSettings), guide], async () => {
-    root.dataset.theme = theme.value
-    root.dataset.textSize = size.value
-    try { localStorage.setItem('pagekin-appearance', JSON.stringify({ theme: theme.value, textSize: size.value })) }
-    catch { note(ui("浏览器无法保留外观设置，当前页面已应用。")) }
-    if (language.value !== locale) return changeLanguage(language.value)
-    $('dialog').close()
-  }, ui("保存设置"))
-}
-
-async function changeLanguage(value) {
+async function prepareSettingsReload(value) {
   await leave()
   remember()
+  if (value === locale) return
   try { rememberLocale(value) }
   catch { throw new Error(ui("浏览器无法保存界面语言设置。")) }
-  location.reload()
 }
 
-async function showBackupSettings() {
-  const initial = await api('/webdav-backup')
-  const status = document.createElement('p')
-  status.setAttribute('role', 'status')
-  const details = document.createElement('p')
-  const guide = document.createElement('p')
-  guide.textContent = ui("备份覆盖整个工作区。恢复时先从 WebDAV 下载快照，再按部署说明恢复到独立的数据卷。")
-  const time = value => new Date(value).toLocaleString()
-  const backup = actionButton(ui("立即备份"), async () => {
-    backup.disabled = true
-    try { render(await api('/webdav-backup', 'POST')) }
-    catch (error) { status.textContent = error.message; backup.disabled = false }
-  })
-  function render(state) {
-    backup.disabled = !state.enabled || state.running
-    status.textContent = state.running ? ui("正在备份…") : state.configError || state.error ||
-      (state.enabled ? state.succeeded ? ui("最近一次备份成功") : ui("等待首次备份") : ui("请先在 NAS 配置 WebDAV 备份。"))
-    details.textContent = [state.succeeded && ui("成功时间 $1", time(state.succeeded)), state.file,
-      state.size && ui("$1 字节", state.size.toLocaleString()), state.next && !state.running && ui("下次备份 $1", time(state.next))].filter(Boolean).join(' · ')
-    if (state.running) setTimeout(async () => {
-      if (!$('dialog').open || !status.isConnected) return
-      try { render(await api('/webdav-backup')) }
-      catch (error) { status.textContent = error.message; backup.disabled = false }
-    }, 1500)
-  }
-  dialog(ui("WebDAV 备份"), [status, details, guide, backup, actionButton(ui("返回设置"), showSettings)])
-  render(initial)
-}
-
-async function showModelSettings() {
-  const data = await api('/model-profiles')
-  modelLabels = new Map(data.profiles.map(row => [row.id, row.label]))
-  const select = document.createElement('select')
-  select.required = data.profiles.length > 0
-  select.append(new Option(ui("选择预设"), ''), ...data.profiles.map(row => new Option(row.label + ' · ' + row.model, row.id)))
-  select.value = data.available ? data.activeId : ''
-  select.disabled = !data.profiles.length
-  const label = document.createElement('label')
-  label.append(ui("写作模型预设"), select)
-  const info = document.createElement('p')
-  const result = document.createElement('p')
-  result.setAttribute('role', 'status')
-  const actions = document.createElement('div')
-  actions.className = 'tools'
-  const test = actionButton(ui("测试所选写作模型"), () => diagnose('/diagnose', { id: select.value }))
-  const semantic = actionButton(ui("测试语义模型"), () => diagnose('/diagnose-semantic', {}))
-  actions.append(test, semantic, actionButton(ui("分工模型"), showStageModels), actionButton(ui("返回设置"), showSettings))
-  let busy = false
-  const showSelection = () => {
-    const row = data.profiles.find(item => item.id === select.value)
-    test.disabled = busy || !row
-    semantic.disabled = busy || !data.semantic
-    info.textContent = row ? ui("上下文字符预算 ") + row.contextLimit.toLocaleString()
-      : data.activeId ? ui("原预设已移除，请重新选择。") : ui("在 NAS 配置写作模型后，此处可选择预设。")
-  }
-  select.addEventListener('change', () => {
-    result.textContent = ''
-    showSelection()
-  })
-  showSelection()
-  const guide = document.createElement('p')
-  guide.textContent = ui("预设由 NAS 管理。保存后适用于此工作区的新任务。测试会发送固定的测试文本。")
-  dialog(ui("模型预设与诊断"), [label, info, guide, actions, result], data.profiles.length ? async () => {
-    if (busy) return
-    try {
-      const saved = await api('/model-profiles', 'PUT', { id: select.value, baseRev: data.rev })
-      model = saved.available
-      $('model-status').hidden = model
-      renderCatalog()
-      paint()
-      if (result.isConnected) await showModelSettings()
-    } catch (error) {
-      result.textContent = error.message
-      if (error.status === 409) result.append(actionButton(ui("重新读取预设"), showModelSettings))
-    }
-  } : undefined, ui("保存预设"))
-
-  async function diagnose(action, value) {
-    if (busy) return
-    busy = true
-    showSelection()
-    select.disabled = true
-    result.textContent = ui("正在测试连接…")
-    try {
-      const response = await api('/model-profiles' + action, 'POST', value)
-      result.textContent = ui("连接成功 · ") + response.elapsedMs + ui(" 毫秒") +
-        (response.dimensions ? ui(" · 向量维度 ") + response.dimensions : '')
-    } catch (error) { result.textContent = error.message }
-    finally {
-      select.disabled = !data.profiles.length
-      busy = false
-      showSelection()
-    }
-  }
-}
-
-async function showStageModels() {
-  const data = await api('/model-profiles')
-  const options = { '': ui("跟随默认模型"), ...Object.fromEntries(data.profiles.map(row => [row.id, row.label])) }
-  const controls = Object.entries(writingStages).map(([stage, label]) => {
-    const [field, select] = selectField(ui(label), options, data.stages[stage] ?? '')
-    return { stage, field, select }
-  })
-  const guide = document.createElement('p')
-  guide.textContent = ui("新任务使用所选环节的模型。继续任务使用原模型。定稿人物提取适用于手动发起的提取任务。")
-  const result = document.createElement('p')
-  result.setAttribute('role', 'status')
-  dialog(ui("分工模型"), [guide, ...controls.map(item => item.field), result, actionButton(ui("返回模型预设"), showModelSettings)],
-    data.profiles.length ? async () => {
-      try {
-        await api('/model-profiles/stages', 'PUT', { baseRev: data.stageRev,
-          stages: Object.fromEntries(controls.map(({ stage, select }) => [stage, select.value || null])) })
-        if (result.isConnected) await showModelSettings()
-      } catch (error) {
-        result.textContent = error.message
-        if (error.status === 409) result.append(actionButton(ui("重新读取预设"), showStageModels))
-      }
-    } : undefined, ui("保存分工模型"))
+function setModelAvailability(available) {
+  model = available
+  $('model-status').hidden = model
+  $('open-model-settings').hidden = model
 }
 
 function setFocusWriting(enabled) {
@@ -2433,7 +2279,25 @@ $('login').addEventListener('submit', event => {
 click('logout', async () => { await leave(); await api('/session', 'DELETE'); location.reload() })
 click('library-menu', showLibrary)
 click('notice-close', () => note())
-click('workspace-settings', showSettings)
+const workspaceSettings = settingsWorkspace({
+  api, actionButton, prepareReload: prepareSettingsReload,
+  onModelSaved(data) {
+    modelLabels = new Map(data.profiles.map(row => [row.id, row.label]))
+    setModelAvailability(data.available)
+    renderCatalog()
+    paint()
+  },
+  editorMode: () => enhancedBody ? 'CodeMirror' : ui('普通编辑器'),
+  projectTools: () => ({
+    title: project && $('projects').selectedOptions[0]?.textContent,
+    backupUrl: project && $('backup').getAttribute('href'),
+    restore: () => $('backup-file').click(),
+    skills: () => showWritingSkills(project),
+    goals: editProjectGoals,
+  }),
+})
+click('workspace-settings', () => workspaceSettings.open())
+click('open-model-settings', () => workspaceSettings.open('models'))
 click('workbench-overview', () => showOverview())
 const novelWorkbenchUi = openWorkbenchUi({ api, dialog, actionButton })
 function showNovelWorkbench() {
@@ -2953,13 +2817,12 @@ setInterval(async () => {
 async function boot() {
   try {
     const session = await api('/session')
-    model = session.model
+    setModelAvailability(session.model)
     modelLabels = new Map((session.modelProfiles ?? []).map(row => [row.id, row.label]))
-    $('model-status').hidden = model
     semanticEnabled = session.semanticSearch
     $('semantic-search').hidden = !semanticEnabled
     $('release-version').textContent = session.version ? 'v' + session.version : ''
-    if (session.enhancedEditor) await enableEnhancedEditor()
+    if (session.enhancedEditor && !prefersPlainEditor()) await enableEnhancedEditor()
   } catch (error) {
     if (error.status !== 401) throw error
     $('login').hidden = false
@@ -2974,6 +2837,9 @@ async function boot() {
 }
 translateStatic(document)
 $('login-language').textContent = locale === 'en-US' ? '简体中文' : 'English'
-click('login-language', () => changeLanguage(locale === 'en-US' ? 'zh-CN' : 'en-US'))
+click('login-language', async () => {
+  await prepareSettingsReload(locale === 'en-US' ? 'zh-CN' : 'en-US')
+  location.reload()
+})
 applyAppearance()
 runAction(boot)

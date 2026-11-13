@@ -147,6 +147,8 @@ rc.2 的 Windows 和 `linux/amd64` 容器 HTTP 回归各通过 4 项。Edge 普�
 
 `0.2.0-dev.18` 增加创作工作台、本章准备、前文定稿引句和九个可批量导入的小说写作 Skill。Windows 和 Linux amd64 各通过 9 项 HTTP 回归，Edge 普通编辑器和 CodeMirror 验证工作台保存、章节方法选择及 Skill 导入。Compose 隔离卷从 schema 11 和 26 升到 27，保留正文和历史，并通过在线备份及独立卷恢复。模型请求使用模拟端点。 [小说写作 Skill 与 Web 工作台](15-writing-workbench.md)
 
+`0.2.0-dev.19` 将外观与编辑器、写作模型、分工模型、语义检索、备份恢复和作品配置整理到统一设置中心。Windows 和 Linux amd64 各通过 9 项 HTTP 回归，Edge 两种编辑模式验证了 390px 布局、切换语言和编辑器时保存文稿、模型冲突重读以及模拟模型诊断。从部署 ZIP 解包构建，在独立 Compose 卷验证 `dev.18` 和 `rc.1` 升级到 schema 27，保留正文和历史并通过在线备份恢复。 [设置中心用法](../../../web-novel/README.md#设置中心)
+
 | 验收项 | 可复现的验证或下一步 |
 | --- | --- |
 | HTTP、迁移、模型与备份 | 在 `web-novel` 运行 `node --test smoke.test.mjs`。覆盖跨设备保存、整稿导入、语义索引、细纲与审稿、合并冲突、批次重启、Skill 恢复及重复续跑。 |

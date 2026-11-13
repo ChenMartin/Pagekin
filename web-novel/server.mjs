@@ -64,6 +64,7 @@ const previewBudget = stage => models.current(stage)?.contextLimit ?? models.def
 const files = new Map([
   ['/', ['index.html', 'text/html']],
   ['/app.mjs', ['app.mjs', 'text/javascript']],
+  ['/settings-ui.mjs', ['settings-ui.mjs', 'text/javascript']],
   ['/locale.mjs', ['locale.mjs', 'text/javascript']],
   ['/locale-en.mjs', ['locale-en.mjs', 'text/javascript']],
   ['/manuscript.mjs', ['manuscript.mjs', 'text/javascript']],
@@ -445,7 +446,7 @@ async function route(req, res) {
     model: !!models.current(), version: releaseVersion, enhancedEditor, semanticSearch: !!semantic,
     modelProfiles: models.list().profiles.map(({ id, label }) => ({ id, label })),
   })
-  if (path === '/api/model-profiles' && method === 'GET') return json(res, { ...models.list(), semantic: !!semantic })
+  if (path === '/api/model-profiles' && method === 'GET') return json(res, { ...models.list(), semantic: !!semantic, semanticModel: semantic?.model ?? null })
   if (path === '/api/model-profiles' && method === 'PUT') return json(res, models.select(await body(req, 4096)))
   if (path === '/api/model-profiles/stages' && method === 'PUT') return json(res, models.selectStages(await body(req, 4096)))
   if (path === '/api/model-profiles/diagnose' && method === 'POST') return json(res, await models.diagnose(await body(req, 4096)))

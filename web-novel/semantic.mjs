@@ -206,5 +206,5 @@ export function openSemantic(storage, env = process.env) {
       return { ok: true, elapsedMs: Date.now() - started, dimensions: vector.length }
     } finally { diagnosing = false }
   }
-  return { status, start, search, diagnose, close: () => lifetime.abort() }
+  return { model, status, start, search, diagnose, close: () => lifetime.abort() }
 }

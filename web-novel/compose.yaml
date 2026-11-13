@@ -5,7 +5,7 @@ services:
       context: .
       args:
         PAGEKIN_INSTALL_MEDIA: "${PAGEKIN_MEDIA:-0}"
-    image: pagekin-web-novel:0.2.0-dev.18
+    image: pagekin-web-novel:0.2.0-dev.19
     platform: linux/amd64
     init: true
     restart: unless-stopped

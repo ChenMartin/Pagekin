@@ -13,7 +13,7 @@
     <div class="workspace-brand"><span class="brand-mark" aria-hidden="true">书</span><div><strong>书童</strong><span>小说工作区</span></div></div>
     <div id="workspace-menu" class="tools" hidden>
       <button id="library-menu">书房</button>
-      <button id="workspace-settings">设置</button>
+      <button id="workspace-settings" aria-haspopup="dialog">设置</button>
       <button id="logout">退出登录</button>
       <small id="release-version"></small>
     </div>
@@ -176,6 +176,7 @@
           <button id="assistant-back" type="button">返回稿纸</button>
           <p id="chapter-next-action" class="chapter-next" hidden></p>
           <p id="model-status" hidden>写作模型待配置。可查看既有任务、候选和模型输入预览。</p>
+          <button id="open-model-settings" type="button" hidden>配置写作模型</button>
           <div id="outline-controls">
             <p id="selected-outline">可先生成写前细纲，确认后用于写稿。</p>
             <button id="clear-outline" hidden>取消引用细纲</button>
@@ -224,6 +225,16 @@
       </section>
     </div>
   </main>
+  <dialog id="settings-dialog" aria-labelledby="settings-title">
+    <header class="settings-header">
+      <h2 id="settings-title">设置</h2>
+      <button id="close-settings" type="button">关闭</button>
+    </header>
+    <div class="settings-layout">
+      <nav id="settings-nav" aria-label="设置分类"></nav>
+      <section id="settings-content" aria-labelledby="settings-section-title"></section>
+    </div>
+  </dialog>
   <dialog id="dialog">
     <form id="dialog-form">
       <h2 id="dialog-title"></h2>
